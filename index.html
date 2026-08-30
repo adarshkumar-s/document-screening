@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title id="pageTitle">Digital Land Records Portal | DILRMP</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Tricolor Top Band -->
+<div class="tricolor-stripe"></div>
+
+<!-- AUTHENTICATION SCREEN -->
+<div id="authView" class="auth-hero-wrap">
+  <div class="gov-utility-bar">
+    <div data-i18n="gov_header_auth">Government of India · Ministry of Rural Development</div>
+    <div class="access-controls">
+      <button class="font-size-btn" onclick="adjustFontSize(-1)">A-</button>
+      <button class="font-size-btn" onclick="adjustFontSize(0)">A</button>
+      <button class="font-size-btn" onclick="adjustFontSize(1)">A+</button>
+      <button onclick="toggleContrast()">🌓 <span data-i18n="high_contrast">High Contrast</span></button>
+      <button onclick="toggleLanguage()" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 8px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">🌐 <span id="authLangToggleLabel">हिंदी में देखें</span></button>
+    </div>
+  </div>
+
+  <div class="auth-box-container">
+    <div class="auth-card">
+      <div style="text-align:center;margin-bottom:18px">
+        <svg class="emblem-svg" viewBox="0 0 100 120" style="margin:0 auto 10px;height:60px">
+          <path d="M50 5 L60 25 L40 25 Z" fill="#b45309"/>
+          <circle cx="50" cy="40" r="18" fill="#1b4965" stroke="#b45309" stroke-width="2"/>
+          <circle cx="50" cy="40" r="6" fill="#ea580c"/>
+          <rect x="25" y="65" width="50" height="10" rx="3" fill="#b45309"/>
+          <text x="50" y="73" font-size="7" fill="#ffffff" font-weight="bold" text-anchor="middle">सत्यमेव जयते</text>
+          <path d="M20 80 Q50 95 80 80 L75 105 Q50 115 25 105 Z" fill="#0f2b48"/>
+          <circle cx="50" cy="95" r="8" fill="#ffffff"/>
+          <circle cx="50" cy="95" r="2" fill="#1b4965"/>
+        </svg>
+        <div style="font-size:12px;color:var(--gov-saffron);font-weight:700;letter-spacing:1px;text-transform:uppercase" data-i18n="digital_india_tag">Digital India · DILRMP Portal</div>
+        <h2 style="margin:4px 0 6px;color:var(--gov-navy);font-size:19px" data-i18n="auth_heading">Land Records Digitization System</h2>
+        <div style="font-size:13px;color:var(--muted)" data-i18n="auth_subheading">Intelligent Land Record Digitization &amp; Validation System</div>
+      </div>
+
+      <!-- Login Form -->
+      <div id="loginForm">
+        <div class="formfield">
+          <label class="field-label" data-i18n="email_label">Official Email ID</label>
+          <input type="email" id="loginEmail" placeholder="officer@landrec.gov.in" autocomplete="username">
+        </div>
+        <div class="formfield">
+          <label class="field-label" data-i18n="password_label">Password</label>
+          <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
+        </div>
+        <div id="loginError" class="errorbox hidden"></div>
+        <button class="btn block saffron" id="loginBtn" data-i18n="btn_signin">Sign In</button>
+        <div style="text-align:center;margin-top:14px;font-size:12px;color:var(--muted)">
+          <span data-i18n="no_account">Don't have an account?</span> <button type="button" class="btn ghost" style="padding:2px 8px;font-size:12px;margin-left:4px" id="toSignup" data-i18n="btn_register">Sign Up</button>
+        </div>
+      </div>
+
+      <!-- Signup Form -->
+      <div id="signupForm" class="hidden">
+        <div class="formfield">
+          <label class="field-label" data-i18n="fullname_label">Full Name</label>
+          <input type="text" id="suName" placeholder="e.g. Ramesh Kumar">
+        </div>
+        <div class="formfield">
+          <label class="field-label" data-i18n="email_label">Official Email ID</label>
+          <input type="email" id="suEmail" placeholder="officer@landrec.gov.in">
+        </div>
+        <div class="formfield">
+          <label class="field-label" data-i18n="password_label">Password</label>
+          <input type="password" id="suPass" placeholder="Min. 8 characters">
+        </div>
+        <div class="formfield">
+          <label class="field-label" data-i18n="confirm_pass_label">Confirm Password</label>
+          <input type="password" id="suPass2" placeholder="Re-enter password">
+        </div>
+        <div id="signupError" class="errorbox hidden"></div>
+        <button class="btn block saffron" id="signupBtn" data-i18n="btn_register_submit">Register Account</button>
+        <div style="text-align:center;margin-top:14px;font-size:12px;color:var(--muted)">
+          <span data-i18n="already_registered">Already registered?</span> <button type="button" class="btn ghost" style="padding:2px 8px;font-size:12px;margin-left:4px" id="toLogin" data-i18n="btn_signin">Sign In</button>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid #e2e8f0;margin-top:20px;padding-top:12px;text-align:center;font-size:11px;color:#94a3b8" data-i18n="nic_footer_auth">
+        National Informatics Centre (NIC) · Government of India
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APPLICATION -->
+<div id="appView" class="hidden">
+  <div class="gov-utility-bar">
+    <div>
+      <span data-i18n="gov_top_title">🇮🇳 Government of India</span> &nbsp;·&nbsp;
+      <span data-i18n="gov_top_dept">Department of Land Resources</span>
+    </div>
+    <div class="access-controls">
+      <span id="liveClock" style="margin-right:10px;font-family:monospace"></span>
+      <button class="font-size-btn" onclick="adjustFontSize(-1)" title="Decrease font size">A-</button>
+      <button class="font-size-btn" onclick="adjustFontSize(0)" title="Default font size">A</button>
+      <button class="font-size-btn" onclick="adjustFontSize(1)" title="Increase font size">A+</button>
+      <button onclick="toggleContrast()" title="High Contrast Mode">🌓 <span data-i18n="high_contrast">High Contrast</span></button>
+      <button onclick="toggleLanguage()" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 8px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">🌐 <span id="appLangToggleLabel">हिंदी</span></button>
+    </div>
+  </div>
+
+  <div class="gov-header">
+    <div class="gov-brand-container">
+      <svg class="emblem-svg" viewBox="0 0 100 120">
+        <path d="M50 5 L60 25 L40 25 Z" fill="#fbd38d"/>
+        <circle cx="50" cy="40" r="18" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+        <circle cx="50" cy="40" r="6" fill="#ea580c"/>
+        <rect x="25" y="65" width="50" height="10" rx="3" fill="#fbd38d"/>
+        <text x="50" y="73" font-size="7" fill="#0f2b48" font-weight="bold" text-anchor="middle">सत्यमेव जयते</text>
+        <path d="M20 80 Q50 95 80 80 L75 105 Q50 115 25 105 Z" fill="#ffffff"/>
+        <circle cx="50" cy="95" r="8" fill="#0f2b48"/>
+        <circle cx="50" cy="95" r="2" fill="#ea580c"/>
+      </svg>
+      <div class="gov-titles">
+        <div class="gov-sub-title" data-i18n="app_sub_title">Digital India Land Records Modernization Programme (DILRMP)</div>
+        <div class="gov-main-title" data-i18n="app_main_title">Digital Land Records Portal</div>
+        <div class="gov-prog-tag" data-i18n="app_tag">OCR · Computer Vision · Multilingual Validation</div>
+      </div>
+    </div>
+
+    <div class="gov-user-panel">
+      <div class="user-badge">
+        <div class="user-avatar" id="avatar">A</div>
+        <div>
+          <div style="font-weight:700;font-size:13px;color:#ffffff" id="userName">Admin</div>
+          <div style="font-size:11px;color:#fbd38d" id="userRole">Administrator</div>
+        </div>
+      </div>
+      <button class="btn ghost" style="padding:6px 12px;font-size:12px" id="logoutBtn" data-i18n="btn_logout">Logout</button>
+    </div>
+  </div>
+
+  <div class="nav-toolbar">
+    <div class="history-arrows">
+      <button class="arrow-nav-btn" id="btnHistoryBack" title="Back (Alt + Left Arrow)">
+        ◀ <b data-i18n="nav_back">Back</b>
+      </button>
+      <button class="arrow-nav-btn" id="btnHistoryForward" title="Forward (Alt + Right Arrow)">
+        <b data-i18n="nav_forward">Forward</b> ▶
+      </button>
+    </div>
+
+    <div class="breadcrumb-box" id="breadcrumbTrail">
+      <span class="breadcrumb-item" onclick="switchTab('upload')" data-i18n="nav_home">🏛️ Home</span>
+      <span class="breadcrumb-separator">❯</span>
+      <span class="breadcrumb-current" id="currentBreadcrumb" data-i18n="breadcrumb_upload">Document Upload</span>
+    </div>
+
+    <div class="quick-record-nav" id="recordCarouselNav" style="visibility:hidden">
+      <button class="arrow-nav-btn" id="btnPrevDoc" title="Previous Document">◀ <span data-i18n="btn_prev_doc">Previous Record</span></button>
+      <span class="record-counter" id="docCounterText">1 / 1</span>
+      <button class="arrow-nav-btn" id="btnNextDoc" title="Next Document"><span data-i18n="btn_next_doc">Next Record</span> ▶</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="tabs">
+      <button class="tab active" data-tab="upload">📤 <span data-i18n="tab_upload">Upload</span></button>
+      <button class="tab" data-tab="dashboard">📊 <span data-i18n="tab_dashboard">Dashboard</span></button>
+      <button class="tab" data-tab="documents">🗂️ <span data-i18n="tab_records">Records</span></button>
+      <button class="tab" data-tab="learn" id="tabLearn">🧠 <span data-i18n="tab_learn">AI Feedback</span></button>
+      <button class="tab" data-tab="audit" id="tabAudit">🔐 <span data-i18n="tab_audit">Audit Log</span></button>
+      <button class="tab" data-tab="users" id="tabUsers">👥 <span data-i18n="tab_users">Users</span></button>
+      <button class="tab" data-tab="account" id="tabAccount">⚙️ <span data-i18n="tab_account">Account</span></button>
+    </div>
+
+    <div class="tab-content">
+      <!-- TAB 1: UPLOAD -->
+      <div id="tab-upload">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">📄 <span data-i18n="upload_title">Upload Scanned Land Records</span></h3>
+            <span class="chip" data-i18n="supported_langs">Supported: Hindi, English, Marathi, Telugu, Tamil, Gujarati, Bengali, Punjabi, Kannada, Odia, Urdu</span>
+          </div>
+
+          <div class="drop-zone" id="drop">
+            <div class="drop-icon">📁</div>
+            <div style="font-size:15px"><b data-i18n="drag_drop_title">Drag and drop file here</b> <span data-i18n="drag_drop_sub">or click to browse from device</span></div>
+            <div style="color:var(--muted);font-size:12px;margin-top:6px" data-i18n="supported_formats">Scanned PDF, JPG, PNG, TIFF (Khatauni, Patta, Pahani, 7/12, Khasra, Jamabandi)</div>
+            <input type="file" id="fileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
+          </div>
+
+          <div style="margin-top:16px;border-top:1px dashed var(--gov-border);padding-top:14px">
+            <div style="font-size:12px;font-weight:700;color:var(--gov-navy);margin-bottom:8px" data-i18n="sample_records_title">
+              🌟 Try Official Test Samples:
+            </div>
+            <div id="sampleBtns" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+          </div>
+
+          <div id="processing" class="hidden" style="margin-top:16px;padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;color:#166534;font-weight:600">
+            <span class="spinner" style="border-top-color:#166534"></span> <span data-i18n="processing_text">Processing multilingual OCR, entity extraction & rule validation... Please wait.</span>
+          </div>
+        </div>
+
+        <div id="result" class="hidden">
+          <div class="card">
+            <div class="stepper-header">
+              <div class="step-indicators" id="uploadStepIndicators">
+                <div class="step-pill active" onclick="goToUploadStep(1)">
+                  <span class="step-num">1</span> 📋 <span data-i18n="step_1">Summary</span>
+                </div>
+                <div class="step-pill" onclick="goToUploadStep(2)">
+                  <span class="step-num">2</span> 👤 <span data-i18n="step_2">Ownership</span>
+                </div>
+                <div class="step-pill" onclick="goToUploadStep(3)">
+                  <span class="step-num">3</span> 🏛️ <span data-i18n="step_3">Location</span>
+                </div>
+                <div class="step-pill" onclick="goToUploadStep(4)">
+                  <span class="step-num">4</span> 🔍 <span data-i18n="step_4">OCR & Verification</span>
+                </div>
+              </div>
+
+              <div style="display:flex;gap:6px">
+                <button class="arrow-nav-btn" id="btnUploadStepPrevTop" onclick="prevUploadStep()">◀ <span data-i18n="btn_prev_step">Previous</span></button>
+                <button class="arrow-nav-btn primary" id="btnUploadStepNextTop" onclick="nextUploadStep()"><span data-i18n="btn_next_step">Next</span> ▶</button>
+              </div>
+            </div>
+
+            <!-- STEP 1 -->
+            <div class="section-pane active" id="uploadStep1">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                <div>
+                  <h3 style="margin:0;font-size:16px;color:var(--gov-navy)" id="resDocTitle" data-i18n="extraction_summary">Extraction Summary</h3>
+                  <div style="font-size:12px;color:var(--muted);margin-top:2px" id="resMeta"></div>
+                </div>
+                <div id="verdictBox"></div>
+              </div>
+
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+                <div class="form-section-card">
+                  <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)" data-i18n="record_highlights">📌 Record Highlights</h4>
+                  <table class="gov-table">
+                    <tbody id="quickHighlightsBody"></tbody>
+                  </table>
+                </div>
+                <div class="form-section-card">
+                  <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)" data-i18n="validation_rules">⚠️ Validation Rules</h4>
+                  <div id="issuesBox"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- STEP 2 -->
+            <div class="section-pane" id="uploadStep2">
+              <div class="form-section-card">
+                <h4 style="margin:0 0 14px;font-size:14px;color:var(--gov-navy)" data-i18n="ownership_particulars">👤 Ownership & Land Particulars</h4>
+                <div class="field-grid" id="step2Fields"></div>
+              </div>
+            </div>
+
+            <!-- STEP 3 -->
+            <div class="section-pane" id="uploadStep3">
+              <div class="form-section-card">
+                <h4 style="margin:0 0 14px;font-size:14px;color:var(--gov-navy)" data-i18n="location_registry">🏛️ Location, Tehsil, District & Mutation Particulars</h4>
+                <div class="field-grid" id="step3Fields"></div>
+              </div>
+            </div>
+
+            <!-- STEP 4 -->
+            <div class="section-pane" id="uploadStep4">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+                <div class="form-section-card">
+                  <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)" data-i18n="raw_ocr_heading">🔍 Raw Computer Vision OCR Text</h4>
+                  <div class="raw-ocr-box" id="ocrPreview"></div>
+                </div>
+                <div class="form-section-card" id="verifySubmissionCard">
+                  <h4 style="margin:0 0 6px;font-size:13px;color:var(--gov-navy)" data-i18n="human_verify_heading">✍️ Human Verification & Approval</h4>
+                  <p style="font-size:12px;color:var(--muted);margin-top:0" data-i18n="human_verify_sub">Officer corrections train the AI feedback pipeline in real-time.</p>
+                  <div style="margin-top:18px">
+                    <button class="btn saffron block" id="submitVerify" data-i18n="btn_confirm_verify">✓ Confirm & Verify Record</button>
+                    <div id="verifyNote" style="margin-top:8px;font-size:12px;font-weight:600"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="step-nav-footer">
+              <button class="arrow-nav-btn" id="btnUploadStepPrevBottom" onclick="prevUploadStep()">◀ <span data-i18n="btn_prev_step">Previous</span></button>
+              <div style="font-size:12px;color:var(--muted)" id="stepProgressIndicatorText">Step 1 / 4</div>
+              <button class="arrow-nav-btn primary" id="btnUploadStepNextBottom" onclick="nextUploadStep()"><span data-i18n="btn_next_step">Next</span> ▶</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: DASHBOARD -->
+      <div id="tab-dashboard" class="hidden">
+        <div class="stats-grid" id="statsRow"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card">
+            <h3 class="card-title" data-i18n="chart_state">Progress by State</h3>
+            <div id="stateChart" style="margin-top:12px"></div>
+          </div>
+          <div class="card">
+            <h3 class="card-title" data-i18n="chart_district">Progress by District</h3>
+            <div id="districtChart" style="margin-top:12px"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: DOCUMENTS -->
+      <div id="tab-documents" class="hidden">
+        <div class="card" id="docListCard">
+          <div class="card-header">
+            <h3 class="card-title">🗂️ <span data-i18n="tab_records">Registered Land Records</span></h3>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="text" id="docSearchInput" placeholder="🔍 Search ID, Owner, Village, Survey..." style="width:240px;padding:6px 10px;font-size:12px">
+              <button class="btn ghost" onclick="loadDocuments()" style="padding:6px 10px;font-size:12px" data-i18n="btn_refresh">🔄 Refresh</button>
+            </div>
+          </div>
+
+          <table class="gov-table" id="docTable">
+            <thead>
+              <tr>
+                <th style="width:100px" data-i18n="th_doc_id">Record ID</th>
+                <th data-i18n="th_file">Document File</th>
+                <th data-i18n="th_confidence">OCR Confidence</th>
+                <th data-i18n="th_status">Status</th>
+                <th data-i18n="th_process">Process</th>
+                <th data-i18n="th_key_fields">Key Details</th>
+                <th style="text-align:right" data-i18n="th_actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+
+          <div class="pagination-container">
+            <div><span data-i18n="total_records_label">Total Records</span>: <b id="docTotalCount">0</b> &nbsp;|&nbsp; <span data-i18n="page_label">Page</span> <span id="docCurrentPage">1</span> / <span id="docTotalPages">1</span></div>
+            <div style="display:flex;gap:6px">
+              <button class="arrow-nav-btn" id="btnDocPrevPage" onclick="prevDocPage()">◀ <span data-i18n="btn_prev_page">Previous Page</span></button>
+              <button class="arrow-nav-btn" id="btnDocNextPage" onclick="nextDocPage()"><span data-i18n="btn_next_page">Next Page</span> ▶</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="docDetail" class="hidden card" style="margin-top:16px"></div>
+      </div>
+
+      <!-- TAB 4: LEARN -->
+      <div id="tab-learn" class="hidden">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🧠 <span data-i18n="learn_title">Learned OCR Corrections & AI Feedback Loop</span></h3>
+            <span class="chip">Self-improving AI Model</span>
+          </div>
+          <p style="color:var(--muted);font-size:13px;margin-top:0" data-i18n="learn_desc">System captures verification officer overrides to fine-tune Indic OCR and field recognition models.</p>
+          <table class="gov-table" id="learnTable">
+            <thead>
+              <tr>
+                <th data-i18n="th_field">Field Name</th>
+                <th data-i18n="th_raw_ocr">OCR Extracted</th>
+                <th data-i18n="th_corrected">Verified Value</th>
+                <th data-i18n="th_count">Times Applied</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TAB 5: AUDIT LOG -->
+      <div id="tab-audit" class="hidden">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🔐 <span data-i18n="audit_title">Security & Audit Trail</span></h3>
+            <button class="btn ghost" onclick="loadAudit()" style="padding:4px 10px;font-size:12px" data-i18n="btn_refresh">🔄 Refresh</button>
+          </div>
+          <p style="color:var(--muted);font-size:13px;margin-top:0" data-i18n="audit_desc">All actions, modifications, and system logins are cryptographically logged for full compliance.</p>
+          <table class="gov-table" id="auditTable">
+            <thead>
+              <tr>
+                <th data-i18n="th_time">Date & Time</th>
+                <th data-i18n="th_user">User</th>
+                <th data-i18n="th_action">Action</th>
+                <th data-i18n="th_detail">Detail</th>
+                <th data-i18n="th_doc_id">Record ID</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TAB 6: USERS -->
+      <div id="tab-users" class="hidden">
+        <div style="display:grid;grid-template-columns:340px 1fr;gap:20px">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">➕ <span data-i18n="add_user_title">Add New Officer</span></h3>
+            </div>
+            <div class="formfield">
+              <label class="field-label" data-i18n="fullname_label">Full Name</label>
+              <input type="text" id="nuName" placeholder="e.g. Rajesh Sharma">
+            </div>
+            <div class="formfield">
+              <label class="field-label" data-i18n="email_label">Email Address</label>
+              <input type="email" id="nuEmail" placeholder="officer@landrec.gov.in">
+            </div>
+            <div class="formfield">
+              <label class="field-label" data-i18n="password_label">Initial Password</label>
+              <input type="password" id="nuPass" placeholder="Min. 8 characters">
+            </div>
+            <div class="formfield">
+              <label class="field-label" data-i18n="role_label">Assigned Role</label>
+              <select id="nuRole">
+                <option value="operator">Data Operator</option>
+                <option value="verifier">Verification Officer</option>
+                <option value="viewer">Viewer</option>
+                <option value="admin">Administrator</option>
+              </select>
+            </div>
+            <div id="nuError" class="errorbox hidden"></div>
+            <button class="btn block saffron" id="addUserBtn" data-i18n="btn_create_user">Create User</button>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">👥 <span data-i18n="registered_officers">Registered Officers</span></h3>
+            </div>
+            <table class="gov-table" id="userTable">
+              <thead>
+                <tr>
+                  <th data-i18n="th_officer_name">Officer Name</th>
+                  <th data-i18n="email_label">Email</th>
+                  <th data-i18n="role_label">Role</th>
+                  <th data-i18n="th_status">Status</th>
+                  <th data-i18n="th_actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 7: ACCOUNT -->
+      <div id="tab-account" class="hidden">
+        <div class="card" style="max-width:520px">
+          <div class="card-header">
+            <h3 class="card-title">⚙️ <span data-i18n="my_profile">My Profile</span></h3>
+          </div>
+          <div class="formfield">
+            <label class="field-label" data-i18n="fullname_label">Name</label>
+            <input type="text" id="acName" disabled>
+          </div>
+          <div class="formfield">
+            <label class="field-label" data-i18n="email_label">Email</label>
+            <input type="email" id="acEmail" disabled>
+          </div>
+          <div class="formfield">
+            <label class="field-label" data-i18n="role_label">Assigned Role</label>
+            <input type="text" id="acRole" disabled>
+          </div>
+
+          <hr style="border:none;border-top:1px solid var(--gov-border);margin:20px 0">
+          <h4 style="margin:0 0 12px;font-size:14px;color:var(--gov-navy)" data-i18n="change_password">🔑 Change Password</h4>
+          <div class="formfield">
+            <label class="field-label" data-i18n="current_password">Current Password</label>
+            <input type="password" id="cpCurrent">
+          </div>
+          <div class="formfield">
+            <label class="field-label" data-i18n="new_password">New Password</label>
+            <input type="password" id="cpNew">
+          </div>
+          <div id="cpMsg" class="hidden"></div>
+          <button class="btn saffron" id="cpBtn" data-i18n="btn_update_pass">Update Password</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="floating-nav-pill">
+    <button class="floating-nav-btn" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Scroll to Top">▲</button>
+    <button class="floating-nav-btn" onclick="floatingPrevStep()" title="Back">◀</button>
+    <span style="font-size:11px;opacity:0.7">|</span>
+    <button class="floating-nav-btn" onclick="floatingNextStep()" title="Forward">▶</button>
+    <button class="floating-nav-btn" onclick="window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'})" title="Scroll to Bottom">▼</button>
+  </div>
+
+  <div class="gov-footer">
+    <div class="gov-footer-inner">
+      <div>
+        <div style="font-weight:700;color:#ffffff;font-size:13px;margin-bottom:6px" data-i18n="nic_title">🏛️ National Informatics Centre (NIC)</div>
+        <div data-i18n="nic_ministry">Ministry of Electronics & Information Technology, Government of India</div>
+        <div style="font-size:11px;margin-top:6px;color:#64748b" data-i18n="nic_ownership">Website Content Owned by Department of Land Resources, Ministry of Rural Development, GoI</div>
+      </div>
+      <div>
+        <div class="footer-links">
+          <a href="javascript:void(0)" onclick="alert('Helpdesk Toll Free: 1800-111-555 (Mon-Fri 9:30 AM - 6:00 PM IST)\nEmail: support@landrec.gov.in')" data-i18n="helpdesk_link">📞 Helpdesk</a>
+          <a href="javascript:void(0)" onclick="alert('Guidelines for Indian Government Websites (GIGW 3.0) Compliant')">GIGW 3.0</a>
+          <a href="javascript:void(0)" onclick="alert('System Version: v2.4 (Multilingual Indic OCR & Stepper Architecture)')">v2.4</a>
+        </div>
+        <div style="font-size:11px;margin-top:8px;color:#64748b" data-i18n="last_updated">Last Updated: August 2026</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Multilingual Translation Engine
+const siteTranslations = {
+  en: {
+    page_title: "Digital Land Records Portal | DILRMP",
+    lang_toggle_btn: "हिंदी",
+    auth_lang_btn: "हिंदी में देखें",
+    high_contrast: "High Contrast",
+    gov_header_auth: "Government of India · Ministry of Rural Development",
+    digital_india_tag: "Digital India · DILRMP Portal",
+    auth_heading: "Land Records Digitization System",
+    auth_subheading: "Intelligent Land Record Digitization & Validation System",
+    email_label: "Official Email ID",
+    password_label: "Password",
+    btn_signin: "Sign In",
+    no_account: "Don't have an account?",
+    btn_register: "Sign Up",
+    fullname_label: "Full Name",
+    confirm_pass_label: "Confirm Password",
+    btn_register_submit: "Register Account",
+    already_registered: "Already registered?",
+    nic_footer_auth: "National Informatics Centre (NIC) · Government of India",
+    gov_top_title: "🇮🇳 Government of India",
+    gov_top_dept: "Department of Land Resources",
+    app_sub_title: "Digital India Land Records Modernization Programme (DILRMP)",
+    app_main_title: "Digital Land Records Portal",
+    app_tag: "OCR · Computer Vision · Multilingual Validation",
+    btn_logout: "Logout",
+    nav_back: "Back",
+    nav_forward: "Forward",
+    nav_home: "🏛️ Home",
+    breadcrumb_upload: "Document Upload",
+    btn_prev_doc: "Previous Record",
+    btn_next_doc: "Next Record",
+    tab_upload: "Upload",
+    tab_dashboard: "Dashboard",
+    tab_records: "Records",
+    tab_learn: "AI Feedback",
+    tab_audit: "Audit Log",
+    tab_users: "Users",
+    tab_account: "Account",
+    upload_title: "Upload Scanned Land Records",
+    supported_langs: "Supported: Hindi, English, Marathi, Telugu, Tamil, Gujarati, Bengali, Punjabi, Kannada, Odia, Urdu",
+    drag_drop_title: "Drag and drop file here",
+    drag_drop_sub: "or click to browse from device",
+    supported_formats: "Scanned PDF, JPG, PNG, TIFF (Khatauni, Patta, Pahani, 7/12, Khasra, Jamabandi)",
+    sample_records_title: "🌟 Try Official Test Samples:",
+    processing_text: "Processing multilingual OCR, entity extraction & rule validation... Please wait.",
+    step_1: "Summary",
+    step_2: "Ownership",
+    step_3: "Location",
+    step_4: "OCR & Verification",
+    btn_prev_step: "Previous",
+    btn_next_step: "Next",
+    extraction_summary: "Extraction Summary",
+    record_highlights: "📌 Record Highlights",
+    validation_rules: "⚠️ Validation Rules",
+    ownership_particulars: "👤 Ownership & Land Particulars",
+    location_registry: "🏛️ Location, Tehsil, District & Mutation Particulars",
+    raw_ocr_heading: "🔍 Raw Computer Vision OCR Text",
+    human_verify_heading: "✍️ Human Verification & Approval",
+    human_verify_sub: "Officer corrections train the AI feedback pipeline in real-time.",
+    btn_confirm_verify: "✓ Confirm & Verify Record",
+    chart_state: "Progress by State",
+    chart_district: "Progress by District",
+    btn_refresh: "🔄 Refresh",
+    th_doc_id: "Record ID",
+    th_file: "Document File",
+    th_confidence: "OCR Confidence",
+    th_status: "Status",
+    th_process: "Process",
+    th_key_fields: "Key Details",
+    th_actions: "Actions",
+    total_records_label: "Total Records",
+    page_label: "Page",
+    btn_prev_page: "Previous Page",
+    btn_next_page: "Next Page",
+    learn_title: "Learned OCR Corrections & AI Feedback Loop",
+    learn_desc: "System captures verification officer overrides to fine-tune Indic OCR and field recognition models.",
+    th_field: "Field Name",
+    th_raw_ocr: "OCR Extracted",
+    th_corrected: "Verified Value",
+    th_count: "Times Applied",
+    audit_title: "Security & Audit Trail",
+    audit_desc: "All actions, modifications, and system logins are cryptographically logged for full compliance.",
+    th_time: "Date & Time",
+    th_user: "User",
+    th_action: "Action",
+    th_detail: "Detail",
+    add_user_title: "Add New Officer",
+    role_label: "Assigned Role",
+    btn_create_user: "Create User",
+    registered_officers: "Registered Officers",
+    th_officer_name: "Officer Name",
+    my_profile: "My Profile",
+    change_password: "🔑 Change Password",
+    current_password: "Current Password",
+    new_password: "New Password",
+    btn_update_pass: "Update Password",
+    nic_title: "🏛️ National Informatics Centre (NIC)",
+    nic_ministry: "Ministry of Electronics & Information Technology, Government of India",
+    nic_ownership: "Website Content Owned by Department of Land Resources, Ministry of Rural Development, GoI",
+    helpdesk_link: "📞 Helpdesk",
+    last_updated: "Last Updated: August 2026"
+  },
+  hi: {
+    page_title: "डिजिटल भू-अभिलेख पोर्टल | DILRMP",
+    lang_toggle_btn: "English",
+    auth_lang_btn: "View in English",
+    high_contrast: "उच्च कंट्रास्ट",
+    gov_header_auth: "भारत सरकार · ग्रामीण विकास मंत्रालय",
+    digital_india_tag: "डिजिटल इंडिया · DILRMP पोर्टल",
+    auth_heading: "भू-अभिलेख डिजिटलीकरण प्रणाली",
+    auth_subheading: "स्मार्ट भू-अभिलेख डिजिटलीकरण एवं सत्यापन प्रणाली",
+    email_label: "आधिकारिक ईमेल आईडी",
+    password_label: "पासवर्ड",
+    btn_signin: "लॉग इन करें",
+    no_account: "खाता नहीं है?",
+    btn_register: "पंजीकरण करें",
+    fullname_label: "पूरा नाम",
+    confirm_pass_label: "पासवर्ड की पुष्टि करें",
+    btn_register_submit: "खाता बनाएं",
+    already_registered: "पहले से पंजीकृत हैं?",
+    nic_footer_auth: "राष्ट्रीय सूचना विज्ञान केंद्र (NIC) · भारत सरकार",
+    gov_top_title: "🇮🇳 भारत सरकार",
+    gov_top_dept: "भू-संसाधन विभाग",
+    app_sub_title: "राष्ट्रीय भूमि अभिलेख आधुनिकीकरण कार्यक्रम (DILRMP)",
+    app_main_title: "डिजिटल भू-अभिलेख पोर्टल",
+    app_tag: "ओसीआर · कंप्यूटर विजन · बहुभाषी सत्यापन",
+    btn_logout: "लॉग आउट",
+    nav_back: "पिछला",
+    nav_forward: "अगला",
+    nav_home: "🏛️ मुख्य पृष्ठ",
+    breadcrumb_upload: "दस्तावेज़ अपलोड",
+    btn_prev_doc: "पिछला अभिलेख",
+    btn_next_doc: "अगला अभिलेख",
+    tab_upload: "अपलोड",
+    tab_dashboard: "डैशबोर्ड",
+    tab_records: "अभिलेख सूची",
+    tab_learn: "एआई फीडबैक",
+    tab_audit: "ऑडिट ट्रेल",
+    tab_users: "उपयोगकर्ता",
+    tab_account: "खाता",
+    upload_title: "स्कैन किए गए भू-अभिलेख अपलोड करें",
+    supported_langs: "समर्थित भाषाएँ: हिंदी, अंग्रेजी, मराठी, तेलुगु, तमिल, गुजराती, बांग्ला, पंजाबी, कन्नड़, ओड़िया, उर्दू",
+    drag_drop_title: "यहाँ फ़ाइल खींचकर छोड़ें",
+    drag_drop_sub: "या कंप्यूटर से चयन करने के लिए क्लिक करें",
+    supported_formats: "स्कैन PDF, JPG, PNG, TIFF (खतौनी, पट्टा, पहानी, 7/12, खसरा, जमाबंदी)",
+    sample_records_title: "🌟 आधिकारिक नमूना अभिलेख आज़माएँ:",
+    processing_text: "बहुभाषी ओसीआर, डेटा निष्कर्षण एवं सत्यापन जारी है... कृपया प्रतीक्षा करें।",
+    step_1: "सारांश",
+    step_2: "भूस्वामी विवरण",
+    step_3: "स्थान विवरण",
+    step_4: "ओसीआर व सत्यापन",
+    btn_prev_step: "पिछला",
+    btn_next_step: "अगला",
+    extraction_summary: "निष्कर्षण परिणाम सारांश",
+    record_highlights: "📌 मुख्य बिंदु",
+    validation_rules: "⚠️ सत्यापन नियम व चेतावनियाँ",
+    ownership_particulars: "👤 भूस्वामी एवं खसरा/खाता विवरण",
+    location_registry: "🏛️ स्थान, तहसील, जिला एवं म्यूटेशन विवरण",
+    raw_ocr_heading: "🔍 कंप्यूटर विज़न निष्कर्षित मूल पाठ",
+    human_verify_heading: "✍️ मानवीय सत्यापन एवं अभिलेख अनुमोदन",
+    human_verify_sub: "अधिकारियों द्वारा किए गए संशोधन एआई मॉडल को प्रशिक्षित करते हैं।",
+    btn_confirm_verify: "✓ सत्यापन सुरक्षित करें",
+    chart_state: "राज्यवार प्रगति",
+    chart_district: "जिलावार प्रगति",
+    btn_refresh: "🔄 रीफ्रेश",
+    th_doc_id: "अभिलेख ID",
+    th_file: "दस्तावेज़ फाइल",
+    th_confidence: "ओसीआर सटीकता",
+    th_status: "सत्यापन स्थिति",
+    th_process: "प्रक्रिया स्थिति",
+    th_key_fields: "प्रमुख विवरण",
+    th_actions: "कार्यवाही",
+    total_records_label: "कुल अभिलेख",
+    page_label: "पृष्ठ",
+    btn_prev_page: "पिछला पृष्ठ",
+    btn_next_page: "अगला पृष्ठ",
+    learn_title: "एआई लर्निंग एवं फीडबैक लूप",
+    learn_desc: "सत्यापन अधिकारियों द्वारा किए गए संशोधनों से एआई स्वतः सीखता है और मॉडल को बेहतर बनाता है।",
+    th_field: "फ़ील्ड नाम",
+    th_raw_ocr: "ओसीआर द्वारा पढ़ा गया",
+    th_corrected: "सत्यापित मान",
+    th_count: "लागू होने की संख्या",
+    audit_title: "सुरक्षा एवं ऑडिट ट्रेल",
+    audit_desc: "प्रत्येक कार्रवाई, संशोधन और लॉगिन को जवाबदेही के लिए टाइमस्टैम्प के साथ सुरक्षित किया जाता है।",
+    th_time: "दिनांक व समय",
+    th_user: "उपयोगकर्ता",
+    th_action: "कार्रवाई",
+    th_detail: "विवरण",
+    add_user_title: "नया अधिकारी जोड़ें",
+    role_label: "अधिकार भूमिका",
+    btn_create_user: "उपयोगकर्ता बनाएं",
+    registered_officers: "पंजीकृत अधिकारी सूची",
+    th_officer_name: "अधिकारी का नाम",
+    my_profile: "मेरा खाता विवरण",
+    change_password: "🔑 पासवर्ड बदलें",
+    current_password: "वर्तमान पासवर्ड",
+    new_password: "नया पासवर्ड",
+    btn_update_pass: "पासवर्ड अपडेट करें",
+    nic_title: "🏛️ राष्ट्रीय सूचना विज्ञान केंद्र (NIC)",
+    nic_ministry: "इलेक्ट्रॉनिकी एवं सूचना प्रौद्योगिकी मंत्रालय, भारत सरकार",
+    nic_ownership: "वेबसाइट सामग्री का स्वामित्व: भू-संसाधन विभाग, ग्रामीण विकास मंत्रालय, भारत सरकार",
+    helpdesk_link: "📞 सहायता केंद्र",
+    last_updated: "अंतिम अद्यतन: अगस्त 2026"
+  }
+};
+
+let activeLang = 'en';
+
+function applyLanguage(lang) {
+  activeLang = lang;
+  localStorage.setItem('dilrmp_lang', lang);
+  
+  const dict = siteTranslations[lang] || siteTranslations.en;
+  
+  // Update document title
+  const titleEl = document.getElementById('pageTitle');
+  if (titleEl) titleEl.innerText = dict.page_title;
+  
+  // Update toggle button labels
+  const appToggle = document.getElementById('appLangToggleLabel');
+  if (appToggle) appToggle.innerText = dict.lang_toggle_btn;
+  
+  const authToggle = document.getElementById('authLangToggleLabel');
+  if (authToggle) authToggle.innerText = dict.auth_lang_btn;
+  
+  // Update all elements with data-i18n
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (dict[key]) {
+      el.innerText = dict[key];
+    }
+  });
+}
+
+function toggleLanguage() {
+  const nextLang = activeLang === 'en' ? 'hi' : 'en';
+  applyLanguage(nextLang);
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('dilrmp_lang') || 'en';
+  applyLanguage(saved);
+});
+</script>
+
+<script src="js/app.js"></script>
+</body>
+</html>
