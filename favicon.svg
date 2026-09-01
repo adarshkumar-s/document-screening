@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Digital land records">
+  <rect width="64" height="64" rx="12" fill="#0f2b48"/>
+  <path d="M12 15h40v34H12z" fill="#fffdf6"/>
+  <path d="M12 15h40v7H12z" fill="#f28c28"/>
+  <path d="M17 29h30M17 38h30M27 22v27M38 22v27" stroke="#2f7d4a" stroke-width="3" fill="none"/>
+  <path d="M16 48h32" stroke="#138808" stroke-width="4"/>
+  <circle cx="32" cy="33.5" r="4" fill="#0f2b48"/>
+</svg>

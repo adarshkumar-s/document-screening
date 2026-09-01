@@ -16,11 +16,17 @@ from PIL import Image
 # Optional OCR integration
 try:
     import pytesseract
+    # Use an explicit Windows installation when available. TESSERACT_CMD can
+    # override this path for a different installation or deployment platform.
+    tesseract_cmd = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if os.path.isfile(tesseract_cmd):
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
     HAS_TESSERACT = True
 except ImportError:
     HAS_TESSERACT = False
 
-DB_PATH = "land_records.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "land_records.db")
 app = FastAPI(title="DILRMP Land Records Digitization API")
 
 app.add_middleware(
@@ -319,7 +325,15 @@ def me(user: dict = Depends(get_current_user)):
     return {"user": user}
 
 @app.post("/api/auth/logout")
-def logout(user: dict = Depends(get_current_user)):
+def logout(authorization: Optional[str] = Header(None), token: Optional[str] = None,
+           user: dict = Depends(get_current_user)):
+    auth_token = None
+    if authorization and authorization.startswith("Bearer "):
+        auth_token = authorization.split(" ", 1)[1]
+    elif token:
+        auth_token = token
+    if auth_token:
+        SESSIONS.pop(auth_token, None)
     return {"status": "ok"}
 
 @app.post("/api/auth/change-password")
@@ -382,17 +396,23 @@ async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_
 
 @app.get("/api/samples")
 def get_samples(user: dict = Depends(get_current_user)):
-    samples_dir = "samples"
+    samples_dir = os.path.join(BASE_DIR, "samples")
     if not os.path.exists(samples_dir):
         os.makedirs(samples_dir, exist_ok=True)
-    files = [f for f in os.listdir(samples_dir) if f.lower().endswith(('.pdf', '.jpg', '.png', '.tiff'))]
+    files = [f for f in os.listdir(samples_dir) if f.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff'))]
     if not files:
         files = ["Khatauni_Meerut_Sample.pdf", "Patta_Deed_7_12_Sample.png", "Pahani_Survey_Record.pdf"]
     return {"samples": files}
 
 @app.post("/api/process/sample/{name}")
 def process_sample_file(name: str, user: dict = Depends(get_current_user)):
-    ocr_res = run_ocr_pipeline(None, name)
+    samples_dir = os.path.join(BASE_DIR, "samples")
+    sample_path = os.path.join(samples_dir, name)
+    if not os.path.isfile(sample_path):
+        raise HTTPException(status_code=404, detail="Sample file not found")
+
+    with open(sample_path, "rb") as sample_file:
+        ocr_res = run_ocr_pipeline(sample_file.read(), name)
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -606,14 +626,20 @@ def update_user_status(user_id: int, req: UpdateUserReq, user: dict = Depends(ge
 # ---------------------------------------------------------
 # FRONTEND STATIC ROUTING
 # ---------------------------------------------------------
-if os.path.exists("css"):
-    app.mount("/css", StaticFiles(directory="css"), name="css")
-if os.path.exists("js"):
-    app.mount("/js", StaticFiles(directory="js"), name="js")
+css_dir = os.path.join(BASE_DIR, "css")
+js_dir = os.path.join(BASE_DIR, "js")
+if os.path.exists(css_dir):
+    app.mount("/css", StaticFiles(directory=css_dir), name="css")
+if os.path.exists(js_dir):
+    app.mount("/js", StaticFiles(directory=js_dir), name="js")
+
+@app.get("/favicon.svg", include_in_schema=False)
+def serve_favicon():
+    return FileResponse(os.path.join(BASE_DIR, "favicon.svg"), media_type="image/svg+xml")
 
 @app.get("/")
 def serve_index():
-    return FileResponse("index.html")
+    return FileResponse(os.path.join(BASE_DIR, "index.html"))
 
 if __name__ == "__main__":
     import uvicorn
