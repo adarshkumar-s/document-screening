@@ -322,20 +322,44 @@ const drop=$('#drop'), fi=$('#fileInput');
 drop.onclick=()=>fi.click();
 drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag');};
 drop.ondragleave=()=>drop.classList.remove('drag');
-drop.ondrop=e=>{e.preventDefault();drop.classList.remove('drag');if(e.dataTransfer.files.length)upload(e.dataTransfer.files[0]);};
-fi.onchange=()=>{if(fi.files.length)upload(fi.files[0]);};
+drop.ondrop=e=>{
+  e.preventDefault();
+  drop.classList.remove('drag');
+  if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
+};
+fi.onchange=()=>{
+  if(fi.files.length) {
+    upload(fi.files[0]);
+    fi.value = ''; // Reset input to allow re-uploading the same file cleanly
+  }
+};
 
 async function upload(file){
-  $('#processing').classList.remove('hidden'); $('#result').classList.add('hidden');
-  const fd=new FormData(); fd.append('file',file);
+  $('#processing').classList.remove('hidden'); 
+  $('#result').classList.add('hidden');
+  
+  // Clear previous data
+  $('#quickHighlightsBody').innerHTML = '';
+  $('#step2Fields').innerHTML = '';
+  $('#step3Fields').innerHTML = '';
+  $('#ocrPreview').textContent = '';
+  $('#issuesBox').innerHTML = '';
+
+  const fd = new FormData(); 
+  fd.append('file', file);
   try{
-    const r = await fetch(authUrl('/api/process'),{method:'POST',
-      headers: token ? {'Authorization':'Bearer '+token} : {}, body:fd});
+    const r = await fetch(authUrl('/api/process'),{
+      method:'POST',
+      headers: token ? {'Authorization':'Bearer '+token} : {}, 
+      body: fd
+    });
     let d = null;
     try { d = await r.json(); } catch(err){}
     if(!r.ok) throw new Error((d && d.detail) || 'Upload failed with status ' + r.status);
     showResult(d);
-  }catch(e){alert('Processing error: '+e.message);}
+  }catch(e){
+    alert('Processing error: ' + e.message);
+  }
   $('#processing').classList.add('hidden');
 }
 
@@ -359,7 +383,15 @@ async function loadSamples(){
 }
 
 async function processSample(name){
-  $('#processing').classList.remove('hidden'); $('#result').classList.add('hidden');
+  $('#processing').classList.remove('hidden'); 
+  $('#result').classList.add('hidden');
+  
+  $('#quickHighlightsBody').innerHTML = '';
+  $('#step2Fields').innerHTML = '';
+  $('#step3Fields').innerHTML = '';
+  $('#ocrPreview').textContent = '';
+  $('#issuesBox').innerHTML = '';
+
   try{
     const d = await api('/api/process/sample/'+name,{method:'POST'});
     showResult(d);
