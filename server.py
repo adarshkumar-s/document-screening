@@ -266,7 +266,7 @@ FIELD_LABELS = {
         "پلاٹ نمبر"
     ],
     "area": [
-        "Area", "Plot Area", "Extent", "Land Area",
+        "Plot Area", "Land Area", "Area", "Extent",
         "क्षेत्रफल", "रकबा", "जमीन क्षेत्रफल",
         "பரப்பளவு", "நிலப்பரப்பு",
         "విస్తీర్ణం", "భూవిస్తీర్ణం",
@@ -279,7 +279,7 @@ FIELD_LABELS = {
         "رقبہ", "رقبہ/رقبہ"
     ],
     "village": [
-        "Village", "Village Name", "Gram",
+        "Village Name", "Village", "Gram",
         "ग्राम", "गाँव", "गाव", "ग्रामाचे नाव",
         "கிராமம்", "கிராமத்தின் பெயர்",
         "గ్రామం", "గ్రామం పేరు",
@@ -303,7 +303,7 @@ FIELD_LABELS = {
         "تحصیل", "تعلقہ"
     ],
     "district": [
-        "District", "District Name",
+        "District Name", "District", "Dietrict",
         "जिला", "जिल्हा",
         "மாவட்டம்", "மாவட்டத்தின் பெயர்",
         "జిల్లా", "జిల్లా పేరు",
@@ -315,7 +315,7 @@ FIELD_LABELS = {
         "ضلع", "ضلع کا نام"
     ],
     "state": [
-        "State", "State Name",
+        "State Name", "State",
         "राज्य",
         "மாநிலம்",
         "రాష్ట్రం",
@@ -327,7 +327,7 @@ FIELD_LABELS = {
         "ریاست"
     ],
     "land_class": [
-        "Land Class", "Land Classification", "Land Type",
+        "Land Classification", "Land Class", "Land Type", "Cand type",
         "भूमि का प्रकार", "भूमि प्रकार", "भू-वर्गीकरण", "श्रेणी",
         "நில வகை", "நிலத்தின் வகை",
         "భూమి రకం", "భూ వర్గీకరణ",
@@ -372,7 +372,7 @@ FIELD_LABELS = {
         "రిజిస్ట్రేషన్ నంబర్", "రిజిస్ట్రేషన్ సంఖ్య",
         "नोंदणी क्रमांक", "नोंदणी नंबर",
         "નોંધણી નંબર", "રજિસ્ટ્રેશન નંબર",
-        "নিবন্ধন নম্বর", "রেজিস্ট್ರেশন নম্বর",
+        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর",
         "ਰਜਿਸਟ੍ਰੇਸ਼ਨ ਨੰਬਰ", "ਰਜਿਸਟਰੀ ਨੰਬਰ",
         "ನೋಂದಣಿ ಸಂಖ್ಯೆ", "ರಿಜಿಸ್ಟ್ರೇಶನ್ ನಂಬರ್",
         "ପଞ୍ଜିକରଣ ନମ୍ବର", "ରେଜିଷ୍ଟ୍ରେସନ ନମ୍ବର",
@@ -407,6 +407,17 @@ LANGUAGE_SCRIPT_RANGES = {
     "English": (0x0041, 0x007A),
 }
 
+# Master list of all field identifiers across languages for boundary stopping
+ALL_LABEL_WORDS = []
+for labels in FIELD_LABELS.values():
+    ALL_LABEL_WORDS.extend(labels)
+ALL_LABEL_WORDS.extend([
+    "Dietrict", "Cand type", "Land type", "Tehsil", "Huzur", 
+    "Owner name", "Record Holder", "Khasra", "Khata", "Survey", "Mutation"
+])
+ALL_LABEL_WORDS = sorted(list(set(ALL_LABEL_WORDS)), key=len, reverse=True)
+LABEL_STOP_REGEX = r"(?=\s*(?:" + "|".join(re.escape(w) for w in ALL_LABEL_WORDS) + r")\s*[:：\-]|\n|$)"
+
 def normalize_text(text: str) -> str:
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     return re.sub(r"[ \t]+", " ", text)
@@ -416,13 +427,23 @@ def normalize_digits(text: str) -> str:
 
 def clean_extracted_value(value: str, numeric: bool = False) -> str:
     value = (value or "").strip(" \t:|-")
+    
+    # Inline boundary truncate if another label was included in the captured group
+    for lbl in [
+        "Survey No", "Survey", "Khasra No", "Khasra", "Khata No", "Khata", 
+        "Area", "Tehsil", "Dietrict", "District", "Owner name", "Owner", 
+        "Mutation No", "Mutation", "Cand type", "Land type"
+    ]:
+        m = re.search(rf"\b{re.escape(lbl)}\b\s*[:：\-]?", value, re.IGNORECASE)
+        if m and m.start() > 0:
+            value = value[:m.start()].strip()
+            
     value = re.sub(r"\s{2,}", " ", value)
     if numeric:
         value = normalize_digits(value)
-        value = re.sub(r"\s+", "", value)
-    return value.strip()
+        value = re.sub(r"[^\d\/\.\-]", "", value)
+    return value.strip(" \t:|-")
 
-# Blacklist filters to prevent table headers/column indices from becoming names
 INVALID_NAME_PATTERNS = [
     r"^record\s*holder",
     r"^land\s*owner",
@@ -477,7 +498,7 @@ def detect_language_from_text(text: str) -> str:
 def field_pattern(key: str) -> str:
     labels = sorted(FIELD_LABELS[key], key=len, reverse=True)
     escaped = "|".join(re.escape(x) for x in labels)
-    return rf"(?:{escaped})\s*[:：\-]?\s*([^\n|,;]+)"
+    return rf"(?:{escaped})\s*[:：\-]?\s*(.*?){LABEL_STOP_REGEX}"
 
 def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optional[bytes] = None,
                             languages: Optional[list[str]] = None, pages: int = 1,
@@ -495,7 +516,8 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
     for key in FIELD_KEYS:
         match = re.search(field_pattern(key), text, flags=re.IGNORECASE)
         if match:
-            value = clean_extracted_value(match.group(1), numeric=(key in numeric_keys))
+            raw_val = match.group(1)
+            value = clean_extracted_value(raw_val, numeric=(key in numeric_keys))
             if value:
                 base = 0.88 if mean_ocr_conf is None else min(0.96, max(0.72, mean_ocr_conf / 100))
                 fields[key] = {"value": value, "confidence": round(base, 2)}
@@ -514,7 +536,7 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
             line_clean = line.lower().strip()
             if any(hdr in line_clean for hdr in name_headers):
                 parts = re.split(r"[:：\-]", line, maxsplit=1)
-                if len(parts) > 1 and is_valid_name(parts[1]):
+                if len(parts) > 1 and is_valid_name(clean_extracted_value(parts[1])):
                     fields["owner_name"] = {"value": clean_extracted_value(parts[1]), "confidence": 0.88}
                     break
 
@@ -534,7 +556,7 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
             text
         )
         if honorific_match and is_valid_name(honorific_match.group(0)):
-            fields["owner_name"] = {"value": honorific_match.group(0).strip(), "confidence": 0.82}
+            fields["owner_name"] = {"value": clean_extracted_value(honorific_match.group(0)), "confidence": 0.82}
 
     # 3. Validation assessment
     issues = []
