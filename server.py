@@ -11,17 +11,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from PIL import Image
-from PIL import ImageOps
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 
-# Safe optional PDF handling
+# PDF processing
 try:
     import pypdfium2 as pdfium
     HAS_PDFIUM = True
 except ImportError:
     HAS_PDFIUM = False
 
-# Optional OCR integration
+# Tesseract OCR integration
 try:
     import pytesseract
     tesseract_cmd = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -171,11 +170,11 @@ class UpdateUserReq(BaseModel):
     is_active: Optional[bool] = None
 
 # ---------------------------------------------------------
-# DYNAMIC OCR PARSER & PIPELINE
+# INDIC OCR ENGINE & SCRIPT DISPATCHER
 # ---------------------------------------------------------
 
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
     "012345678901234567890123456789"
 )
 
@@ -192,11 +191,12 @@ FIELD_LABELS = {
         "Record Holder", "Landowner", "Land Owner", "Owner",
         "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम",
         "भूमि स्वामी", "खातेदार", "भूमिधारक", "मालिक",
+        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "মালিকের নাম", "রায়তের নাম",
+        "জমির মালিক", "খতিয়ানধারী", "রায়ত",
+        "भूमिधारकाचे नाव", "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव",
         "உரிமையாளர் பெயர்", "நில உரிமையாளர்", "பட்டாதாரர் பெயர்", "மாலிகர் பெயர்",
         "భూ యజమాని పేరు", "భూమి యజమాని", "పట్టాదారు పేరు", "యజమాని పేరు",
-        "भूमिधारकाचे नाव", "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव",
         "જમીન માલિકનું નામ", "ખાતેદારનું નામ", "માલિકનું નામ",
-        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "মালিকের নাম",
         "ਜ਼ਮੀਨ ਮਾਲਕ ਦਾ ਨਾਮ", "ਖਾਤੇਦਾਰ ਦਾ ਨਾਮ", "ਮਾਲਕ ਦਾ ਨਾਮ",
         "ಭೂ ಮಾಲೀಕರ ಹೆಸರು", "ಖಾತೆದಾರರ ಹೆಸರು", "ಮಾಲೀಕರ ಹೆಸರು",
         "ଜମି ମାଲିକଙ୍କ ନାମ", "ଖାତାଧାରୀଙ୍କ ନାମ",
@@ -204,12 +204,12 @@ FIELD_LABELS = {
     ],
     "father_name": [
         "Father's Name", "Father Name", "Husband Name", "Guardian Name",
-        "पिता का नाम", "पिता/पति", "पति का नाम",
+        "पिता का नाम", "पिता/पति", "पति का नाम", "पिता", "पति",
+        "পিতার নাম", "স্বামীর নাম", "অভিভাবকের নাম", "পিতা", "স্বামী",
+        "वडिलांचे नाव", "पतीचे नाव",
         "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்",
         "తండ్రి పేరు", "భర్త పేరు", "తండ్రి/భర్త పేరు",
-        "वडिलांचे नाव", "पतीचे नाव",
         "પિતાનું નામ", "પતિનું નામ",
-        "পিতার নাম", "স্বামীর নাম",
         "ਪਿਤਾ ਦਾ ਨਾਮ", "ਪਤੀ ਦਾ ਨਾਮ",
         "ತಂದೆಯ ಹೆಸರು", "ಗಂಡನ ಹೆಸರು",
         "ପିତାଙ୍କ ନାମ", "ସ୍ୱାମୀଙ୍କ ନାମ",
@@ -218,22 +218,22 @@ FIELD_LABELS = {
     "survey_number": [
         "Survey Number", "Survey No", "Survey",
         "सर्वे नंबर", "सर्वेक्षण संख्या", "सर्वे क्रमांक", "सर्वे नं",
+        "সার্ভে নম্বর", "সার্ভে নং", "জরিপ নম্বর", "জরিপ নং",
         "சர்வே எண்", "சர்வே எண்.", "சர்வே நம்பர்",
         "సర్వే నంబర్", "సర్వే నెం",
         "સર્વે નંબર", "સર્વે ક્રમાંક",
-        "সার্ভে নম্বর", "জরিপ নম্বর",
         "ਸਰਵੇ ਨੰਬਰ", "ਸਰਵੇ ਨੰ.",
         "ಸರ್ವೆ ಸಂಖ್ಯೆ", "ಸರ್ವೇ ನಂಬರ್",
         "ସର୍ଭେ ନମ୍ବର",
         "سروے نمبر"
     ],
     "khasra_number": [
-        "Khasra Number", "Khasra No",
-        "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक",
+        "Khasra Number", "Khasra No", "Khasra",
+        "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा नं", "खसरा",
+        "খসড়া নম্বর", "খসরা নম্বর", "দাগ নম্বর", "দাগ নং",
         "கசரா எண்", "கச்ரா எண்",
         "ఖస్రా నంబర్",
         "ખસરા નંબર", "ખસરા ક્રમાંક",
-        "খসড়া নম্বর", "খসরা নম্বর",
         "ਖਸਰਾ ਨੰਬਰ",
         "ಖಸ್ರಾ ಸಂಖ್ಯೆ",
         "ଖସରା ନମ୍ବର",
@@ -241,12 +241,12 @@ FIELD_LABELS = {
     ],
     "khata_number": [
         "Khata Number", "Khata No", "Khata",
-        "खाता नंबर", "खाता संख्या", "खाता क्र.",
+        "खाता नंबर", "खाता संख्या", "खाता क्र.", "खाता नं", "खाता",
+        "খাতা নম্বর", "খতিয়ান নম্বর", "খতিয়ান নং", "খাতা নং",
+        "खाते क्रमांक", "खाता क्रमांक",
         "கணக்கு எண்", "கதா எண்", "காத்தா எண்",
         "ఖాతా నంబర్", "ఖాతా సంఖ్య",
-        "खाते क्रमांक", "खाता क्रमांक",
         "ખાતા નંબર", "ખાતા ક્રમાંક",
-        "খাতা নম্বর", "খতিয়ান নম্বর",
         "ਖਾਤਾ ਨੰਬਰ", "ਖਾਤਾ ਨੰ.",
         "ಖಾತೆ ಸಂಖ್ಯೆ",
         "ଖାତା ନମ୍ବର",
@@ -254,12 +254,11 @@ FIELD_LABELS = {
     ],
     "plot_number": [
         "Plot Number", "Plot No", "Plot",
-        "प्लॉट नंबर", "प्लॉट संख्या",
+        "प्लॉट नंबर", "प्लॉट संख्या", "प्लॉट क्रमांक",
+        "প্লট নম্বর", "প্লট নং", "দাগ নম্বর",
         "மனை எண்", "பிளாட் எண்",
         "ప్లాట్ నంబర్",
-        "प्लॉट क्रमांक",
         "પ્લોટ નંબર",
-        "প্লট নম্বর",
         "ਪਲਾਟ ਨੰਬਰ",
         "ಪ್ಲಾಟ್ ಸಂಖ್ಯೆ",
         "ପ୍ଲଟ୍ ନମ୍ବର",
@@ -268,35 +267,35 @@ FIELD_LABELS = {
     "area": [
         "Plot Area", "Land Area", "Area", "Extent",
         "क्षेत्रफल", "रकबा", "जमीन क्षेत्रफल",
+        "জমির পরিমাণ", "ক্ষেত্রফল", "কালি",
+        "क्षेत्रफळ", "जमिनीचे क्षेत्रफळ",
         "பரப்பளவு", "நிலப்பரப்பு",
         "విస్తీర్ణం", "భూవిస్తీర్ణం",
-        "क्षेत्रफळ", "जमिनीचे क्षेत्रफळ",
         "વિસ્તાર", "જમીનનું ક્ષેત્રફળ",
-        "জমির পরিমাণ", "ক্ষেত্রফল",
         "ਰਕਬਾ", "ਖੇਤਰਫਲ",
         "ವಿಸ್ತೀರ್ಣ", "ಭೂ ವಿಸ್ತೀರ್ಣ",
         "କ୍ଷେତ୍ରଫଳ", "ଜମିର ପରିମାଣ",
         "رقبہ", "رقبہ/رقبہ"
     ],
     "village": [
-        "Village Name", "Village", "Gram",
-        "ग्राम", "गाँव", "गाव", "ग्रामाचे नाव",
+        "Village Name", "Village", "Gram", "Mauza",
+        "ग्राम", "गाँव", "गाव", "ग्रामाचे नाव", "मौजा",
+        "গ্রাম", "গ্রামের নাম", "মৌজা",
         "கிராமம்", "கிராமத்தின் பெயர்",
         "గ్రామం", "గ్రామం పేరు",
         "ગામ", "ગામનું નામ",
-        "গ্রাম", "গ্রামের নাম",
         "ਪਿੰਡ", "ਪਿੰਡ ਦਾ ਨਾਮ",
         "ಗ್ರಾಮ", "ಗ್ರಾಮದ ಹೆಸರು",
         "ଗ୍ରାମ", "ଗାଁ",
         "گاؤں", "موضع"
     ],
     "tehsil": [
-        "Tehsil", "Taluk", "Taluka", "Mandal", "Tahsil",
+        "Tehsil", "Taluk", "Taluka", "Mandal", "Tahsil", "Block",
         "तहसील", "तालुका", "मंडल",
+        "তহশিল", "উপজেলা", "ব্লক", "থানা",
         "தாலுகா", "வட்டம்",
         "తహసీల్", "తాలూకా", "మండలం",
         "તાલુકો", "તાલુકા",
-        "তহশিল", "উপজেলা",
         "ਤਹਿਸੀਲ", "ਤਾਲੂਕਾ",
         "ತಾಲ್ಲೂಕು", "ತಹಶೀಲ್ದಾರ್",
         "ତହସିଲ", "ତାଲୁକା",
@@ -305,10 +304,10 @@ FIELD_LABELS = {
     "district": [
         "District Name", "District", "Dietrict",
         "जिला", "जिल्हा",
+        "জেলা", "জেলার নাম",
         "மாவட்டம்", "மாவட்டத்தின் பெயர்",
         "జిల్లా", "జిల్లా పేరు",
         "જિલ્લો", "જિલ્લાનું નામ",
-        "জেলা", "জেলার নাম",
         "ਜ਼ਿਲ੍ਹਾ", "ਜ਼ਿਲ੍ਹੇ ਦਾ ਨਾਮ",
         "ಜಿಲ್ಲೆ", "ಜಿಲ್ಲೆಯ ಹೆಸರು",
         "ଜିଲ୍ଲା", "ଜିଲ୍ଲାର ନାମ",
@@ -317,10 +316,10 @@ FIELD_LABELS = {
     "state": [
         "State Name", "State",
         "राज्य",
+        "রাজ্য",
         "மாநிலம்",
         "రాష్ట్రం",
         "રાજ્ય",
-        "রাজ্য",
         "ਰਾਜ", "ਰਾਜ ਦਾ ਨਾਮ",
         "ರಾಜ್ಯ",
         "ରାଜ୍ୟ",
@@ -328,12 +327,12 @@ FIELD_LABELS = {
     ],
     "land_class": [
         "Land Classification", "Land Class", "Land Type", "Cand type",
-        "भूमि का प्रकार", "भूमि प्रकार", "भू-वर्गीकरण", "श्रेणी",
+        "भूमि का प्रकार", "भूमि प्रकार", "भू-वर्गीकरण", "श्रेणी", "किस्म जमीन",
+        "জমির ধরন", "জমির শ্রেণী", "শ্রেণী",
         "நில வகை", "நிலத்தின் வகை",
         "భూమి రకం", "భూ వర్గీకరణ",
         "जमिनीचा प्रकार", "भूमीचा प्रकार",
         "જમીનનો પ્રકાર",
-        "জমির ধরন",
         "ਜ਼ਮੀਨ ਦੀ ਕਿਸਮ",
         "ಭೂಮಿಯ ಪ್ರಕಾರ",
         "ଜମିର ପ୍ରକାର",
@@ -342,11 +341,11 @@ FIELD_LABELS = {
     "ownership_type": [
         "Ownership Type", "Ownership",
         "स्वामित्व प्रकार", "स्वामित्व",
+        "মালিকানার ধরন", "মালিকানা",
         "உரிமை வகை", "உரிமை",
         "యాజమాన్య రకం", "యాజమాన్యం",
         "मालकी हक्क", "मालकी प्रकार",
         "માલિકી પ્રકાર", "માલિકી",
-        "মালিকানার ধরন", "মালিকানা",
         "ਮਾਲਕੀ ਕਿਸਮ", "ਮਾਲਕੀ",
         "ಮಾಲೀಕತ್ವದ ಪ್ರಕಾರ", "ಮಾಲೀಕತ್ವ",
         "ମାଲିକାନା ପ୍ରକାର", "ମାଲିକାନା",
@@ -354,12 +353,12 @@ FIELD_LABELS = {
     ],
     "mutation_no": [
         "Mutation Number", "Mutation No", "Mutation",
-        "नामांतरण संख्या", "नामांतरण नंबर", "दाखिल खारिज नंबर",
+        "नामांतरण संख्या", "नामांतरण नंबर", "दाखिल खारिज नंबर", "दाखिल खारिज",
+        "নামজারি নম্বর", "নামজারি নং", "মিউটেশন নম্বর", "দাখিল খারিজ",
         "பட்டா மாற்றம் எண்", "மாற்று எண்",
         "మ్యూటేషన్ నంబర్", "మార్పిడి నంబర్",
         "फेरफार क्रमांक", "नामांतरण क्रमांक",
         "મ્યુટેશન નંબર", "નામ ફેરફાર નંબર",
-        "নামজারি নম্বর", "মিউটেশন নম্বর",
         "ਮਿਊਟੇਸ਼ਨ ਨੰਬਰ", "ਇੰਤਕਾਲ ਨੰਬਰ",
         "ಮ್ಯುಟೇಶನ್ ಸಂಖ್ಯೆ", "ಖಾತೆ ಬದಲಾವಣೆ ಸಂಖ್ಯೆ",
         "ମ୍ୟୁଟେସନ ନମ୍ବର", "ନାମାନ୍ତରଣ ନମ୍ବର",
@@ -368,11 +367,11 @@ FIELD_LABELS = {
     "registration_no": [
         "Registration Number", "Registration No", "Reg No",
         "पंजीकरण संख्या", "पंजीकरण नंबर",
+        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর", "দলিল নম্বর", "দলিল নং",
         "பதிவு எண்", "பதிவு எண்ண",
         "రిజిస్ట్రేషన్ నంబర్", "రిజిస్ట్రేషన్ సంఖ్య",
         "नोंदणी क्रमांक", "नोंदणी नंबर",
         "નોંધણી નંબર", "રજિસ્ટ્રેશન નંબર",
-        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর",
         "ਰਜਿਸਟ੍ਰੇਸ਼ਨ ਨੰਬਰ", "ਰਜਿਸਟਰੀ ਨੰਬਰ",
         "ನೋಂದಣಿ ಸಂಖ್ಯೆ", "ರಿಜಿಸ್ಟ್ರೇಶನ್ ನಂಬರ್",
         "ପଞ୍ଜିକରଣ ନମ୍ବର", "ରେଜିଷ୍ଟ୍ରେସନ ନମ୍ବର",
@@ -381,11 +380,11 @@ FIELD_LABELS = {
     "khatauni_year": [
         "Khatauni Year", "Fasli Year", "Record Year", "Year",
         "खतौनी वर्ष", "फसली वर्ष", "वर्ष",
+        "খতিয়ান বছর", "সন", "সাল", "বছর",
         "பட்டா ஆண்டு", "ஆண்டு",
         "ఖతౌని సంవత్సరం", "సంవత్సరం",
         "खतावणी वर्ष",
         "ખતૌની વર્ષ", "વર્ષ",
-        "খতিয়ান বছর", "বছর",
         "ਖਤੌਨੀ ਸਾਲ", "ਸਾਲ",
         "ಖಾತೆ ವರ್ಷ", "ವರ್ಷ",
         "ଖତିଆନ ବର୍ଷ", "ବର୍ଷ",
@@ -395,11 +394,11 @@ FIELD_LABELS = {
 
 LANGUAGE_SCRIPT_RANGES = {
     "Hindi": (0x0900, 0x097F),
+    "Bengali": (0x0980, 0x09FF),
     "Marathi": (0x0900, 0x097F),
     "Tamil": (0x0B80, 0x0BFF),
     "Telugu": (0x0C00, 0x0C7F),
     "Gujarati": (0x0A80, 0x0AFF),
-    "Bengali": (0x0980, 0x09FF),
     "Punjabi": (0x0A00, 0x0A7F),
     "Kannada": (0x0C80, 0x0CFF),
     "Odia": (0x0B00, 0x0B7F),
@@ -407,7 +406,6 @@ LANGUAGE_SCRIPT_RANGES = {
     "English": (0x0041, 0x007A),
 }
 
-# Master list of all field identifiers across languages for boundary stopping
 ALL_LABEL_WORDS = []
 for labels in FIELD_LABELS.values():
     ALL_LABEL_WORDS.extend(labels)
@@ -427,12 +425,10 @@ def normalize_digits(text: str) -> str:
 
 def clean_extracted_value(value: str, numeric: bool = False) -> str:
     value = (value or "").strip(" \t:|-")
-    
-    # Inline boundary truncate if another label was included in the captured group
     for lbl in [
         "Survey No", "Survey", "Khasra No", "Khasra", "Khata No", "Khata", 
         "Area", "Tehsil", "Dietrict", "District", "Owner name", "Owner", 
-        "Mutation No", "Mutation", "Cand type", "Land type"
+        "Mutation No", "Mutation", "Cand type", "Land type", "দাগ নং", "খতিয়ান নং"
     ]:
         m = re.search(rf"\b{re.escape(lbl)}\b\s*[:：\-]?", value, re.IGNORECASE)
         if m and m.start() > 0:
@@ -449,7 +445,9 @@ INVALID_NAME_PATTERNS = [
     r"^land\s*owner",
     r"^खातेदार",
     r"^भूमि\s*स्वामी",
-    r"^नाम\b",
+    r"^মালিক",
+    r"^রায়ত",
+    r"^নাম\b",
     r"^name\b",
     r"^owner\b",
     r"^column\b",
@@ -512,7 +510,7 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-    # 1. Parse standard fields with regex patterns
+    # 1. Regex Entity Matching
     for key in FIELD_KEYS:
         match = re.search(field_pattern(key), text, flags=re.IGNORECASE)
         if match:
@@ -522,14 +520,15 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
                 base = 0.88 if mean_ocr_conf is None else min(0.96, max(0.72, mean_ocr_conf / 100))
                 fields[key] = {"value": value, "confidence": round(base, 2)}
 
-    # 2. Strict validation & multi-line fallback for owner_name
+    # 2. Heuristic Owner Name Extraction
     extracted_name = fields["owner_name"]["value"]
     if not is_valid_name(extracted_name):
         fields["owner_name"] = {"value": "", "confidence": 0.0}
 
         name_headers = [
             "record holder", "landowner", "land owner", "owner name",
-            "खातेदार का नाम", "भूमि स्वामी", "खातेदार", "मालक", "பட்டாதாரர்"
+            "खातेदार का नाम", "भूमि स्वामी", "खातेदार", "मालक", "பட்டாதாரர்",
+            "মালিকের নাম", "রায়তের নাম", "খতিয়ানধারীর নাম"
         ]
         
         for idx, line in enumerate(lines):
@@ -549,26 +548,26 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
                 if fields["owner_name"]["value"]:
                     break
 
-    # Fallback to honorific titles if owner_name is still blank
+    # 3. Honorific Title Fallback
     if not fields["owner_name"]["value"]:
         honorific_match = re.search(
-            r"\b(श्री|श्रीमती|मोहम्मद|Shri|Smt|Mr\.|Mrs\.)\s+([A-Za-z\u0900-\u0D7F]+(?:\s+[A-Za-z\u0900-\u0D7F]+){1,3})",
+            r"\b(श्री|श्रीमती|मोहम्मद|শ্রী|শ্রীমতি|Shri|Smt|Mr\.|Mrs\.)\s+([A-Za-z\u0900-\u0D7F]+(?:\s+[A-Za-z\u0900-\u0D7F]+){1,3})",
             text
         )
         if honorific_match and is_valid_name(honorific_match.group(0)):
             fields["owner_name"] = {"value": clean_extracted_value(honorific_match.group(0)), "confidence": 0.82}
 
-    # 3. Validation assessment
+    # 4. Rule Validation
     issues = []
     if not text.strip():
         issues.append({
             "severity": "error",
-            "msg": "No OCR text was detected. Check image quality, Tesseract, and language data."
+            "msg": "No OCR text was detected. Check image contrast, lighting, or language models."
         })
     if not fields["owner_name"]["value"]:
         issues.append({
             "severity": "warning",
-            "msg": "Record-holder name was not found in OCR text and has been left blank for review."
+            "msg": "Record-holder name was not detected. Please verify manually."
         })
 
     if mean_ocr_conf is not None and mean_ocr_conf < 70:
@@ -592,21 +591,37 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
         "ocr_text": text,
     }
 
+# ---------------------------------------------------------
+# IMAGE PREPROCESSING & TARGETED SCRIPT EXECUTION
+# ---------------------------------------------------------
 def preprocess_image(image: Image.Image) -> Image.Image:
+    """Preprocesses document images to preserve Indic matras and fine strokes."""
+    # 1. Orientation correction & convert to grayscale
     image = ImageOps.exif_transpose(image).convert("L")
-    image = ImageOps.autocontrast(image)
-    if image.width < 1400:
-        scale = 1400 / max(1, image.width)
-        image = image.resize((int(image.width * scale), int(image.height * scale)))
+    
+    # 2. Upscale small images (Tesseract Indic works best at 1800px+ width)
+    if image.width < 1800:
+        scale = 1800 / max(1, image.width)
+        image = image.resize((int(image.width * scale), int(image.height * scale)), Image.Resampling.LANCZOS)
+
+    # 3. Contrast enhancement & subtle sharpening for faded ink
+    image = ImageOps.autocontrast(image, cutoff=2)
+    enhancer = ImageEnhance.Sharpness(image)
+    image = enhancer.enhance(1.4)
     return image
 
-def ocr_page(image: Image.Image, lang: str) -> tuple[str, float]:
-    data = pytesseract.image_to_data(
-        image,
-        lang=lang,
-        config="--oem 1 --psm 6",
-        output_type=pytesseract.Output.DICT,
-    )
+def ocr_page_with_lang(image: Image.Image, lang_code: str) -> tuple[str, float]:
+    """Runs Tesseract with PSM 3 (automatic segmentation) to handle tabular land documents."""
+    try:
+        data = pytesseract.image_to_data(
+            image,
+            lang=lang_code,
+            config="--oem 1 --psm 3",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception:
+        return "", 0.0
+
     words = []
     confidences = []
     for i, word in enumerate(data.get("text", [])):
@@ -623,20 +638,43 @@ def ocr_page(image: Image.Image, lang: str) -> tuple[str, float]:
     conf = sum(confidences) / len(confidences) if confidences else 0.0
     return text, conf
 
+def get_best_ocr_result(image: Image.Image, installed: list[str]) -> tuple[str, float]:
+    """
+    Executes targeted language combinations rather than overloading all 11 scripts at once.
+    This prevents cross-script corruption between Devanagari, Bengali, and Dravidian characters.
+    """
+    candidate_scripts = []
+    if "hin" in installed:
+        candidate_scripts.append("eng+hin")
+    if "ben" in installed:
+        candidate_scripts.append("eng+ben")
+    if "mar" in installed and "eng+hin" not in candidate_scripts:
+        candidate_scripts.append("eng+mar")
+    
+    # Fallback to English if none matched
+    if not candidate_scripts:
+        candidate_scripts.append("eng")
+
+    best_text = ""
+    best_conf = -1.0
+
+    for cand in candidate_scripts:
+        text, conf = ocr_page_with_lang(image, cand)
+        if conf > best_conf:
+            best_conf = conf
+            best_text = text
+
+    return best_text, max(0.0, best_conf)
+
 def run_ocr_pipeline(file_bytes: Optional[bytes], filename: str) -> Dict[str, Any]:
     if not HAS_TESSERACT:
-        raise HTTPException(status_code=503, detail="OCR is unavailable: pytesseract is not installed.")
+        raise HTTPException(status_code=503, detail="OCR engine is unavailable: pytesseract not found.")
     if not file_bytes:
         raise HTTPException(status_code=422, detail="The uploaded file is empty.")
 
     installed = installed_tesseract_languages()
     if "eng" not in installed:
-        raise HTTPException(status_code=503, detail="Tesseract English language data (eng) is required.")
-    if len(installed) < len(TESSERACT_LANGUAGE_CODES):
-        missing = [c for c in TESSERACT_LANGUAGE_CODES if c not in installed]
-        language_warning = "Missing Tesseract language data: " + ", ".join(missing)
-    else:
-        language_warning = ""
+        raise HTTPException(status_code=503, detail="Tesseract English language model (eng) is required.")
 
     try:
         images = []
@@ -650,28 +688,26 @@ def run_ocr_pipeline(file_bytes: Optional[bytes], filename: str) -> Dict[str, An
             max_pages = min(page_count, 10)
             for idx in range(max_pages):
                 page = pdf[idx]
-                images.append(page.render(scale=2.2).to_pil())
+                images.append(page.render(scale=2.5).to_pil())
         else:
             image = Image.open(io.BytesIO(file_bytes))
             image.verify()
             image = Image.open(io.BytesIO(file_bytes))
             images = [image]
 
-        available_langs = [c for c in TESSERACT_LANGUAGE_CODES if c in installed]
-        lang = "+".join(available_langs)
-
         page_texts = []
         page_confs = []
-        for image in images:
-            processed = preprocess_image(image)
-            text, conf = ocr_page(processed, lang)
+        for img in images:
+            processed = preprocess_image(img)
+            text, conf = get_best_ocr_result(processed, installed)
             page_texts.append(text)
             page_confs.append(conf)
 
         raw_text = "\n".join(t for t in page_texts if t).strip()
         mean_ocr_conf = int(round(sum(page_confs) / len(page_confs))) if page_confs else 0
-        languages = [LANGUAGE_NAMES[c] for c in available_langs]
-        result = extract_fields_from_ocr(
+        languages = [LANGUAGE_NAMES[c] for c in installed if c in LANGUAGE_NAMES]
+
+        return extract_fields_from_ocr(
             raw_text,
             filename=filename,
             file_bytes=file_bytes,
@@ -679,23 +715,13 @@ def run_ocr_pipeline(file_bytes: Optional[bytes], filename: str) -> Dict[str, An
             pages=len(images),
             mean_ocr_conf=mean_ocr_conf,
         )
-        if language_warning:
-            result["validation"]["issues"].append({"severity": "warning", "msg": language_warning})
-            result["validation"]["verdict"] = "review"
-        return result
 
     except pytesseract.TesseractNotFoundError:
-        raise HTTPException(
-            status_code=503,
-            detail="OCR engine is unavailable. Install Tesseract and the required language data."
-        )
+        raise HTTPException(status_code=503, detail="Tesseract binary not found on the server.")
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="The uploaded file could not be processed as a supported document."
-        ) from exc
+        raise HTTPException(status_code=422, detail="The uploaded file could not be parsed.") from exc
 
 # ---------------------------------------------------------
 # AUTHENTICATION ENDPOINTS
@@ -1036,7 +1062,6 @@ def get_corrections(user: dict = Depends(get_current_user)):
 
 @app.get("/api/ai/training-data")
 def get_training_data(user: dict = Depends(get_current_user)):
-    """Return verified OCR/extraction examples for the AI training/evaluation pipeline."""
     if user["role"] not in ["verifier", "admin"]:
         raise HTTPException(status_code=403, detail="Verifier role required")
     with get_db() as conn:
