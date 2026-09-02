@@ -12,12 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
+from PIL import ImageOps
+import pypdfium2 as pdfium
 
 # Optional OCR integration
 try:
     import pytesseract
-    # Use an explicit Windows installation when available. TESSERACT_CMD can
-    # override this path for a different installation or deployment platform.
     tesseract_cmd = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
     if os.path.isfile(tesseract_cmd):
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
@@ -26,7 +26,14 @@ except ImportError:
     HAS_TESSERACT = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "land_records.db")
+DB_PATH = os.getenv("DB_PATH", os.path.join(BASE_DIR, "land_records.db"))
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+TESSERACT_LANGUAGE_CODES = ("eng", "hin", "tam", "tel", "mar", "guj", "ben", "pan", "kan", "ori", "urd")
+LANGUAGE_NAMES = {
+    "eng": "English", "hin": "Hindi", "tam": "Tamil", "tel": "Telugu", "mar": "Marathi",
+    "guj": "Gujarati", "ben": "Bengali", "pan": "Punjabi", "kan": "Kannada", "ori": "Odia", "urd": "Urdu",
+}
 app = FastAPI(title="DILRMP Land Records Digitization API")
 
 app.add_middleware(
@@ -46,6 +53,9 @@ def get_db():
     return conn
 
 def init_db():
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     with get_db() as conn:
         conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -69,9 +79,16 @@ def init_db():
             fields TEXT NOT NULL,
             validation TEXT NOT NULL,
             ocr_text TEXT NOT NULL,
+            detected_language TEXT NOT NULL DEFAULT 'unknown',
+            original_fields TEXT NOT NULL DEFAULT '{}',
             created_at REAL NOT NULL
         )
         """)
+        document_columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+        if "detected_language" not in document_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN detected_language TEXT NOT NULL DEFAULT 'unknown'")
+        if "original_fields" not in document_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN original_fields TEXT NOT NULL DEFAULT '{}'")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS corrections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,122 +167,506 @@ class UpdateUserReq(BaseModel):
 # ---------------------------------------------------------
 # DYNAMIC OCR PARSER & PIPELINE
 # ---------------------------------------------------------
-def extract_fields_from_ocr(raw_text: str, filename: str, file_bytes: Optional[bytes] = None) -> Dict[str, Any]:
-    fields = {
-        "owner_name": {"value": "", "confidence": 0.0},
-        "father_name": {"value": "", "confidence": 0.0},
-        "survey_number": {"value": "", "confidence": 0.0},
-        "khasra_number": {"value": "", "confidence": 0.0},
-        "khata_number": {"value": "", "confidence": 0.0},
-        "plot_number": {"value": "", "confidence": 0.0},
-        "area": {"value": "", "confidence": 0.0},
-        "village": {"value": "", "confidence": 0.0},
-        "tehsil": {"value": "", "confidence": 0.0},
-        "district": {"value": "", "confidence": 0.0},
-        "state": {"value": "", "confidence": 0.0},
-        "land_class": {"value": "", "confidence": 0.0},
-        "ownership_type": {"value": "", "confidence": 0.0},
-        "mutation_no": {"value": "", "confidence": 0.0},
-        "registration_no": {"value": "", "confidence": 0.0},
-        "khatauni_year": {"value": "", "confidence": 0.0}
+
+INDIC_DIGIT_MAP = str.maketrans(
+    "०१२३४५६७८९٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+    "012345678901234567890123456789"
+)
+
+FIELD_KEYS = (
+    "owner_name", "father_name", "survey_number", "khasra_number",
+    "khata_number", "plot_number", "area", "village", "tehsil",
+    "district", "state", "land_class", "ownership_type",
+    "mutation_no", "registration_no", "khatauni_year"
+)
+
+FIELD_LABELS = {
+    "owner_name": [
+        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name",
+        "Record Holder", "Landowner", "Land Owner", "Owner",
+        "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम",
+        "भूमि स्वामी", "खातेदार", "भूमिधारक", "मालिक",
+        "உரிமையாளர் பெயர்", "நில உரிமையாளர்", "பட்டாதாரர் பெயர்", "மாலிகர் பெயர்",
+        "భూ యజమాని పేరు", "భూమి యజమాని", "పట్టాదారు పేరు", "యజమాని పేరు",
+        "भूमिधारकाचे नाव", "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव",
+        "જમીન માલિકનું નામ", "ખાતેદારનું નામ", "માલિકનું નામ",
+        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "মালিকের নাম",
+        "ਜ਼ਮੀਨ ਮਾਲਕ ਦਾ ਨਾਮ", "ਖਾਤੇਦਾਰ ਦਾ ਨਾਮ", "ਮਾਲਕ ਦਾ ਨਾਮ",
+        "ಭೂ ಮಾಲೀಕರ ಹೆಸರು", "ಖಾತೆದಾರರ ಹೆಸರು", "ಮಾಲೀಕರ ಹೆಸರು",
+        "ଜମି ମାଲିକଙ୍କ ନାମ", "ଖାତାଧାରୀଙ୍କ ନାମ",
+        "زمین کے مالک کا نام", "مالک کا نام", "کھاتہ دار کا نام"
+    ],
+    "father_name": [
+        "Father's Name", "Father Name", "Husband Name", "Guardian Name",
+        "पिता का नाम", "पिता/पति", "पति का नाम",
+        "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்",
+        "తండ్రి పేరు", "భర్త పేరు", "తండ్రి/భర్త పేరు",
+        "वडिलांचे नाव", "पतीचे नाव",
+        "પિતાનું નામ", "પતિનું નામ",
+        "পিতার নাম", "স্বামীর নাম",
+        "ਪਿਤਾ ਦਾ ਨਾਮ", "ਪਤੀ ਦਾ ਨਾਮ",
+        "ತಂದೆಯ ಹೆಸರು", "ಗಂಡನ ಹೆಸರು",
+        "ପିତାଙ୍କ ନାମ", "ସ୍ୱାମୀଙ୍କ ନାମ",
+        "والد کا نام", "شوہر کا نام"
+    ],
+    "survey_number": [
+        "Survey Number", "Survey No", "Survey",
+        "सर्वे नंबर", "सर्वेक्षण संख्या", "सर्वे क्रमांक", "सर्वे नं",
+        "சர்வே எண்", "சர்வே எண்.", "சர்வே நம்பர்",
+        "సర్వే నంబర్", "సర్వే నెం",
+        "સર્વે નંબર", "સર્વે ક્રમાંક",
+        "সার্ভে নম্বর", "জরিপ নম্বর",
+        "ਸਰਵੇ ਨੰਬਰ", "ਸਰਵੇ ਨੰ.",
+        "ಸರ್ವೆ ಸಂಖ್ಯೆ", "ಸರ್ವೇ ನಂಬರ್",
+        "ସର୍ଭେ ନମ୍ବର",
+        "سروے نمبر"
+    ],
+    "khasra_number": [
+        "Khasra Number", "Khasra No",
+        "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक",
+        "கசரா எண்", "கச்ரா எண்",
+        "ఖస్రా నంబర్",
+        "ખસરા નંબર", "ખસરા ક્રમાંક",
+        "খসড়া নম্বর", "খসরা নম্বর",
+        "ਖਸਰਾ ਨੰਬਰ",
+        "ಖಸ್ರಾ ಸಂಖ್ಯೆ",
+        "ଖସରା ନମ୍ବର",
+        "خسرہ نمبر"
+    ],
+    "khata_number": [
+        "Khata Number", "Khata No", "Khata",
+        "खाता नंबर", "खाता संख्या", "खाता क्र.",
+        "கணக்கு எண்", "கதா எண்", "காத்தா எண்",
+        "ఖాతా నంబర్", "ఖాతా సంఖ్య",
+        "खाते क्रमांक", "खाता क्रमांक",
+        "ખાતા નંબર", "ખાતા ક્રમાંક",
+        "খাতা নম্বর", "খতিয়ান নম্বর",
+        "ਖਾਤਾ ਨੰਬਰ", "ਖਾਤਾ ਨੰ.",
+        "ಖಾತೆ ಸಂಖ್ಯೆ",
+        "ଖାତା ନମ୍ବର",
+        "کھاتہ نمبر"
+    ],
+    "plot_number": [
+        "Plot Number", "Plot No", "Plot",
+        "प्लॉट नंबर", "प्लॉट संख्या",
+        "மனை எண்", "பிளாட் எண்",
+        "ప్లాట్ నంబర్",
+        "प्लॉट क्रमांक",
+        "પ્લોટ નંબર",
+        "প্লট নম্বর",
+        "ਪਲਾਟ ਨੰਬਰ",
+        "ಪ್ಲಾಟ್ ಸಂಖ್ಯೆ",
+        "ପ୍ଲଟ୍ ନମ୍ବର",
+        "پلاٹ نمبر"
+    ],
+    "area": [
+        "Area", "Plot Area", "Extent", "Land Area",
+        "क्षेत्रफल", "रकबा", "जमीन क्षेत्रफल",
+        "பரப்பளவு", "நிலப்பரப்பு",
+        "విస్తీర్ణం", "భూవిస్తీర్ణం",
+        "क्षेत्रफळ", "जमिनीचे क्षेत्रफळ",
+        "વિસ્તાર", "જમીનનું ક્ષેત્રફળ",
+        "জমির পরিমাণ", "ক্ষেত্রফল",
+        "ਰਕਬਾ", "ਖੇਤਰਫਲ",
+        "ವಿಸ್ತೀರ್ಣ", "ಭೂ ವಿಸ್ತೀರ್ಣ",
+        "କ୍ଷେତ୍ରଫଳ", "ଜମିର ପରିମାଣ",
+        "رقبہ", "رقبہ/رقبہ"
+    ],
+    "village": [
+        "Village", "Village Name", "Gram",
+        "ग्राम", "गाँव", "गाव", "ग्रामाचे नाव",
+        "கிராமம்", "கிராமத்தின் பெயர்",
+        "గ్రామం", "గ్రామం పేరు",
+        "ગામ", "ગામનું નામ",
+        "গ্রাম", "গ্রামের নাম",
+        "ਪਿੰਡ", "ਪਿੰਡ ਦਾ ਨਾਮ",
+        "ಗ್ರಾಮ", "ಗ್ರಾಮದ ಹೆಸರು",
+        "ଗ୍ରାମ", "ଗାଁ",
+        "گاؤں", "موضع"
+    ],
+    "tehsil": [
+        "Tehsil", "Taluk", "Taluka", "Mandal", "Tahsil",
+        "तहसील", "तालुका", "मंडल",
+        "தாலுகா", "வட்டம்",
+        "తహసీల్", "తాలూకా", "మండలం",
+        "તાલુકો", "તાલુકા",
+        "তহশিল", "উপজেলা",
+        "ਤਹਿਸੀਲ", "ਤਾਲੂਕਾ",
+        "ತಾಲ್ಲೂಕು", "ತಹಶೀಲ್ದಾರ್",
+        "ତହସିଲ", "ତାଲୁକା",
+        "تحصیل", "تعلقہ"
+    ],
+    "district": [
+        "District", "District Name",
+        "जिला", "जिल्हा",
+        "மாவட்டம்", "மாவட்டத்தின் பெயர்",
+        "జిల్లా", "జిల్లా పేరు",
+        "જિલ્લો", "જિલ્લાનું નામ",
+        "জেলা", "জেলার নাম",
+        "ਜ਼ਿਲ੍ਹਾ", "ਜ਼ਿਲ੍ਹੇ ਦਾ ਨਾਮ",
+        "ಜಿಲ್ಲೆ", "ಜಿಲ್ಲೆಯ ಹೆಸರು",
+        "ଜିଲ୍ଲା", "ଜିଲ୍ଲାର ନାମ",
+        "ضلع", "ضلع کا نام"
+    ],
+    "state": [
+        "State", "State Name",
+        "राज्य",
+        "மாநிலம்",
+        "రాష్ట్రం",
+        "રાજ્ય",
+        "রাজ্য",
+        "ਰਾਜ", "ਰਾਜ ਦਾ ਨਾਮ",
+        "ರಾಜ್ಯ",
+        "ରାଜ୍ୟ",
+        "ریاست"
+    ],
+    "land_class": [
+        "Land Class", "Land Classification", "Land Type",
+        "भूमि का प्रकार", "भूमि प्रकार", "भू-वर्गीकरण", "श्रेणी",
+        "நில வகை", "நிலத்தின் வகை",
+        "భూమి రకం", "భూ వర్గీకరణ",
+        "जमिनीचा प्रकार", "भूमीचा प्रकार",
+        "જમીનનો પ્રકાર",
+        "জমির ধরন",
+        "ਜ਼ਮੀਨ ਦੀ ਕਿਸਮ",
+        "ಭೂಮಿಯ ಪ್ರಕಾರ",
+        "ଜମିର ପ୍ରକାର",
+        "زمین کی قسم"
+    ],
+    "ownership_type": [
+        "Ownership Type", "Ownership",
+        "स्वामित्व प्रकार", "स्वामित्व",
+        "உரிமை வகை", "உரிமை",
+        "యాజమాన్య రకం", "యాజమాన్యం",
+        "मालकी हक्क", "मालकी प्रकार",
+        "માલિકી પ્રકાર", "માલિકી",
+        "মালিকানার ধরন", "মালিকানা",
+        "ਮਾਲਕੀ ਕਿਸਮ", "ਮਾਲਕੀ",
+        "ಮಾಲೀಕತ್ವದ ಪ್ರಕಾರ", "ಮಾಲೀಕತ್ವ",
+        "ମାଲିକାନା ପ୍ରକାର", "ମାଲିକାନା",
+        "ملکیت کی قسم", "ملکیت"
+    ],
+    "mutation_no": [
+        "Mutation Number", "Mutation No", "Mutation",
+        "नामांतरण संख्या", "नामांतरण नंबर", "दाखिल खारिज नंबर",
+        "பட்டா மாற்றம் எண்", "மாற்று எண்",
+        "మ్యూటేషన్ నంబర్", "మార్పిడి నంబర్",
+        "फेरफार क्रमांक", "नामांतरण क्रमांक",
+        "મ્યુટેશન નંબર", "નામ ફેરફાર નંબર",
+        "নামজারি নম্বর", "মিউটেশন নম্বর",
+        "ਮਿਊਟੇਸ਼ਨ ਨੰਬਰ", "ਇੰਤਕਾਲ ਨੰਬਰ",
+        "ಮ್ಯುಟೇಶನ್ ಸಂಖ್ಯೆ", "ಖಾತೆ ಬದಲಾವಣೆ ಸಂಖ್ಯೆ",
+        "ମ୍ୟୁଟେସନ ନମ୍ବର", "ନାମାନ୍ତରଣ ନମ୍ବର",
+        "انتقال نمبر", "نام منتقلی نمبر"
+    ],
+    "registration_no": [
+        "Registration Number", "Registration No", "Reg No",
+        "पंजीकरण संख्या", "पंजीकरण नंबर",
+        "பதிவு எண்", "பதிவு எண்ண",
+        "రిజిస్ట్రేషన్ నంబర్", "రిజిస్ట్రేషన్ సంఖ్య",
+        "नोंदणी क्रमांक", "नोंदणी नंबर",
+        "નોંધણી નંબર", "રજિસ્ટ્રેશન નંબર",
+        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর",
+        "ਰਜਿਸਟ੍ਰੇਸ਼ਨ ਨੰਬਰ", "ਰਜਿਸਟਰੀ ਨੰਬਰ",
+        "ನೋಂದಣಿ ಸಂಖ್ಯೆ", "ರಿಜಿಸ್ಟ್ರೇಶನ್ ನಂಬರ್",
+        "ପଞ୍ଜିକରଣ ନମ୍ବର", "ରେଜିଷ୍ଟ୍ରେସନ ନମ୍ବର",
+        "رجسٹریشن نمبر", "اندراج نمبر"
+    ],
+    "khatauni_year": [
+        "Khatauni Year", "Fasli Year", "Record Year", "Year",
+        "खतौनी वर्ष", "फसली वर्ष", "वर्ष",
+        "பட்டா ஆண்டு", "ஆண்டு",
+        "ఖతౌని సంవత్సరం", "సంవత్సరం",
+        "खतावणी वर्ष",
+        "ખતૌની વર્ષ", "વર્ષ",
+        "খতিয়ান বছর", "বছর",
+        "ਖਤੌਨੀ ਸਾਲ", "ਸਾਲ",
+        "ಖಾತೆ ವರ್ಷ", "ವರ್ಷ",
+        "ଖତିଆନ ବର୍ଷ", "ବର୍ଷ",
+        "کھتونی سال", "سال"
+    ],
+}
+
+LANGUAGE_SCRIPT_RANGES = {
+    "Hindi": (0x0900, 0x097F),
+    "Marathi": (0x0900, 0x097F),
+    "Tamil": (0x0B80, 0x0BFF),
+    "Telugu": (0x0C00, 0x0C7F),
+    "Gujarati": (0x0A80, 0x0AFF),
+    "Bengali": (0x0980, 0x09FF),
+    "Punjabi": (0x0A00, 0x0A7F),
+    "Kannada": (0x0C80, 0x0CFF),
+    "Odia": (0x0B00, 0x0B7F),
+    "Urdu": (0x0600, 0x06FF),
+    "English": (0x0041, 0x007A),
+}
+
+def normalize_text(text: str) -> str:
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"[ \t]+", " ", text)
+
+def normalize_digits(text: str) -> str:
+    return (text or "").translate(INDIC_DIGIT_MAP)
+
+def clean_extracted_value(value: str, numeric: bool = False) -> str:
+    value = (value or "").strip(" \t:|-")
+    value = re.sub(r"\s{2,}", " ", value)
+    if numeric:
+        value = normalize_digits(value)
+        value = re.sub(r"\s+", "", value)
+    return value.strip()
+
+# Blacklist filters to prevent table headers/column indices from becoming names
+INVALID_NAME_PATTERNS = [
+    r"^record\s*holder",
+    r"^land\s*owner",
+    r"^खातेदार",
+    r"^भूमि\s*स्वामी",
+    r"^नाम\b",
+    r"^name\b",
+    r"^owner\b",
+    r"^column\b",
+    r"^col\b",
+    r"^\(\d+\)$",
+    r"^[\d\.\s\-\/\(\)]+$"
+]
+
+def is_valid_name(val: str) -> bool:
+    if not val:
+        return False
+    clean = val.strip().lower()
+    if len(clean) < 3:
+        return False
+    for pat in INVALID_NAME_PATTERNS:
+        if re.search(pat, clean, re.IGNORECASE):
+            return False
+    if re.search(r"record\s*holder\s*\(\d+\)", clean):
+        return False
+    if re.search(r"खातेदार\s*\(\d+\)", clean):
+        return False
+    return True
+
+def installed_tesseract_languages() -> list[str]:
+    if not HAS_TESSERACT:
+        return []
+    try:
+        langs = set(pytesseract.get_languages(config=""))
+        return [code for code in TESSERACT_LANGUAGE_CODES if code in langs]
+    except Exception:
+        return []
+
+def detect_language_from_text(text: str) -> str:
+    scores = {}
+    for name, (lo, hi) in LANGUAGE_SCRIPT_RANGES.items():
+        count = sum(1 for ch in text if lo <= ord(ch) <= hi)
+        if count:
+            scores[name] = count
+    if not scores:
+        return "unknown"
+    top = max(scores, key=scores.get)
+    if top == "Hindi" and scores.get("Marathi", 0) == scores["Hindi"]:
+        return "Hindi/Marathi"
+    return top
+
+def field_pattern(key: str) -> str:
+    labels = sorted(FIELD_LABELS[key], key=len, reverse=True)
+    escaped = "|".join(re.escape(x) for x in labels)
+    return rf"(?:{escaped})\s*[:：\-]?\s*([^\n|,;]+)"
+
+def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optional[bytes] = None,
+                            languages: Optional[list[str]] = None, pages: int = 1,
+                            mean_ocr_conf: Optional[int] = None) -> Dict[str, Any]:
+    text = normalize_text(raw_text)
+    fields = {key: {"value": "", "confidence": 0.0} for key in FIELD_KEYS}
+    numeric_keys = {
+        "survey_number", "khasra_number", "khata_number", "plot_number",
+        "mutation_no", "registration_no", "khatauni_year"
     }
 
-    patterns = {
-        "owner_name": r"(?:खातेदार\s*(?:का\s*नाम)?|Owner\s*Name|नाम)[\s:]+([^\n,\/]+)",
-        "father_name": r"(?:पिता\/पति|सुत|Father['’]s?\s*Name)[\s:]+([^\n,\/]+)",
-        "survey_number": r"(?:सर्वेक्षण\s*संख्या|Survey\s*(?:No|Number))[\s:]+([0-9\/\-]+)",
-        "khasra_number": r"(?:खसरा\s*संख्या|Khasra\s*(?:No|Number))[\s:]+([0-9\/\-]+)",
-        "khata_number": r"(?:खाता\s*संख्या|Khata\s*(?:No|Number))[\s:]+([0-9]+)",
-        "plot_number": r"(?:प्लॉट\s*संख्या|Plot\s*(?:No|Number))[\s:]+([0-9A-Za-z\-]+)",
-        "area": r"(?:क्षेत्रफल|Area)[\s:]+([0-9\.]+\s*(?:हेक्टर|हे\.|Hectare|Acre|Sq\.?\s*Mt)?)",
-        "village": r"(?:ग्राम|गाँव|Village)[\s:]+([^\n,\/]+)",
-        "tehsil": r"(?:तहसील|Tehsil|Taluk)[\s:]+([^\n,\/]+)",
-        "district": r"(?:जिला|District)[\s:]+([^\n,\/]+)",
-        "state": r"(?:राज्य|State)[\s:]+([^\n,\/]+)",
-        "land_class": r"(?:भू-वर्गीकरण|श्रेणी|Land\s*Class)[\s:]+([^\n,]+)",
-        "ownership_type": r"(?:स्वामित्व\s*प्रकार|Type)[\s:]+([^\n,]+)",
-        "mutation_no": r"(?:नामांतरण\s*संख्या|Mutation\s*No)[\s:]+([A-Za-z0-9\/\-]+)",
-        "registration_no": r"(?:पंजीकरण\s*संख्या|Reg\s*No)[\s:]+([A-Za-z0-9\/\-]+)",
-        "khatauni_year": r"(?:फसली\s*वर्ष|Year|फसली)[\s:]+([0-9A-Za-z\s\-\(\)]+)"
-    }
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-    for key, pattern in patterns.items():
-        match = re.search(pattern, raw_text, re.IGNORECASE)
+    # 1. Parse standard fields with regex patterns
+    for key in FIELD_KEYS:
+        match = re.search(field_pattern(key), text, flags=re.IGNORECASE)
         if match:
-            fields[key] = {"value": match.group(1).strip(), "confidence": 0.91}
+            value = clean_extracted_value(match.group(1), numeric=(key in numeric_keys))
+            if value:
+                base = 0.88 if mean_ocr_conf is None else min(0.96, max(0.72, mean_ocr_conf / 100))
+                fields[key] = {"value": value, "confidence": round(base, 2)}
 
-    # Deterministic SHA-256 fingerprint from file bytes or filename (reproducible across identical runs)
-    if file_bytes:
-        seed_data = file_bytes
-    else:
-        seed_data = filename.encode('utf-8')
-    fn_hash = int(hashlib.sha256(seed_data).hexdigest()[:8], 16)
+    # 2. Strict validation & multi-line fallback for owner_name
+    extracted_name = fields["owner_name"]["value"]
+    if not is_valid_name(extracted_name):
+        fields["owner_name"] = {"value": "", "confidence": 0.0}
 
-    clean_name = os.path.splitext(filename)[0].replace('_', ' ').replace('-', ' ').title()
-    
+        name_headers = [
+            "record holder", "landowner", "land owner", "owner name",
+            "खातेदार का नाम", "भूमि स्वामी", "खातेदार", "मालक", "பட்டாதாரர்"
+        ]
+        
+        for idx, line in enumerate(lines):
+            line_clean = line.lower().strip()
+            if any(hdr in line_clean for hdr in name_headers):
+                parts = re.split(r"[:：\-]", line, maxsplit=1)
+                if len(parts) > 1 and is_valid_name(parts[1]):
+                    fields["owner_name"] = {"value": clean_extracted_value(parts[1]), "confidence": 0.88}
+                    break
+
+                # Inspect the next lines if the header was standalone or a table cell
+                for offset in (1, 2):
+                    if idx + offset < len(lines):
+                        candidate = clean_extracted_value(lines[idx + offset])
+                        if is_valid_name(candidate) and not re.match(r"^\d+$", candidate):
+                            fields["owner_name"] = {"value": candidate, "confidence": 0.86}
+                            break
+                if fields["owner_name"]["value"]:
+                    break
+
+    # Fallback to honorific titles if owner_name is still blank
     if not fields["owner_name"]["value"]:
-        fields["owner_name"] = {"value": f"Record Holder ({clean_name})", "confidence": 0.88}
-    if not fields["village"]["value"]:
-        fields["village"] = {"value": "रामपुर (Rampur)", "confidence": 0.95}
-    if not fields["tehsil"]["value"]:
-        fields["tehsil"] = {"value": "सदर (Sadar)", "confidence": 0.94}
-    if not fields["district"]["value"]:
-        fields["district"] = {"value": "मेरठ (Meerut)", "confidence": 0.98}
-    if not fields["state"]["value"]:
-        fields["state"] = {"value": "उत्तर प्रदेश (Uttar Pradesh)", "confidence": 1.0}
-    if not fields["khasra_number"]["value"]:
-        fields["khasra_number"] = {"value": str((fn_hash % 850) + 100), "confidence": 0.92}
-    if not fields["khata_number"]["value"]:
-        fields["khata_number"] = {"value": str((fn_hash % 90000) + 10000).zfill(5), "confidence": 0.86}
-    if not fields["area"]["value"]:
-        fields["area"] = {"value": f"{((fn_hash % 400) / 100) + 0.5:.4f} Hectare", "confidence": 0.93}
-    if not fields["mutation_no"]["value"]:
-        fields["mutation_no"] = {"value": f"MUT/2026/{(fn_hash % 9000) + 1000}", "confidence": 0.72}
-    if not fields["registration_no"]["value"]:
-        fields["registration_no"] = {"value": f"REG/MR/{(fn_hash % 8000) + 1000}", "confidence": 0.90}
-    if not fields["land_class"]["value"]:
-        fields["land_class"] = {"value": "कृषि भूमि (Agricultural Land)", "confidence": 0.88}
-    if not fields["ownership_type"]["value"]:
-        fields["ownership_type"] = {"value": "संक्रमणीय भूमिधर (Bhumidhar)", "confidence": 0.85}
-    if not fields["khatauni_year"]["value"]:
-        fields["khatauni_year"] = {"value": "1430-1435 फसली (2024-2029)", "confidence": 0.96}
+        honorific_match = re.search(
+            r"\b(श्री|श्रीमती|मोहम्मद|Shri|Smt|Mr\.|Mrs\.)\s+([A-Za-z\u0900-\u0D7F]+(?:\s+[A-Za-z\u0900-\u0D7F]+){1,3})",
+            text
+        )
+        if honorific_match and is_valid_name(honorific_match.group(0)):
+            fields["owner_name"] = {"value": honorific_match.group(0).strip(), "confidence": 0.82}
 
-    if not raw_text.strip():
-        raw_text = f"""खतौनी (अधिकार अभिलेख) - 1430-1435 फसली
-दस्तावेज़ फ़ाइल: {filename}
-ग्राम: {fields['village']['value']}, तहसील: {fields['tehsil']['value']}, जिला: {fields['district']['value']}
-खाता संख्या: {fields['khata_number']['value']} | खसरा संख्या: {fields['khasra_number']['value']} | क्षेत्रफल: {fields['area']['value']}
-खातेदार का नाम: {fields['owner_name']['value']}
-नामांतरण आदेश संख्या: {fields['mutation_no']['value']}"""
-
+    # 3. Validation assessment
     issues = []
-    if fields["mutation_no"]["confidence"] < 0.75:
-        issues.append({"severity": "warning", "msg": "नामांतरण संख्या (Mutation No.) की सटीकता 75% से कम है। कृपया जाँचें।"})
-    if fields["plot_number"]["confidence"] < 0.75 and fields["plot_number"]["value"]:
-        issues.append({"severity": "warning", "msg": "Plot Number verification check required."})
+    if not text.strip():
+        issues.append({
+            "severity": "error",
+            "msg": "No OCR text was detected. Check image quality, Tesseract, and language data."
+        })
+    if not fields["owner_name"]["value"]:
+        issues.append({
+            "severity": "warning",
+            "msg": "Record-holder name was not found in OCR text and has been left blank for review."
+        })
+
+    if mean_ocr_conf is not None and mean_ocr_conf < 70:
+        issues.append({
+            "severity": "warning",
+            "msg": "Overall OCR confidence is low. Please verify extracted values."
+        })
 
     conf_vals = [f["confidence"] for f in fields.values() if f["confidence"] > 0]
-    mean_c = int(sum(conf_vals) / len(conf_vals) * 100) if conf_vals else 85
+    mean_field_conf = (sum(conf_vals) / len(conf_vals) * 100) if conf_vals else 0
+    mean_c = int(round(mean_ocr_conf if mean_ocr_conf is not None else mean_field_conf))
     verdict = "review" if issues or mean_c < 80 else "valid"
 
     return {
         "mean_conf": mean_c,
-        "languages": ["Hindi", "English"],
-        "pages": 1,
+        "languages": languages or [],
+        "pages": pages,
+        "detected_language": detect_language_from_text(text),
         "fields": fields,
         "validation": {"verdict": verdict, "issues": issues},
-        "ocr_text": raw_text
+        "ocr_text": text,
     }
 
+def preprocess_image(image: Image.Image) -> Image.Image:
+    image = ImageOps.exif_transpose(image).convert("L")
+    image = ImageOps.autocontrast(image)
+    if image.width < 1400:
+        scale = 1400 / max(1, image.width)
+        image = image.resize((int(image.width * scale), int(image.height * scale)))
+    return image
+
+def ocr_page(image: Image.Image, lang: str) -> tuple[str, float]:
+    data = pytesseract.image_to_data(
+        image,
+        lang=lang,
+        config="--oem 1 --psm 6",
+        output_type=pytesseract.Output.DICT,
+    )
+    words = []
+    confidences = []
+    for i, word in enumerate(data.get("text", [])):
+        word = (word or "").strip()
+        if word:
+            words.append(word)
+            try:
+                c = float(data["conf"][i])
+                if c >= 0:
+                    confidences.append(c)
+            except Exception:
+                pass
+    text = " ".join(words)
+    conf = sum(confidences) / len(confidences) if confidences else 0.0
+    return text, conf
+
 def run_ocr_pipeline(file_bytes: Optional[bytes], filename: str) -> Dict[str, Any]:
-    raw_text = ""
-    if HAS_TESSERACT and file_bytes:
-        try:
+    if not HAS_TESSERACT:
+        raise HTTPException(status_code=503, detail="OCR is unavailable: pytesseract is not installed.")
+    if not file_bytes:
+        raise HTTPException(status_code=422, detail="The uploaded file is empty.")
+
+    installed = installed_tesseract_languages()
+    if "eng" not in installed:
+        raise HTTPException(status_code=503, detail="Tesseract English language data (eng) is required.")
+    if len(installed) < len(TESSERACT_LANGUAGE_CODES):
+        missing = [c for c in TESSERACT_LANGUAGE_CODES if c not in installed]
+        language_warning = "Missing Tesseract language data: " + ", ".join(missing)
+    else:
+        language_warning = ""
+
+    try:
+        images = []
+        if filename.lower().endswith(".pdf"):
+            pdf = pdfium.PdfDocument(file_bytes)
+            page_count = len(pdf)
+            if page_count < 1:
+                raise ValueError("PDF has no pages")
+            max_pages = min(page_count, 10)
+            for idx in range(max_pages):
+                page = pdf[idx]
+                images.append(page.render(scale=2.2).to_pil())
+        else:
             image = Image.open(io.BytesIO(file_bytes))
-            raw_text = pytesseract.image_to_string(image, lang='hin+eng')
-        except Exception:
-            raw_text = ""
-    return extract_fields_from_ocr(raw_text, filename, file_bytes)
+            image.verify()
+            image = Image.open(io.BytesIO(file_bytes))
+            images = [image]
+
+        available_langs = [c for c in TESSERACT_LANGUAGE_CODES if c in installed]
+        lang = "+".join(available_langs)
+
+        page_texts = []
+        page_confs = []
+        for image in images:
+            processed = preprocess_image(image)
+            text, conf = ocr_page(processed, lang)
+            page_texts.append(text)
+            page_confs.append(conf)
+
+        raw_text = "\n".join(t for t in page_texts if t).strip()
+        mean_ocr_conf = int(round(sum(page_confs) / len(page_confs))) if page_confs else 0
+        languages = [LANGUAGE_NAMES[c] for c in available_langs]
+        result = extract_fields_from_ocr(
+            raw_text,
+            filename=filename,
+            file_bytes=file_bytes,
+            languages=languages,
+            pages=len(images),
+            mean_ocr_conf=mean_ocr_conf,
+        )
+        if language_warning:
+            result["validation"]["issues"].append({"severity": "warning", "msg": language_warning})
+            result["validation"]["verdict"] = "review"
+        return result
+
+    except pytesseract.TesseractNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail="OCR engine is unavailable. Install Tesseract and the required language data."
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="The uploaded file could not be processed as a supported document."
+        ) from exc
 
 # ---------------------------------------------------------
 # AUTHENTICATION ENDPOINTS
@@ -358,36 +759,50 @@ def change_password(req: ChangePassReq, user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------
 @app.post("/api/process")
 async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    safe_filename = os.path.basename(file.filename or "")
+    extension = os.path.splitext(safe_filename)[1].lower()
+    if not safe_filename or extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=415, detail="Only PDF, JPG, PNG, and TIFF land-record files are accepted.")
     content = await file.read()
-    ocr_res = run_ocr_pipeline(content, file.filename)
+    if not content:
+        raise HTTPException(status_code=422, detail="The uploaded file is empty.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="The uploaded file exceeds the 15 MB limit.")
+    ocr_res = run_ocr_pipeline(content, safe_filename)
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("""
-        INSERT INTO documents (filename, mean_conf, verdict, status, languages, pages, fields, validation, ocr_text, created_at)
-        VALUES (?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (
+            filename, mean_conf, verdict, status, languages, pages, fields,
+            validation, ocr_text, detected_language, original_fields, created_at
+        )
+        VALUES (?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            file.filename,
+            safe_filename,
             ocr_res["mean_conf"],
             ocr_res["validation"]["verdict"],
-            json.dumps(ocr_res["languages"]),
+            json.dumps(ocr_res["languages"], ensure_ascii=False),
             ocr_res["pages"],
-            json.dumps(ocr_res["fields"]),
-            json.dumps(ocr_res["validation"]),
+            json.dumps(ocr_res["fields"], ensure_ascii=False),
+            json.dumps(ocr_res["validation"], ensure_ascii=False),
             ocr_res["ocr_text"],
+            ocr_res.get("detected_language", "unknown"),
+            json.dumps(ocr_res["fields"], ensure_ascii=False),
             time.time()
         ))
         doc_id = cur.lastrowid
         conn.execute("INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                     (time.time(), user["full_name"], "UPLOAD_RECORD", f"दस्तावेज़ अपलोड: {file.filename}", doc_id))
+                     (time.time(), user["full_name"], "UPLOAD_RECORD", f"दस्तावेज़ अपलोड: {safe_filename}", doc_id))
         conn.commit()
 
     return {
         "id": doc_id,
-        "filename": file.filename,
+        "filename": safe_filename,
         "ocr": {
             "mean_conf": ocr_res["mean_conf"],
             "languages": ocr_res["languages"],
             "pages": ocr_res["pages"],
+            "detected_language": ocr_res.get("detected_language", "unknown"),
             "text_preview": ocr_res["ocr_text"]
         },
         "fields": ocr_res["fields"],
@@ -400,47 +815,54 @@ def get_samples(user: dict = Depends(get_current_user)):
     if not os.path.exists(samples_dir):
         os.makedirs(samples_dir, exist_ok=True)
     files = [f for f in os.listdir(samples_dir) if f.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff'))]
-    if not files:
-        files = ["Khatauni_Meerut_Sample.pdf", "Patta_Deed_7_12_Sample.png", "Pahani_Survey_Record.pdf"]
-    return {"samples": files}
+    return {"samples": sorted(files)}
 
 @app.post("/api/process/sample/{name}")
 def process_sample_file(name: str, user: dict = Depends(get_current_user)):
     samples_dir = os.path.join(BASE_DIR, "samples")
-    sample_path = os.path.join(samples_dir, name)
+    safe_name = os.path.basename(name)
+    if safe_name != name or os.path.splitext(safe_name)[1].lower() not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Invalid sample file name")
+    sample_path = os.path.join(samples_dir, safe_name)
     if not os.path.isfile(sample_path):
         raise HTTPException(status_code=404, detail="Sample file not found")
 
     with open(sample_path, "rb") as sample_file:
-        ocr_res = run_ocr_pipeline(sample_file.read(), name)
+        ocr_res = run_ocr_pipeline(sample_file.read(), safe_name)
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("""
-        INSERT INTO documents (filename, mean_conf, verdict, status, languages, pages, fields, validation, ocr_text, created_at)
-        VALUES (?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (
+            filename, mean_conf, verdict, status, languages, pages, fields,
+            validation, ocr_text, detected_language, original_fields, created_at
+        )
+        VALUES (?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            name,
+            safe_name,
             ocr_res["mean_conf"],
             ocr_res["validation"]["verdict"],
-            json.dumps(ocr_res["languages"]),
+            json.dumps(ocr_res["languages"], ensure_ascii=False),
             ocr_res["pages"],
-            json.dumps(ocr_res["fields"]),
-            json.dumps(ocr_res["validation"]),
+            json.dumps(ocr_res["fields"], ensure_ascii=False),
+            json.dumps(ocr_res["validation"], ensure_ascii=False),
             ocr_res["ocr_text"],
+            ocr_res.get("detected_language", "unknown"),
+            json.dumps(ocr_res["fields"], ensure_ascii=False),
             time.time()
         ))
         doc_id = cur.lastrowid
         conn.execute("INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                     (time.time(), user["full_name"], "PROCESS_SAMPLE", f"नमूना विश्लेषित: {name}", doc_id))
+                     (time.time(), user["full_name"], "PROCESS_SAMPLE", f"नमूना विश्लेषित: {safe_name}", doc_id))
         conn.commit()
 
     return {
         "id": doc_id,
-        "filename": name,
+        "filename": safe_name,
         "ocr": {
             "mean_conf": ocr_res["mean_conf"],
             "languages": ocr_res["languages"],
             "pages": ocr_res["pages"],
+            "detected_language": ocr_res.get("detected_language", "unknown"),
             "text_preview": ocr_res["ocr_text"]
         },
         "fields": ocr_res["fields"],
@@ -463,7 +885,22 @@ def dashboard(user: dict = Depends(get_current_user)):
         cur.execute("SELECT COUNT(*) as c FROM documents WHERE verdict='rejected'")
         rejected = cur.fetchone()["c"]
         cur.execute("SELECT AVG(mean_conf) as a FROM documents")
-        avg_c = cur.fetchone()["a"] or 89.4
+        avg_c = cur.fetchone()["a"] or 0
+
+        by_state = {}
+        by_district = {}
+        cur.execute("SELECT fields FROM documents")
+        for row in cur.fetchall():
+            try:
+                fields = json.loads(row["fields"])
+            except Exception:
+                continue
+            state = (fields.get("state") or {}).get("value", "").strip()
+            district = (fields.get("district") or {}).get("value", "").strip()
+            if state:
+                by_state[state] = by_state.get(state, 0) + 1
+            if district:
+                by_district[district] = by_district.get(district, 0) + 1
 
     return {
         "total": total,
@@ -472,9 +909,9 @@ def dashboard(user: dict = Depends(get_current_user)):
         "pending_review": pending,
         "verified": verified,
         "rejected": rejected,
-        "accuracy_estimate": 96.2,
-        "by_state": {"Uttar Pradesh": total, "Madhya Pradesh": 0, "Maharashtra": 0},
-        "by_district": {"Meerut": total, "Varanasi": 0, "Lucknow": 0}
+        "accuracy_estimate": round(avg_c, 1),
+        "by_state": dict(sorted(by_state.items(), key=lambda x: (-x[1], x[0]))),
+        "by_district": dict(sorted(by_district.items(), key=lambda x: (-x[1], x[0]))),
     }
 
 @app.get("/api/documents")
@@ -509,6 +946,7 @@ def get_document_detail(doc_id: int, user: dict = Depends(get_current_user)):
             "mean_conf": r["mean_conf"],
             "status": r["status"],
             "languages": r["languages"],
+            "detected_language": r["detected_language"] if "detected_language" in r.keys() else "unknown",
             "fields": json.loads(r["fields"]),
             "ocr_text": r["ocr_text"]
         }
@@ -566,6 +1004,31 @@ def get_corrections(user: dict = Depends(get_current_user)):
         cur = conn.cursor()
         cur.execute("SELECT field_id, wrong, right, count FROM corrections ORDER BY count DESC")
         return {"corrections": [dict(r) for r in cur.fetchall()]}
+
+@app.get("/api/ai/training-data")
+def get_training_data(user: dict = Depends(get_current_user)):
+    """Return verified OCR/extraction examples for the AI training/evaluation pipeline."""
+    if user["role"] not in ["verifier", "admin"]:
+        raise HTTPException(status_code=403, detail="Verifier role required")
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, languages, detected_language, ocr_text, fields, original_fields
+            FROM documents
+            WHERE status='verified'
+            ORDER BY id DESC
+        """)
+        examples = []
+        for r in cur.fetchall():
+            examples.append({
+                "document_id": r["id"],
+                "languages": json.loads(r["languages"] or "[]"),
+                "detected_language": r["detected_language"] or "unknown",
+                "ocr_text": r["ocr_text"] or "",
+                "verified_fields": json.loads(r["fields"] or "{}"),
+                "original_ocr_fields": json.loads(r["original_fields"] or "{}"),
+            })
+    return {"examples": examples, "count": len(examples)}
 
 @app.get("/api/audit")
 def get_all_audit(user: dict = Depends(get_current_user)):
