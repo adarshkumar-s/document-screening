@@ -13,7 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
 from PIL import ImageOps
-import pypdfium2 as pdfium
+
+# Safe optional PDF handling
+try:
+    import pypdfium2 as pdfium
+    HAS_PDFIUM = True
+except ImportError:
+    HAS_PDFIUM = False
 
 # Optional OCR integration
 try:
@@ -366,7 +372,7 @@ FIELD_LABELS = {
         "రిజిస్ట్రేషన్ నంబర్", "రిజిస్ట్రేషన్ సంఖ్య",
         "नोंदणी क्रमांक", "नोंदणी नंबर",
         "નોંધણી નંબર", "રજિસ્ટ્રેશન નંબર",
-        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর",
+        "নিবন্ধন নম্বর", "রেজিস্ট್ರেশন নম্বর",
         "ਰਜਿਸਟ੍ਰੇਸ਼ਨ ਨੰਬਰ", "ਰਜਿਸਟਰੀ ਨੰਬਰ",
         "ನೋಂದಣಿ ಸಂಖ್ಯೆ", "ರಿಜಿಸ್ಟ್ರೇಶನ್ ನಂಬರ್",
         "ପଞ୍ଜିକରଣ ନମ୍ବର", "ରେଜିଷ୍ଟ୍ରେସନ ନମ୍ବର",
@@ -512,7 +518,6 @@ def extract_fields_from_ocr(raw_text: str, filename: str = "", file_bytes: Optio
                     fields["owner_name"] = {"value": clean_extracted_value(parts[1]), "confidence": 0.88}
                     break
 
-                # Inspect the next lines if the header was standalone or a table cell
                 for offset in (1, 2):
                     if idx + offset < len(lines):
                         candidate = clean_extracted_value(lines[idx + offset])
@@ -614,6 +619,8 @@ def run_ocr_pipeline(file_bytes: Optional[bytes], filename: str) -> Dict[str, An
     try:
         images = []
         if filename.lower().endswith(".pdf"):
+            if not HAS_PDFIUM:
+                raise HTTPException(status_code=503, detail="PDF processing module (pypdfium2) not installed.")
             pdf = pdfium.PdfDocument(file_bytes)
             page_count = len(pdf)
             if page_count < 1:
