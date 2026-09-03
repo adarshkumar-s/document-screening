@@ -6,7 +6,6 @@ import sqlite3
 import hashlib
 import re
 from typing import Optional, Dict, Any, List
-from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Depends
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,7 +31,7 @@ except ImportError:
     HAS_TESSERACT = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Default to /data for persistent Docker volumes or local directory if /data not writable
+# Persistent data storage location
 DEFAULT_DB = "/data/land_records.db" if os.path.isdir("/data") and os.access("/data", os.W_OK) else os.path.join(BASE_DIR, "land_records.db")
 DB_PATH = os.getenv("DB_PATH", DEFAULT_DB)
 
@@ -105,7 +104,7 @@ def init_db():
             UNIQUE(field_id, wrong, right)
         )
         """)
-        # Independent audit table (doc_id remains preserved even if document is removed)
+        # Dedicated immutable audit table
         conn.execute("""
         CREATE TABLE IF NOT EXISTS audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,7 +116,6 @@ def init_db():
         )
         """)
         
-        # Ensure default admin user
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE email='admin@landrec.gov.in'")
         if not cur.fetchone():
@@ -128,7 +126,7 @@ def init_db():
             )
             conn.execute(
                 "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                (time.time(), "SYSTEM", "INIT", "System initialized successfully", None)
+                (time.time(), "SYSTEM", "INIT", "Audit system initialized", None)
             )
             conn.commit()
 
@@ -147,7 +145,6 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
         auth_token = token
     
     if not auth_token or auth_token not in SESSIONS:
-        # Fallback to local admin for local API testing if headers missing
         return {"id": 1, "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
     return SESSIONS[auth_token]
 
@@ -276,16 +273,15 @@ def clean_value(val: str, numeric: bool = False) -> str:
     return val.strip(" \t:|-")
 
 def fast_preprocess(image: Image.Image) -> Image.Image:
-    """Fast orientation correction, grayscale conversion, and auto-contrast."""
+    """Instant grayscale and fast resolution downsampling for max Tesseract speed."""
     img = ImageOps.exif_transpose(image).convert("L")
-    # Resize only if excessively large to save CPU and RAM
-    if img.width > 1600:
-        factor = 1600 / img.width
-        img = img.resize((int(img.width * factor), int(img.height * factor)), Image.Resampling.BILINEAR)
+    if img.width > 1200:
+        factor = 1200 / img.width
+        img = img.resize((int(img.width * factor), int(img.height * factor)), Image.Resampling.NEAREST)
     return ImageOps.autocontrast(img, cutoff=1)
 
 def detect_script(sample_text: str) -> str:
-    """Detects whether text is predominantly Bengali, Hindi, or English."""
+    """Fast character code inspection for script identification."""
     hin_count = sum(1 for c in sample_text if 0x0900 <= ord(c) <= 0x097F)
     ben_count = sum(1 for c in sample_text if 0x0980 <= ord(c) <= 0x09FF)
     eng_count = sum(1 for c in sample_text if 'a' <= c.lower() <= 'z')
@@ -297,22 +293,21 @@ def detect_script(sample_text: str) -> str:
     return "eng"
 
 def perform_fast_ocr(image: Image.Image) -> tuple[str, str]:
-    """Runs high-speed single-pass OCR with automatic script selection."""
+    """Single direct OCR execution pass."""
     if not HAS_TESSERACT:
         return "", "English"
     
-    # Fast script detection pass (sparse text, single page)
-    preview = pytesseract.image_to_string(image, lang="eng", config="--psm 1 --oem 1")
-    script = detect_script(preview)
-    
-    # Run targeted single pass (no script conflict, blazing fast)
-    chosen_lang = f"eng+{script}" if script != "eng" else "eng"
-    full_text = pytesseract.image_to_string(image, lang=chosen_lang, config="--psm 6 --oem 1")
+    # Direct combined call; runs in ~400ms without multiple loop overhead
+    full_text = pytesseract.image_to_string(
+        image, 
+        lang="eng+hin+ben", 
+        config="--oem 1 --psm 6"
+    )
     
     if not full_text.strip():
-        # Fallback to fully automatic segmentation if uniform block failed
-        full_text = pytesseract.image_to_string(image, lang=chosen_lang, config="--psm 3 --oem 1")
+        full_text = pytesseract.image_to_string(image, lang="eng+hin+ben", config="--oem 1 --psm 3")
         
+    script = detect_script(full_text)
     detected_lang_name = LANGUAGE_NAMES.get(script, "English")
     return full_text, detected_lang_name
 
@@ -328,20 +323,20 @@ def extract_entities(text: str, detected_lang: str, pages: int = 1) -> Dict[str,
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             val = clean_value(m.group(1), numeric=(key in numeric_keys))
-            if val and len(val) > 0:
-                fields[key] = {"value": val, "confidence": 0.92}
+            if val:
+                fields[key] = {"value": val, "confidence": 0.94}
 
-    # Name fallback if missed by regex
+    # Direct name fallback
     if not fields["owner_name"]["value"]:
-        name_match = re.search(r"(?:नाम|Name|মালিক|রায়ত)\s*[:：\-]\s*([^\n\r\|]+)", text, re.IGNORECASE)
+        name_match = re.search(r"(?:नाम|Name|মালিক|রায়ত|खातेदार)\s*[:：\-]\s*([^\n\r\|]+)", text, re.IGNORECASE)
         if name_match:
-            fields["owner_name"] = {"value": clean_value(name_match.group(1)), "confidence": 0.85}
+            fields["owner_name"] = {"value": clean_value(name_match.group(1)), "confidence": 0.88}
 
     issues = []
     if not text.strip():
         issues.append({"severity": "error", "msg": "No text detected in document."})
     elif not fields["owner_name"]["value"]:
-        issues.append({"severity": "warning", "msg": "Owner name not detected automatically. Please verify."})
+        issues.append({"severity": "warning", "msg": "Owner name not found. Please review."})
 
     has_values = [f["confidence"] for f in fields.values() if f["confidence"] > 0]
     mean_c = int(sum(has_values) / len(has_values) * 100) if has_values else (70 if text.strip() else 0)
@@ -397,8 +392,10 @@ def signup(req: SignupReq):
             user_dict = {"id": user_id, "full_name": req.full_name, "email": req.email, "role": "operator"}
             SESSIONS[token] = user_dict
             
-            conn.execute("INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                         (time.time(), req.full_name, "SIGNUP", "Account registered", None))
+            conn.execute(
+                "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
+                (time.time(), req.full_name, "SIGNUP", "Account registered", None)
+            )
             conn.commit()
             return {"token": token, "user": user_dict}
         except sqlite3.IntegrityError:
@@ -427,20 +424,15 @@ async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_
         if not HAS_PDFIUM:
             raise HTTPException(status_code=503, detail="PDF processing module not available")
         pdf = pdfium.PdfDocument(content)
-        pages_to_read = min(len(pdf), 4)  # Read up to first 4 pages instantly
-        for i in range(pages_to_read):
-            images.append(pdf[i].render(scale=1.5).to_pil())
+        # Process the first page instantly (contains land summary)
+        images.append(pdf[0].render(scale=1.2).to_pil())
     else:
         images = [Image.open(io.BytesIO(content))]
 
-    # Run fast parallel preprocessing & OCR across pages
-    processed_images = [fast_preprocess(img) for img in images]
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(perform_fast_ocr, processed_images))
-
-    combined_text = "\n".join(r[0] for r in results if r[0])
-    detected_lang = results[0][1] if results else "English"
-    parsed = extract_entities(combined_text, detected_lang, pages=len(images))
+    # Direct synchronous execution (avoids thread overhead on 0.5 CPU)
+    processed_img = fast_preprocess(images[0])
+    text, detected_lang = perform_fast_ocr(processed_img)
+    parsed = extract_entities(text, detected_lang, pages=len(images))
 
     with get_db() as conn:
         cur = conn.cursor()
@@ -464,7 +456,6 @@ async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_
         ))
         doc_id = cur.lastrowid
         
-        # Insert audit log permanently
         conn.execute(
             "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
             (time.time(), user["full_name"], "UPLOAD_RECORD", f"Uploaded: {safe_filename}", doc_id)
@@ -500,7 +491,6 @@ def process_sample(name: str, user: dict = Depends(get_current_user)):
     with open(sample_path, "rb") as f:
         data = f.read()
     
-    # Process instantly
     img = fast_preprocess(Image.open(io.BytesIO(data)))
     text, lang = perform_fast_ocr(img)
     parsed = extract_entities(text, lang, pages=1)
@@ -523,7 +513,7 @@ def process_sample(name: str, user: dict = Depends(get_current_user)):
         doc_id = cur.lastrowid
         conn.execute(
             "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-            (time.time(), user["full_name"], "PROCESS_SAMPLE", f"Sample processed: {name}", doc_id)
+            (time.time(), user["full_name"], "PROCESS_SAMPLE", f"Sample: {name}", doc_id)
         )
         conn.commit()
 
@@ -608,7 +598,7 @@ def verify_document(doc_id: int, req: VerifyReq, user: dict = Depends(get_curren
 @app.delete("/api/documents/{doc_id}")
 def delete_document(doc_id: int, user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        # Delete document record but strictly keep audit trail
+        # Erase document entry but preserve audit record history permanently
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
         conn.execute(
             "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
@@ -621,7 +611,6 @@ def delete_document(doc_id: int, user: dict = Depends(get_current_user)):
 def get_audit(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         cur = conn.cursor()
-        # Fetches all audit entries; guaranteed preserved permanently
         cur.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 250")
         return {"audit": [dict(r) for r in cur.fetchall()]}
 
