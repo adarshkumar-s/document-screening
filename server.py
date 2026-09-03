@@ -71,6 +71,7 @@ for candidate in CANDIDATE_DIRS:
 DB_PATH = os.getenv("DB_PATH", os.path.join(DATA_DIR, "land_records.db"))
 BACKUP_RECORDS_FILE = os.path.join(DATA_DIR, "records_backup.json")
 BACKUP_AUDIT_FILE = os.path.join(DATA_DIR, "audit_backup.json")
+BACKUP_USERS_FILE = os.path.join(DATA_DIR, "users_backup.json")
 JWT_SECRET = os.getenv("JWT_SECRET", "dilrmp-hackathon-secure-secret-2026")
 
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -145,6 +146,26 @@ def sync_file_backups(
   except Exception as err:
     print(f"[BACKUP SYNC WARNING] {err}")
 
+<<<<<<< Updated upstream
+=======
+
+def sync_user_backup(user_entry: dict):
+  try:
+    existing = []
+    if os.path.exists(BACKUP_USERS_FILE):
+      try:
+        with open(BACKUP_USERS_FILE, "r", encoding="utf-8") as uf:
+          existing = json.load(uf)
+      except Exception:
+        existing = []
+    existing = [u for u in existing if u.get("id") != user_entry.get("id")]
+    existing.append(user_entry)
+    with open(BACKUP_USERS_FILE, "w", encoding="utf-8") as uf:
+      json.dump(existing, uf, ensure_ascii=False, indent=2)
+  except Exception as err:
+    print(f"[USER BACKUP WARNING] {err}")
+
+>>>>>>> Stashed changes
 
 def init_db():
   with get_db() as conn:
@@ -226,6 +247,34 @@ def init_db():
           ),
       )
 
+<<<<<<< Updated upstream
+=======
+    # Restore users from backup file if container restarted with fresh SQLite database
+    cur.execute("SELECT COUNT(*) as c FROM users")
+    if cur.fetchone()["c"] <= 1 and os.path.exists(BACKUP_USERS_FILE):
+      try:
+        with open(BACKUP_USERS_FILE, "r", encoding="utf-8") as uf:
+          users = json.load(uf)
+          for u in users:
+            conn.execute(
+                """
+                        INSERT OR IGNORE INTO users (id, full_name, email, password_hash, role, version, is_active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                (
+                    u["id"],
+                    u["full_name"],
+                    u["email"],
+                    u["password_hash"],
+                    u.get("role", "operator"),
+                    u.get("version", 0),
+                    u.get("is_active", 1),
+                ),
+            )
+      except Exception as e:
+        print(f"[RECOVERY ERROR - USERS] {e}")
+
+>>>>>>> Stashed changes
     cur.execute("SELECT COUNT(*) as c FROM documents")
     if cur.fetchone()["c"] == 0 and os.path.exists(BACKUP_RECORDS_FILE):
       try:
@@ -455,7 +504,11 @@ FIELD_LABELS = {
         "பயனாளியின் பெயர்",
         "பட்டாதாரர்",
         "உரிமையாளர்",
+<<<<<<< Updated upstream
         "భూ యజమాని పేరు",
+=======
+        "భూ యજమాని పేరు",
+>>>>>>> Stashed changes
         "ખાતેદારનું નામ",
         "જમીન માલિક",
         "માલિકનું નામ",
@@ -749,7 +802,10 @@ def run_fast_ocr(image: Image.Image) -> tuple[str, str]:
   crop_box = (int(w * 0.05), int(h * 0.05), int(w * 0.95), int(h * 0.45))
   sample_crop = image.crop(crop_box)
 
+<<<<<<< Updated upstream
   # Check if local tessdata directory exists and append config flag
+=======
+>>>>>>> Stashed changes
   tess_dir_flag = (
       f'--tessdata-dir "{TESSDATA_DIR}" '
       if os.path.isdir(TESSDATA_DIR)
@@ -876,12 +932,34 @@ def extract_entities(
 
 
 # ---------------------------------------------------------
-# API ROUTES
+# API ROUTES & SCHEMAS
 # ---------------------------------------------------------
 class LoginReq(BaseModel):
   email: str
   password: str
 
+<<<<<<< Updated upstream
+=======
+
+class SignupReq(BaseModel):
+  full_name: str
+  email: str
+  password: str
+  role: Optional[str] = "operator"
+
+
+class AddUserReq(BaseModel):
+  full_name: str
+  email: str
+  password: str
+  role: str = "operator"
+
+
+class ChangePassReq(BaseModel):
+  current_password: str
+  new_password: str
+
+>>>>>>> Stashed changes
 
 class VerifyReq(BaseModel):
   corrections: Dict[str, str]
@@ -913,7 +991,12 @@ def login(req: LoginReq):
   with get_db() as conn:
     cur = conn.cursor()
     cur.execute(
+<<<<<<< Updated upstream
         "SELECT * FROM users WHERE email=? AND password_hash=?", (req.email, h)
+=======
+        "SELECT * FROM users WHERE LOWER(email)=? AND password_hash=?",
+        (req.email.lower().strip(), h),
+>>>>>>> Stashed changes
     )
     user = cur.fetchone()
     if not user or not user["is_active"]:
@@ -931,6 +1014,61 @@ def login(req: LoginReq):
       user_dict["full_name"], "LOGIN", f"Officer logged in: {user_dict['email']}"
   )
   return {"token": token, "user": user_dict}
+<<<<<<< Updated upstream
+=======
+
+
+@app.post("/api/auth/signup")
+def signup(req: SignupReq):
+  clean_email = req.email.lower().strip()
+  if not clean_email or not req.password:
+    raise HTTPException(
+        status_code=400, detail="Email and password are required"
+    )
+
+  uid = uuid.uuid4().hex[:12]
+  h = hashlib.sha256(req.password.encode()).hexdigest()
+
+  with get_db() as conn:
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE LOWER(email)=?", (clean_email,))
+    if cur.fetchone():
+      raise HTTPException(
+          status_code=400, detail="Email is already registered"
+      )
+
+    conn.execute(
+        """
+        INSERT INTO users (id, full_name, email, password_hash, role, version, is_active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        """,
+        (uid, req.full_name, clean_email, h, req.role or "operator"),
+    )
+    conn.commit()
+
+  user_dict = {
+      "id": uid,
+      "full_name": req.full_name,
+      "email": clean_email,
+      "password_hash": h,
+      "role": req.role or "operator",
+      "version": 0,
+      "is_active": 1,
+  }
+  sync_user_backup(user_dict)
+  log_audit(req.full_name, "SIGNUP", f"New account registered: {clean_email}")
+
+  token = create_jwt_token(uid, req.role or "operator", 0)
+  return {
+      "token": token,
+      "user": {
+          "id": uid,
+          "full_name": req.full_name,
+          "email": clean_email,
+          "role": req.role or "operator",
+      },
+  }
+>>>>>>> Stashed changes
 
 
 @app.get("/api/auth/me")
@@ -942,8 +1080,142 @@ def me(user: dict = Depends(get_current_user)):
 def logout(user: dict = Depends(get_current_user)):
   log_audit(user["full_name"], "LOGOUT", "User logged out")
   return {"status": "ok"}
+<<<<<<< Updated upstream
+
+=======
+>>>>>>> Stashed changes
 
 
+@app.post("/api/auth/change-password")
+def change_password(
+    req: ChangePassReq, user: dict = Depends(get_current_user)
+):
+  cur_h = hashlib.sha256(req.current_password.encode()).hexdigest()
+  new_h = hashlib.sha256(req.new_password.encode()).hexdigest()
+
+  with get_db() as conn:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, password_hash, version FROM users WHERE id=?", (user["id"],)
+    )
+    db_user = cur.fetchone()
+    if not db_user or db_user["password_hash"] != cur_h:
+      raise HTTPException(
+          status_code=400, detail="Current password is incorrect"
+      )
+
+    new_ver = db_user["version"] + 1
+    conn.execute(
+        "UPDATE users SET password_hash=?, version=? WHERE id=?",
+        (new_h, new_ver, user["id"]),
+    )
+    conn.commit()
+
+    cur.execute("SELECT * FROM users WHERE id=?", (user["id"],))
+    updated_user = dict(cur.fetchone())
+    sync_user_backup(updated_user)
+
+  log_audit(user["full_name"], "PASSWORD_CHANGE", "User changed password")
+  return {"status": "ok"}
+
+
+# ---------------------------------------------------------
+# OFFICER / USER MANAGEMENT
+# ---------------------------------------------------------
+@app.get("/api/users")
+def list_users(user: dict = Depends(get_current_user)):
+  with get_db() as conn:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, full_name, email, role, is_active FROM users ORDER BY"
+        " full_name ASC"
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+  return {"users": rows}
+
+
+@app.post("/api/users")
+def add_user(req: AddUserReq, user: dict = Depends(get_current_user)):
+  clean_email = req.email.lower().strip()
+  if not clean_email or not req.password:
+    raise HTTPException(
+        status_code=400, detail="Officer email and password are required"
+    )
+
+  uid = uuid.uuid4().hex[:12]
+  h = hashlib.sha256(req.password.encode()).hexdigest()
+
+  with get_db() as conn:
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE LOWER(email)=?", (clean_email,))
+    if cur.fetchone():
+      raise HTTPException(
+          status_code=400, detail="An officer with this email already exists"
+      )
+
+    conn.execute(
+        """
+        INSERT INTO users (id, full_name, email, password_hash, role, version, is_active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        """,
+        (uid, req.full_name, clean_email, h, req.role),
+    )
+    conn.commit()
+
+  user_dict = {
+      "id": uid,
+      "full_name": req.full_name,
+      "email": clean_email,
+      "password_hash": h,
+      "role": req.role,
+      "version": 0,
+      "is_active": 1,
+  }
+  sync_user_backup(user_dict)
+  log_audit(
+      user["full_name"],
+      "ADD_USER",
+      f"Officer added: {clean_email} ({req.role})",
+  )
+  return {"status": "ok", "user": user_dict}
+
+
+@app.delete("/api/users/{target_uid}")
+def delete_user(target_uid: str, user: dict = Depends(get_current_user)):
+  if user.get("role") != "admin":
+    raise HTTPException(
+        status_code=403, detail="Only administrators can deactivate officers"
+    )
+
+  with get_db() as conn:
+    conn.execute(
+        "UPDATE users SET is_active=0 WHERE id=?",
+        (target_uid,),
+    )
+    conn.commit()
+
+    # Update persistent file backup
+    if os.path.exists(BACKUP_USERS_FILE):
+      try:
+        with open(BACKUP_USERS_FILE, "r", encoding="utf-8") as uf:
+          users = json.load(uf)
+        for u in users:
+          if u.get("id") == target_uid:
+            u["is_active"] = 0
+        with open(BACKUP_USERS_FILE, "w", encoding="utf-8") as uf:
+          json.dump(users, uf, ensure_ascii=False, indent=2)
+      except Exception:
+        pass
+
+  log_audit(
+      user["full_name"], "DEACTIVATE_USER", f"Deactivated officer: {target_uid}"
+  )
+  return {"status": "ok"}
+
+
+# ---------------------------------------------------------
+# DOCUMENT PROCESSING ROUTES
+# ---------------------------------------------------------
 @app.get("/api/samples")
 def get_samples():
   samples_dir = os.path.join(BASE_DIR, "samples")
@@ -1267,9 +1539,15 @@ def get_corrections(user: dict = Depends(get_current_user)):
         " DESC"
     )
     return {"corrections": [dict(r) for r in cur.fetchall()]}
+<<<<<<< Updated upstream
+
+=======
+>>>>>>> Stashed changes
 
 
-# Static mounts
+# ---------------------------------------------------------
+# STATIC MOUNTS
+# ---------------------------------------------------------
 css_dir = os.path.join(BASE_DIR, "css")
 js_dir = os.path.join(BASE_DIR, "js")
 if os.path.exists(css_dir):
