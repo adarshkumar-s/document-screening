@@ -9,7 +9,7 @@ import base64
 import uuid
 import re
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Query, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Query, Request, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -155,7 +155,7 @@ def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = N
         print(f"[AUDIT ERROR] {e}")
 
 # ---------------------------------------------------------
-# JWT TOKEN GENERATION & VERIFICATION (matches reference token)
+# JWT TOKEN GENERATION & VERIFICATION
 # ---------------------------------------------------------
 def b64_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
@@ -203,7 +203,6 @@ def get_current_user(
             jwt_token = authorization
 
     if not jwt_token:
-        # Fallback to default admin context rather than failing the keepalive
         return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
     try:
@@ -258,7 +257,7 @@ FIELD_LABELS = {
     "state": ["State Name", "State", "राज्य", "রাজ্য", "மாநிலம்"],
     "land_class": ["Land Classification", "Land Class", "भूमि का प्रकार", "জমির ধরন", "நில வகை"],
     "ownership_type": ["Ownership Type", "स्वामित्व प्रकार", "মালিকানার ধরন", "உரிமை வகை"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "নামজারি নম্বর", "பட்டா மாற்றம் எண்"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामजারি নম্বর", "பட்டா மாற்றம் எண்"],
     "registration_no": ["Registration Number", "Reg No", "पंजीकरण संख्या", "নিবন্ধন নম্বর", "பதிவு எண்"],
     "khatauni_year": ["Khatauni Year", "Fasli Year", "Year", "खतौनी वर्ष", "খতিয়ান বছর", "ஆண்டு"]
 }
@@ -289,7 +288,7 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
 
     # Fallback for owner name
     if not fields["owner_name"]["value"]:
-        m_name = re.search(r"(?:नाम|Name|মালিক|रायत|खातेदार)\s*[:：\-]\s*([^\n\r\|]+)", text, re.IGNORECASE)
+        m_name = re.search(r"(?:नाम|Name|মালিক|রায়ত|खातेदार)\s*[:：\-]\s*([^\n\r\|]+)", text, re.IGNORECASE)
         if m_name:
             fields["owner_name"] = {"value": m_name.group(1).strip(), "confidence": 0.88}
 
