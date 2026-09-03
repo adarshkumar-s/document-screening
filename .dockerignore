@@ -5,4 +5,5 @@ __pycache__
 .git
 .gitignore
 land_records.db
+storage/
 .vscode

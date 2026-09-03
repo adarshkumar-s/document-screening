@@ -319,6 +319,8 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>switchTab(t.dataset.t
 // UPLOAD & STEPPER
 // ==========================================================================
 const drop=$('#drop'), fi=$('#fileInput');
+let activeScanId = 0;
+let activeScanController = null;
 drop.onclick=()=>fi.click();
 drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag');};
 drop.ondragleave=()=>drop.classList.remove('drag');
@@ -335,6 +337,10 @@ fi.onchange=()=>{
 };
 
 async function upload(file){
+  const scanId = ++activeScanId;
+  if(activeScanController) activeScanController.abort();
+  activeScanController = new AbortController();
+  currentDoc = null;
   $('#processing').classList.remove('hidden'); 
   $('#result').classList.add('hidden');
   
@@ -351,16 +357,17 @@ async function upload(file){
     const r = await fetch(authUrl('/api/process'),{
       method:'POST',
       headers: token ? {'Authorization':'Bearer '+token} : {}, 
-      body: fd
+      body: fd,
+      signal: activeScanController.signal
     });
     let d = null;
     try { d = await r.json(); } catch(err){}
     if(!r.ok) throw new Error((d && d.detail) || 'Upload failed with status ' + r.status);
-    showResult(d);
+    if(scanId === activeScanId) showResult(d);
   }catch(e){
-    alert('Processing error: ' + e.message);
+    if(e.name !== 'AbortError' && scanId === activeScanId) alert('Processing error: ' + e.message);
   }
-  $('#processing').classList.add('hidden');
+  if(scanId === activeScanId) $('#processing').classList.add('hidden');
 }
 
 async function loadSamples(){
@@ -383,6 +390,10 @@ async function loadSamples(){
 }
 
 async function processSample(name){
+  const scanId = ++activeScanId;
+  if(activeScanController) activeScanController.abort();
+  activeScanController = new AbortController();
+  currentDoc = null;
   $('#processing').classList.remove('hidden'); 
   $('#result').classList.add('hidden');
   
@@ -393,10 +404,10 @@ async function processSample(name){
   $('#issuesBox').innerHTML = '';
 
   try{
-    const d = await api('/api/process/sample/'+name,{method:'POST'});
-    showResult(d);
-  }catch(e){alert(e.message);}
-  $('#processing').classList.add('hidden');
+    const d = await api('/api/process/sample/'+name,{method:'POST', signal: activeScanController.signal});
+    if(scanId === activeScanId) showResult(d);
+  }catch(e){ if(e.name !== 'AbortError' && scanId === activeScanId) alert(e.message); }
+  if(scanId === activeScanId) $('#processing').classList.add('hidden');
 }
 
 const LABELS={
