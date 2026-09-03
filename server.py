@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+from PIL import Image, ImageOps, ImageEnhance
 
 # PDF Engine
 try:
@@ -97,7 +97,6 @@ def get_db():
     return conn
 
 def sync_file_backups(record_entry: Optional[dict] = None, audit_entry: Optional[dict] = None):
-    """Guarantees records and audit trails survive container reboots and rebuilds."""
     try:
         if record_entry:
             existing = []
@@ -107,7 +106,6 @@ def sync_file_backups(record_entry: Optional[dict] = None, audit_entry: Optional
                         existing = json.load(rf)
                 except Exception:
                     existing = []
-            # Keep unique by ID
             existing = [e for e in existing if e.get("id") != record_entry.get("id")]
             existing.insert(0, record_entry)
             with open(BACKUP_RECORDS_FILE, "w", encoding="utf-8") as rf:
@@ -178,7 +176,6 @@ def init_db():
         )
         """)
 
-        # Ensure default Admin account
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE email='admin@landrec.gov.in'")
         if not cur.fetchone():
@@ -193,7 +190,6 @@ def init_db():
                 (time.time(), "SYSTEM", "INIT", "Audit log and secure engine initialized", None)
             )
 
-        # Restore from backup ledger if database was reset during redeployment
         cur.execute("SELECT COUNT(*) as c FROM documents")
         if cur.fetchone()["c"] == 0 and os.path.exists(BACKUP_RECORDS_FILE):
             try:
@@ -312,11 +308,11 @@ def get_current_user(
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
 # ---------------------------------------------------------
-# HIGH-FIDELITY INDIC & ENGLISH PREPROCESSING & OCR
+# HIGH-FIDELITY INDIC & TAMIL PREPROCESSING & OCR
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷८९",
-    "0123456789012345678901234567890123456789"
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷८९௧௨௩௪௫௬௭௮௯௦",
+    "01234567890123456789012345678901234567891234567890"
 )
 
 FIELD_KEYS = (
@@ -331,72 +327,69 @@ FIELD_LABELS = {
         "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Record Holder", "Owner",
         "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
         "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "মালিকের নাম", "রায়তের নাম", "মালিক", "রায়ত", "খতিয়ানধারী",
-        "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव", "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "భూ యజమాని పేరు"
+        "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव", "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பயனாளியின் பெயர்", "பட்டாதாரர்", "உரிமையாளர்", "భూ యజమాని పేరు"
     ],
     "father_name": [
         "Father's Name", "Father Name", "Husband Name", "Guardian Name", "Father", "Husband",
         "पिता का नाम", "पिता/पति", "पति का नाम", "पिता", "पति", "वालद",
         "পিতার নাম", "স্বামীর নাম", "অভিভাবকের নাম", "পিতা", "স্বামী",
-        "वडिलांचे नाव", "पतीचे नाव", "தந்தை பெயர்", "கணவர் பெயர்"
+        "वडिलांचे नाव", "पतीचे नाव", "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்"
     ],
     "survey_number": [
         "Survey Number", "Survey No", "Survey", "सर्वे नंबर", "सर्वे क्रमांक", "सर्वे नं",
-        "সার্ভে নম্বর", "সার্ভে নং", "জরিপ নম্বর", "জরিপ নং", "சர்வே எண்", "సర్వే నంబర్"
+        "সার্ভে নম্বর", "সার্ভে নং", "জরিপ নম্বর", "জরিপ নং", "சர்வே எண்", "சர்வே எண்.", "புல எண்", "சர்வே", "సర్వే నంబర్"
     ],
     "khasra_number": [
         "Khasra Number", "Khasra No", "Khasra", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा",
-        "খসড়া নম্বর", "খসরা নম্বর", "দাগ নম্বর", "দাগ নং", "கசரா எண்"
+        "খসড়া নম্বর", "খসরা নম্বর", "দাগ নম্বর", "দাগ নং", "கசரா எண்", "கஸ்ரா எண்", "உட்பிரிவு எண்"
     ],
     "khata_number": [
         "Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र.", "खाता",
-        "খাতা নম্বর", "খতিয়ান নম্বর", "খতিয়ান নং", "খাতা নং", "खाते क्रमांक", "கணக்கு எண்"
+        "খাতা নম্বর", "খতিয়ান নম্বর", "খতিয়ান নং", "খাতা নং", "खाते क्रमांक", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்"
     ],
     "plot_number": [
-        "Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "প্লট নম্বর", "প্লট নং", "மனை எண்"
+        "Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "প্লট নম্বর", "প্লট নং", "மனை எண்", "பிளாட் எண்"
     ],
     "area": [
         "Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "जमीन क्षेत्रफल",
-        "জমির পরিমাণ", "ক্ষেত্রফল", "কালি", "क्षेत्रफळ", "பரப்பளவு", "విస్తీర్ణం"
+        "জমির পরিমাণ", "ক্ষেত্রফল", "কালি", "क्षेत्रफळ", "பரப்பளவு", "நிலப்பரப்பு", "ஹெக்டேர்", "விஸ்தீர்ணம்"
     ],
     "village": [
-        "Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "গ্রাম", "গ্রামের নাম", "கிராமம்"
+        "Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "গ্রাম", "গ্রামের নাম", "கிராமம்", "கிராமத்தின் பெயர்"
     ],
     "tehsil": [
-        "Tehsil", "Taluk", "Taluka", "Block", "तहसील", "तालुका", "मंडल", "তহশিল", "উপজেলা", "ব্লক", "থানা", "தாலுகா"
+        "Tehsil", "Taluk", "Taluka", "Block", "तहसील", "तालुका", "मंडल", "তহশিল", "উপজেলা", "ব্লক", "থানা", "தாலுகா", "வட்டம்"
     ],
     "district": [
-        "District Name", "District", "जिला", "जिल्हा", "জেলা", "জেলার নাম", "மாவட்டம்"
+        "District Name", "District", "जिला", "जिल्हा", "জেলা", "জেলার নাম", "மாவட்டம்", "மாவட்டத்தின் பெயர்"
     ],
     "state": [
-        "State Name", "State", "राज्य", "राज্যের নাম", "மாநிலம்"
+        "State Name", "State", "राज्य", "राज্যের নাম", "மாநிலம்", "தமிழ்நாடு"
     ],
     "land_class": [
         "Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "किस्म",
-        "জমির ধরন", "জমির শ্রেণী", "শ্রেণী", "जमिनीचा प्रकार", "நில வகை"
+        "জমির ধরন", "জমির শ্রেণী", "শ্রেণী", "जमिनीचा प्रकार", "நில வகை", "நஞ்சை", "புஞ்சை", "மானாவாரி", "தரிசு"
     ],
     "ownership_type": [
         "Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "मलिकी प्रकार",
-        "মালিকানার ধরন", "মালিকানা", "உரிமை வகை"
+        "মালিকানার ধরন", "মালিকানা", "உரிமை வகை", "பட்டா வகை", "உரிமை"
     ],
     "mutation_no": [
         "Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "दाखिल खारिज",
-        "নামজারি নম্বর", "নামজারি নং", "মিউটেশন নম্বর", "फेरफार क्रमांक", "பட்டா மாற்றம் எண்"
+        "নামজারি নম্বর", "নামজারি নং", "মিউটেশন নম্বর", "फेरफार क्रमांक", "பட்டா மாற்றம் எண்", "மாற்ற எண்"
     ],
     "registration_no": [
         "Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "पंजीकरण नंबर",
-        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর", "দলিল নম্বর", "দলিল নং", "नोंदणी क्रमांक", "பதிவு எண்"
+        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর", "দলিল নম্বর", "দলিল নং", "नोंदणी क्रमांक", "பதிவு எண்", "பத்திர எண்"
     ],
     "khatauni_year": [
         "Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष",
-        "খতিয়ান বছর", "সন", "সাল", "বছর", "ஆண்டு"
+        "খতিয়ান বছর", "সন", "সাল", "বছর", "பசலி ஆண்டு", "ஆண்டு", "வருடம்"
     ]
 }
 
 def clean_ocr_image(image: Image.Image) -> Image.Image:
-    """Preserves sharp matras and diacritics while resizing to the optimal 1400px OCR width."""
     img = ImageOps.exif_transpose(image).convert("L")
-    
-    # Scale keeping exact aspect ratio to around 1300-1400px width
     if img.width < 1100:
         scale = 1300 / max(1, img.width)
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
@@ -404,47 +397,38 @@ def clean_ocr_image(image: Image.Image) -> Image.Image:
         scale = 1400 / img.width
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.BILINEAR)
 
-    # Moderate contrast boost without burning out thin script lines
     img = ImageOps.autocontrast(img, cutoff=0.5)
     enhancer = ImageEnhance.Sharpness(img)
-    img = enhancer.enhance(1.3)
-    return img
+    return enhancer.enhance(1.3)
 
 def detect_primary_script(text: str) -> str:
-    """Detects whether document text is Devanagari (Hindi/Marathi), Bengali, or English."""
     hin = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
     ben = sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF)
     tam = sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF)
     
-    if ben > hin and ben > tam and ben > 3:
-        return "ben"
-    if hin >= ben and hin > tam and hin > 3:
-        return "hin"
-    if tam > hin and tam > ben and tam > 3:
-        return "tam"
+    counts = {"tam": tam, "ben": ben, "hin": hin}
+    top_script = max(counts, key=counts.get)
+    if counts[top_script] >= 2:
+        return top_script
     return "eng"
 
 def run_fast_ocr(image: Image.Image) -> tuple[str, str]:
-    """Single-pass high-accuracy OCR run with direct single-script dispatch."""
     if not HAS_TESSERACT:
         return "", "English"
 
-    # Fast script detection from a small center crop (takes 30ms)
     w, h = image.size
-    crop_box = (int(w * 0.1), int(h * 0.1), int(w * 0.9), int(h * 0.4))
+    crop_box = (int(w * 0.05), int(h * 0.05), int(w * 0.95), int(h * 0.45))
     sample_crop = image.crop(crop_box)
     
-    # Run rapid preview on the small crop
     preview_txt = pytesseract.image_to_string(
         sample_crop,
-        lang="eng+hin+ben",
+        lang="eng+hin+ben+tam",
         config="--oem 1 --psm 6 -c thresholding_method=0"
     )
     
     script = detect_primary_script(preview_txt)
     target_lang = f"eng+{script}" if script != "eng" else "eng"
 
-    # Full document execution with the targeted script model in one clean pass
     full_text = pytesseract.image_to_string(
         image,
         lang=target_lang,
@@ -452,10 +436,9 @@ def run_fast_ocr(image: Image.Image) -> tuple[str, str]:
     )
 
     if len(full_text.strip()) < 15:
-        # Fallback to sparse text segmentation if tabular segmentation caught nothing
         full_text = pytesseract.image_to_string(
             image,
-            lang="eng+hin+ben",
+            lang="eng+hin+ben+tam",
             config="--oem 1 --psm 6"
         )
 
@@ -470,7 +453,6 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
 
     lines = [line.strip() for line in text.split("\n") if line.strip()]
 
-    # Label-based pattern extraction
     for key, labels in FIELD_LABELS.items():
         escaped = "|".join(re.escape(x) for x in labels)
         pat = rf"(?:{escaped})\s*[:：\-।]?\s*([^\n\r\|;]+)"
@@ -483,18 +465,16 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
             if raw_val and len(raw_val) > 0:
                 fields[key] = {"value": raw_val, "confidence": 0.94}
 
-    # Positional heuristics for owner_name if missed
     if not fields["owner_name"]["value"]:
         for line in lines:
-            if any(term in line for term in ["खातेदार", "भूमि स्वामी", "মালিক", "রায়ত", "Owner", "Holder"]):
+            if any(term in line for term in ["खातेदार", "भूमि स्वामी", "মালিক", "রায়ত", "Owner", "Holder", "பட்டாதாரர்", "உரிமையாளர்"]):
                 parts = re.split(r"[:：\-।]", line, maxsplit=1)
                 if len(parts) > 1 and len(parts[1].strip()) >= 3:
                     fields["owner_name"] = {"value": parts[1].strip(" \t:|-"), "confidence": 0.89}
                     break
 
-    # General honorific regex fallback
     if not fields["owner_name"]["value"]:
-        m_hon = re.search(r"\b(श्री|श्रीमती|মোহাম্মদ|শ্রী|শ্রীমতি|Shri|Smt|Mr\.)\s+([^\n,\|]+)", text)
+        m_hon = re.search(r"\b(श्री|श्रीमती|মোহাম্মদ|শ্রী|শ্রীমতি|திரு|திருமதி|Shri|Smt|Mr\.)\s+([^\n,\|]+)", text)
         if m_hon and len(m_hon.group(0)) > 4:
             fields["owner_name"] = {"value": m_hon.group(0).strip(" \t:|-"), "confidence": 0.85}
 
@@ -578,7 +558,6 @@ async def process_sample(name: str, user: dict = Depends(get_current_user)):
         data = f.read()
 
     img = clean_ocr_image(Image.open(io.BytesIO(data)))
-    # Non-blocking parallel thread execution
     raw_text, detected_lang = await asyncio.to_thread(run_fast_ocr, img)
     parsed = extract_entities(raw_text, detected_lang, pages=1)
 
@@ -740,7 +719,7 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
 def verify_document(doc_id: str, req: VerifyReq, user: dict = Depends(get_current_user)):
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM documents WHERE id=?", (doc_id,))
+        cur.execute("SELECT fields FROM documents WHERE id=?", (doc_id,))
         r = cur.fetchone()
         if not r:
             raise HTTPException(status_code=404, detail="Document not found")
@@ -758,7 +737,6 @@ def verify_document(doc_id: str, req: VerifyReq, user: dict = Depends(get_curren
         conn.execute("UPDATE documents SET status='verified', fields=? WHERE id=?", (json.dumps(fields), doc_id))
         conn.commit()
 
-        # Update JSON backup mirror
         cur.execute("SELECT * FROM documents WHERE id=?", (doc_id,))
         updated_r = cur.fetchone()
         if updated_r:

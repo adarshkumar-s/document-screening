@@ -2,13 +2,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install Tesseract, English, Hindi, and Bengali traineddata
+# Install Tesseract, English, Hindi, Bengali, Marathi, and Tamil traineddata
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     tesseract-ocr-hin \
     tesseract-ocr-ben \
     tesseract-ocr-mar \
+    tesseract-ocr-tam \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
