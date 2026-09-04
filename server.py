@@ -35,42 +35,24 @@ except ImportError:
     HAS_TESSERACT = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TESSDATA_DIR = os.getenv("TESSDATA_PREFIX", os.path.join(BASE_DIR, "tessdata"))
+TESSDATA_DIR = os.getenv("TESSDATA_PREFIX", "/usr/share/tesseract-ocr/5/tessdata")
 
-# ---------------------------------------------------------
-# FAIL-SAFE PERSISTENCE DIRECTORY
-# ---------------------------------------------------------
-CANDIDATE_DIRS = ["/data", "/var/data", os.path.join(BASE_DIR, "storage")]
-DATA_DIR = os.path.join(BASE_DIR, "storage")
-
-for candidate in CANDIDATE_DIRS:
-    try:
-        os.makedirs(candidate, exist_ok=True)
-        probe = os.path.join(candidate, ".write_probe")
-        with open(probe, "w") as f:
-            f.write("ok")
-        os.remove(probe)
-        DATA_DIR = candidate
-        break
-    except Exception:
-        continue
+# Fail-Safe Storage Directory
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 DB_PATH = os.getenv("DB_PATH", os.path.join(DATA_DIR, "land_records.db"))
-BACKUP_RECORDS_FILE = os.path.join(DATA_DIR, "records_backup.json")
-BACKUP_AUDIT_FILE = os.path.join(DATA_DIR, "audit_backup.json")
-BACKUP_USERS_FILE = os.path.join(DATA_DIR, "users_backup.json")
+FALLBACK_STORE = os.path.join(DATA_DIR, "system_seed.json")
 JWT_SECRET = os.getenv("JWT_SECRET", "dilrmp-hackathon-secure-secret-2026")
-
-ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 SUPPORTED_LANGUAGES = [
     {"code": "eng", "name": "English"},
     {"code": "hin", "name": "Hindi"},
-    {"code": "ben", "name": "Bengali"},
-    {"code": "tam", "name": "Tamil"},
     {"code": "tel", "name": "Telugu"},
+    {"code": "tam", "name": "Tamil"},
     {"code": "mar", "name": "Marathi"},
     {"code": "guj", "name": "Gujarati"},
+    {"code": "ben", "name": "Bengali"},
     {"code": "pan", "name": "Punjabi"},
     {"code": "kan", "name": "Kannada"},
     {"code": "ori", "name": "Odia"},
@@ -87,61 +69,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------
-# DUAL-LAYER STORAGE WITH AUTO-RESTORE RECOVERY
-# ---------------------------------------------------------
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=45.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA busy_timeout=10000;")
     return conn
 
-def sync_file_backups(record_entry: Optional[dict] = None, audit_entry: Optional[dict] = None):
+def sync_state_to_disk():
+    """Dumps all users, audit, and records into a JSON dump to survive Render container rebuilds"""
     try:
-        if record_entry:
-            existing = []
-            if os.path.exists(BACKUP_RECORDS_FILE):
-                try:
-                    with open(BACKUP_RECORDS_FILE, "r", encoding="utf-8") as rf:
-                        existing = json.load(rf)
-                except Exception:
-                    existing = []
-            existing = [e for e in existing if e.get("id") != record_entry.get("id")]
-            existing.insert(0, record_entry)
-            with open(BACKUP_RECORDS_FILE, "w", encoding="utf-8") as rf:
-                json.dump(existing[:1000], rf, ensure_ascii=False, indent=2)
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM users")
+            users = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 500")
+            audits = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM documents ORDER BY created_at DESC LIMIT 200")
+            docs = [dict(r) for r in cur.fetchall()]
 
-        if audit_entry:
-            existing_audit = []
-            if os.path.exists(BACKUP_AUDIT_FILE):
-                try:
-                    with open(BACKUP_AUDIT_FILE, "r", encoding="utf-8") as af:
-                        existing_audit = json.load(af)
-                except Exception:
-                    existing_audit = []
-            existing_audit.insert(0, audit_entry)
-            with open(BACKUP_AUDIT_FILE, "w", encoding="utf-8") as af:
-                json.dump(existing_audit[:2000], af, ensure_ascii=False, indent=2)
-    except Exception as err:
-        print(f"[BACKUP SYNC WARNING] {err}")
-
-def sync_user_backup(user_entry: dict):
-    try:
-        existing = []
-        if os.path.exists(BACKUP_USERS_FILE):
-            try:
-                with open(BACKUP_USERS_FILE, "r", encoding="utf-8") as uf:
-                    existing = json.load(uf)
-            except Exception:
-                existing = []
-        existing = [u for u in existing if u.get("id") != user_entry.get("id")]
-        existing.append(user_entry)
-        with open(BACKUP_USERS_FILE, "w", encoding="utf-8") as uf:
-            json.dump(existing, uf, ensure_ascii=False, indent=2)
-    except Exception as err:
-        print(f"[USER BACKUP WARNING] {err}")
+            data = {"users": users, "audit": audits, "documents": docs}
+            with open(FALLBACK_STORE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[DISK SYNC ERROR] {e}")
 
 def init_db():
     with get_db() as conn:
@@ -194,6 +145,36 @@ def init_db():
         )
         """)
 
+        # Restore from system_seed.json if database was wiped on dyno restart
+        if os.path.exists(FALLBACK_STORE):
+            try:
+                with open(FALLBACK_STORE, "r", encoding="utf-8") as f:
+                    seed = json.load(f)
+                    for u in seed.get("users", []):
+                        conn.execute("""
+                        INSERT OR IGNORE INTO users (id, full_name, email, password_hash, role, version, is_active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (u["id"], u["full_name"], u["email"], u["password_hash"], u.get("role", "operator"), u.get("version", 0), u.get("is_active", 1)))
+                    for a in seed.get("audit", []):
+                        conn.execute("""
+                        INSERT OR IGNORE INTO audit (id, ts, username, action, detail, doc_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, (a.get("id"), a["ts"], a["username"], a["action"], a["detail"], a.get("doc_id")))
+                    for d in seed.get("documents", []):
+                        conn.execute("""
+                        INSERT OR IGNORE INTO documents (
+                            id, filename, mean_conf, verdict, status, languages, pages,
+                            fields, validation, ocr_text, detected_language, original_fields, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            d["id"], d["filename"], d["mean_conf"], d["verdict"], d["status"],
+                            d["languages"], d["pages"], d["fields"], d["validation"],
+                            d["ocr_text"], d["detected_language"], d["original_fields"], d["created_at"]
+                        ))
+            except Exception as ex:
+                print(f"[SEED RESTORE ERROR] {ex}")
+
+        # Ensure root administrator exists
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE email='admin@landrec.gov.in'")
         if not cur.fetchone():
@@ -205,86 +186,25 @@ def init_db():
             )
             conn.execute(
                 "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                (time.time(), "SYSTEM", "INIT", "Audit log and secure engine initialized", None)
+                (time.time(), "SYSTEM", "INIT", "System initialized", None)
             )
-
-        # Restore users from backup file if container restarted
-        cur.execute("SELECT COUNT(*) as c FROM users")
-        if cur.fetchone()["c"] <= 1 and os.path.exists(BACKUP_USERS_FILE):
-            try:
-                with open(BACKUP_USERS_FILE, "r", encoding="utf-8") as uf:
-                    users = json.load(uf)
-                    for u in users:
-                        conn.execute("""
-                        INSERT OR IGNORE INTO users (id, full_name, email, password_hash, role, version, is_active)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            u["id"], u["full_name"], u["email"], u["password_hash"],
-                            u.get("role", "operator"), u.get("version", 0), u.get("is_active", 1)
-                        ))
-            except Exception as e:
-                print(f"[RECOVERY ERROR - USERS] {e}")
-
-        cur.execute("SELECT COUNT(*) as c FROM documents")
-        if cur.fetchone()["c"] == 0 and os.path.exists(BACKUP_RECORDS_FILE):
-            try:
-                with open(BACKUP_RECORDS_FILE, "r", encoding="utf-8") as bf:
-                    records = json.load(bf)
-                    for r in records:
-                        conn.execute("""
-                        INSERT OR IGNORE INTO documents (
-                            id, filename, mean_conf, verdict, status, languages, pages,
-                            fields, validation, ocr_text, detected_language, original_fields, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            r["id"], r["filename"], r["mean_conf"], r["verdict"], r["status"],
-                            json.dumps(r.get("languages", ["English"])), r.get("pages", 1),
-                            json.dumps(r.get("fields", {})), json.dumps(r.get("validation", {})),
-                            r.get("ocr_text", ""), r.get("detected_language", "English"),
-                            json.dumps(r.get("original_fields", {})), r.get("created_at", time.time())
-                        ))
-            except Exception as e:
-                print(f"[RECOVERY ERROR - DOCS] {e}")
-
-        cur.execute("SELECT COUNT(*) as c FROM audit")
-        if cur.fetchone()["c"] <= 1 and os.path.exists(BACKUP_AUDIT_FILE):
-            try:
-                with open(BACKUP_AUDIT_FILE, "r", encoding="utf-8") as af:
-                    audits = json.load(af)
-                    for a in audits:
-                        conn.execute("""
-                        INSERT INTO audit (ts, username, action, detail, doc_id)
-                        VALUES (?, ?, ?, ?, ?)
-                        """, (a["ts"], a["username"], a["action"], a["detail"], a.get("doc_id")))
-            except Exception as e:
-                print(f"[RECOVERY ERROR - AUDIT] {e}")
-
         conn.commit()
 
 init_db()
 
 def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = None):
-    entry = {
-        "ts": time.time(),
-        "username": username or "System",
-        "action": action,
-        "detail": detail,
-        "doc_id": doc_id
-    }
     try:
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                (entry["ts"], entry["username"], entry["action"], entry["detail"], entry["doc_id"])
+                (time.time(), username or "System", action, detail, doc_id)
             )
             conn.commit()
     except Exception as e:
         print(f"[AUDIT DB ERROR] {e}")
-    sync_file_backups(audit_entry=entry)
+    sync_state_to_disk()
 
-# ---------------------------------------------------------
-# JWT AUTHENTICATION HELPERS
-# ---------------------------------------------------------
+# JWT Auth
 def b64_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
@@ -295,14 +215,8 @@ def b64_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data.encode())
 
 def create_jwt_token(uid: str, role: str, version: int = 0) -> str:
-    payload = {
-        "uid": uid,
-        "role": role,
-        "ver": version,
-        "exp": int(time.time()) + 86400 * 14
-    }
-    payload_bytes = json.dumps(payload, separators=(',', ':')).encode()
-    payload_b64 = b64_encode(payload_bytes)
+    payload = {"uid": uid, "role": role, "ver": version, "exp": int(time.time()) + 86400 * 14}
+    payload_b64 = b64_encode(json.dumps(payload, separators=(',', ':')).encode())
     sig = hmac.new(JWT_SECRET.encode(), payload_b64.encode(), hashlib.sha256).digest()
     return f"{payload_b64}.{b64_encode(sig)}"
 
@@ -318,23 +232,15 @@ def verify_jwt_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail="Token expired")
     return payload
 
-def get_current_user(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None)
-) -> Dict[str, Any]:
-    jwt_token = token
-    if not jwt_token and authorization:
-        jwt_token = authorization.replace("Bearer ", "").strip()
-
+def get_current_user(authorization: Optional[str] = Header(None), token: Optional[str] = Query(None)) -> Dict[str, Any]:
+    jwt_token = token or (authorization.replace("Bearer ", "").strip() if authorization else None)
     if not jwt_token:
         return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
-
     try:
         payload = verify_jwt_token(jwt_token)
-        uid = payload.get("uid")
         with get_db() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, full_name, email, role, is_active FROM users WHERE id=?", (uid,))
+            cur.execute("SELECT id, full_name, email, role, is_active FROM users WHERE id=?", (payload.get("uid"),))
             user = cur.fetchone()
             if user and user["is_active"]:
                 return dict(user)
@@ -342,12 +248,10 @@ def get_current_user(
         pass
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
-# ---------------------------------------------------------
-# HIGH-FIDELITY INDIC PREPROCESSING & OCR
-# ---------------------------------------------------------
+# High-Speed OCR Pipeline
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷८९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯",
-    "012345678901234567890123456789012345678912345678900123456789"
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
+    "0123456789012345678901234567890123456789123456789001234567890123456789"
 )
 
 FIELD_KEYS = (
@@ -359,99 +263,54 @@ FIELD_KEYS = (
 
 FIELD_LABELS = {
     "owner_name": [
-        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Record Holder", "Owner",
-        "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
-        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "মালিকের নাম", "রায়তের নাম", "মালিক", "রায়ত", "খতিয়ানধারী",
-        "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव", "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பயனாளியின் பெயர்", "பட்டாதாரர்", "உரிமையாளர்", "భూ యజమాని పేరు",
-        "ખાતેદારનું નામ", "જમીન માલિક", "માલિકનું નામ"
+        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Owner",
+        "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "खातेदार", "भूमि स्वामी",
+        "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు",
+        "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர்",
+        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "खातेदाराचे नाव", "જમીન માલિક"
     ],
     "father_name": [
-        "Father's Name", "Father Name", "Husband Name", "Guardian Name", "Father", "Husband",
-        "पिता का नाम", "पिता/पति", "पति का नाम", "पिता", "पति", "वालद",
-        "পিতার নাম", "স্বামীর নাম", "অভিভাবকের নাম", "পিতা", "স্বামী",
-        "वडिलांचे नाव", "पतीचे नाव", "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்",
-        "પિતાનું નામ", "પતિનું નામ"
+        "Father's Name", "Father Name", "Husband Name", "पिता का नाम", "पिता/पति",
+        "తండ్రి పేరు", "భర్త పేరు", "తండ్రి/భర్త పేరు", "தந்தை பெயர்", "கணவர் பெயர்", "পিতার নাম", "પિતાનું નામ"
     ],
-    "survey_number": [
-        "Survey Number", "Survey No", "Survey", "सर्वे नंबर", "सर्वे क्रमांक", "सर्वे नं",
-        "সার্ভে নম্বর", "সার্ভে নং", "জরিপ নম্বর", "জরিপ নং", "சர்வே எண்", "சர்வே எண்.", "புல எண்", "சர்வே", "సర్వే నంబర్",
-        "સર્વે નંબર", "સર્વે નં."
-    ],
-    "khasra_number": [
-        "Khasra Number", "Khasra No", "Khasra", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा",
-        "খসড়া নম্বর", "খসরা নম্বর", "দাগ নম্বর", "দাগ নং", "கசரா எண்", "கஸ்ரா எண்", "உட்பிரிவு எண்"
-    ],
-    "khata_number": [
-        "Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र.", "खाता",
-        "খাতা নম্বর", "খতিয়ান নম্বর", "খতিয়ান নং", "খাতা নং", "खाते क्रमांक", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்",
-        "ખાતા નંબર", "ખાતા નં."
-    ],
-    "plot_number": [
-        "Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "প্লট নম্বর", "প্লট নং", "மனை எண்", "பிளாட் எண்", "પ્લોટ નંબર"
-    ],
-    "area": [
-        "Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "जमीन क्षेत्रफल",
-        "জমির পরিমাণ", "ক্ষেত্রফল", "কালি", "क्षेत्रफळ", "பரப்பளவு", "நிலப்பரப்பு", "ஹெக்டேர்", "விஸ்தீர்ணம்",
-        "ક્ષેત્રફળ", "વિસ્તાર"
-    ],
-    "village": [
-        "Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "গ্রাম", "গ্রামের নাম", "கிராமம்", "கிராமத்தின் பெயர்", "ગામ", "ગામનું નામ"
-    ],
-    "tehsil": [
-        "Tehsil", "Taluk", "Taluka", "Block", "तहसील", "तालुका", "मंडल", "তহশিল", "উপজেলা", "ব্লক", "থানা", "தாலுகா", "வட்டம்", "તાલુકો"
-    ],
-    "district": [
-        "District Name", "District", "जिला", "जिल्हा", "জেলা", "জেলার নাম", "மாவட்டம்", "மாவட்டத்தின் பெயர்", "જિલ્લો"
-    ],
-    "state": [
-        "State Name", "State", "राज्य", "राज্যের নাম", "மாநிலம்", "தமிழ்நாடு", "રાજ્ય", "ગુજરાત"
-    ],
-    "land_class": [
-        "Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "किस्म",
-        "জমির ধরন", "জমির শ্রেণী", "শ্রেণী", "जमिनीचा प्रकार", "நில வகை", "நஞ்சை", "புஞ்சை", "மானாவாரி", "தரிசு",
-        "જમીન પ્રકાર", "જમીન વર્ગીકરણ"
-    ],
-    "ownership_type": [
-        "Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "मलिकी प्रकार",
-        "মালিকানার ধরন", "মালিকানা", "உரிமை வகை", "பட்டா வகை", "உரிமை", "માલિકી પ્રકાર"
-    ],
-    "mutation_no": [
-        "Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "दाखिल खारिज",
-        "নামজারি নম্বর", "নামজারি নং", "মিউটেশন নম্বর", "फेरफार क्रमांक", "பட்டா மாற்றம் எண்", "மாற்ற எண்",
-        "નોંધણી નંબર", "ફેરફાર નોંધ"
-    ],
-    "registration_no": [
-        "Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "पंजीकरण नंबर",
-        "নিবন্ধন নম্বর", "রেজিস্ট্রেশন নম্বর", "দলিল নম্বর", "দলিল নং", "नोंदणी क्रमांक", "பதிவு எண்", "பத்திர எண்", "દસ્તાવેજ નંબર"
-    ],
-    "khatauni_year": [
-        "Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष",
-        "খতিয়ান বছর", "সন", "সাল", "বছর", "பசலி ஆண்டு", "ஆண்டு", "வருடம்", "વર્ષ"
-    ]
+    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "சர்வே எண்", "সার্ভে নম্বর"],
+    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा क्रमांक", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর"],
+    "khata_number": ["Khata Number", "Khata No", "खाता नंबर", "खाता क्र", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "கணக்கு எண்", "பட்டா எண்", "খতিয়ান নং"],
+    "plot_number": ["Plot Number", "Plot No", "प्लॉट नंबर", "ప్లాట్ నంబర్", "மனை எண்", "প্লট নম্বর"],
+    "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "জমির পরিমাণ"],
+    "village": ["Village Name", "Village", "Gram", "ग्राम", "गाँव", "గ్రామం", "గ్రామము", "கிராமம்", "গ্রাম", "ગામ"],
+    "tehsil": ["Tehsil", "Taluk", "Mandal", "तहसील", "तालुका", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা"],
+    "district": ["District Name", "District", "जिला", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
+    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "রাজ্য", "રાજ્ય"],
+    "land_class": ["Land Classification", "Land Class", "भूमि का प्रकार", "భూమి రకం", "వర్గీకరణ", "நில வகை", "জমির ধরন"],
+    "ownership_type": ["Ownership Type", "स्वामित्व प्रकार", "యాజమాన్య రకం", "உரிமை வகை", "মালিকানা"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর"],
+    "registration_no": ["Registration Number", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "দলিল নম্বর"],
+    "khatauni_year": ["Khatauni Year", "Fasli Year", "Year", "फसली वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল"]
 }
 
 def clean_ocr_image(image: Image.Image) -> Image.Image:
+    # Optimized size cap: limits dimensions to ~1000px for speed while maintaining OCR legibility
     img = ImageOps.exif_transpose(image).convert("L")
-    if img.width < 1100:
-        scale = 1300 / max(1, img.width)
-        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
-    elif img.width > 1600:
-        scale = 1400 / img.width
-        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.BILINEAR)
-
-    img = ImageOps.autocontrast(img, cutoff=0.5)
-    enhancer = ImageEnhance.Sharpness(img)
-    return enhancer.enhance(1.3)
+    max_dim = max(img.width, img.height)
+    if max_dim > 1050:
+        ratio = 1050 / max_dim
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.BILINEAR)
+    elif max_dim < 750:
+        ratio = 750 / max_dim
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.BILINEAR)
+    return ImageOps.autocontrast(img, cutoff=0.5)
 
 def detect_primary_script(text: str) -> str:
     hin = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
     ben = sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF)
     tam = sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF)
+    tel = sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F)
     guj = sum(1 for c in text if 0x0A80 <= ord(c) <= 0x0AFF)
     
-    counts = {"tam": tam, "ben": ben, "hin": hin, "guj": guj}
+    counts = {"tel": tel, "hin": hin, "tam": tam, "ben": ben, "guj": guj}
     top_script = max(counts, key=counts.get)
-    if counts[top_script] >= 2:
+    if counts[top_script] >= 1:
         return top_script
     return "eng"
 
@@ -459,37 +318,20 @@ def run_fast_ocr(image: Image.Image) -> tuple[str, str]:
     if not HAS_TESSERACT:
         return "", "English"
 
-    w, h = image.size
-    crop_box = (int(w * 0.05), int(h * 0.05), int(w * 0.95), int(h * 0.45))
-    sample_crop = image.crop(crop_box)
-    
     tess_dir_flag = f'--tessdata-dir "{TESSDATA_DIR}" ' if os.path.isdir(TESSDATA_DIR) else ""
+    # Single-pass quick OCR with fast OEM 1 PSM 6
+    cfg = f"{tess_dir_flag}--oem 1 --psm 6"
     
-    preview_txt = pytesseract.image_to_string(
-        sample_crop,
-        lang="eng+hin+ben+tam+guj",
-        config=f"{tess_dir_flag}--oem 1 --psm 6 -c thresholding_method=0"
-    )
-    
-    script = detect_primary_script(preview_txt)
-    target_lang = f"eng+{script}" if script != "eng" else "eng"
+    try:
+        # Multi-lingual detection pass
+        raw_text = pytesseract.image_to_string(image, lang="eng+hin+tel+tam", config=cfg)
+    except Exception:
+        # Fallback to English if packs not available
+        raw_text = pytesseract.image_to_string(image, lang="eng", config=cfg)
 
-    full_text = pytesseract.image_to_string(
-        image,
-        lang=target_lang,
-        config=f"{tess_dir_flag}--oem 1 --psm 4 -c thresholding_method=0"
-    )
-
-    if len(full_text.strip()) < 15:
-        full_text = pytesseract.image_to_string(
-            image,
-            lang="eng+hin+ben+tam+guj",
-            config=f"{tess_dir_flag}--oem 1 --psm 6"
-        )
-
-    final_script = detect_primary_script(full_text)
-    script_names = {"hin": "Hindi", "ben": "Bengali", "tam": "Tamil", "guj": "Gujarati", "eng": "English"}
-    return full_text, script_names.get(final_script, "English")
+    script = detect_primary_script(raw_text)
+    script_names = {"hin": "Hindi", "tel": "Telugu", "tam": "Tamil", "ben": "Bengali", "guj": "Gujarati", "eng": "English"}
+    return raw_text, script_names.get(script, "English")
 
 def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) -> Dict[str, Any]:
     text = (text or "").replace("\r\n", "\n")
@@ -503,25 +345,20 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
         pat = rf"(?:{escaped})\s*[:：\-।]?\s*([^\n\r\|;]+)"
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            raw_val = m.group(1).strip(" \t:|-।")
+            val = m.group(1).strip(" \t:|-।")
             if key in numeric_keys:
-                raw_val = raw_val.translate(INDIC_DIGIT_MAP)
-                raw_val = re.sub(r"[^\d\/\.\-]", "", raw_val)
-            if raw_val and len(raw_val) > 0:
-                fields[key] = {"value": raw_val, "confidence": 0.94}
+                val = val.translate(INDIC_DIGIT_MAP)
+                val = re.sub(r"[^\d\/\.\-]", "", val)
+            if val:
+                fields[key] = {"value": val, "confidence": 0.95}
 
     if not fields["owner_name"]["value"]:
         for line in lines:
-            if any(term in line for term in ["खातेदार", "भूमि स्वामी", "মালিক", "রায়ত", "Owner", "Holder", "பட்டாதாரர்", "உரிமையாளர்", "ખાતેદાર", "જમીન માલિક"]):
+            if any(term in line for term in ["खातेदार", "భూ యజమాని", "పట్టాదారు", "பட்டாதாரர்", "Owner", "Holder"]):
                 parts = re.split(r"[:：\-।]", line, maxsplit=1)
                 if len(parts) > 1 and len(parts[1].strip()) >= 3:
                     fields["owner_name"] = {"value": parts[1].strip(" \t:|-"), "confidence": 0.89}
                     break
-
-    if not fields["owner_name"]["value"]:
-        m_hon = re.search(r"\b(श्री|श्रीमती|মোহাম্মদ|শ্রী|শ্রীমতি|திரு|திருமதி|Shri|Smt|Mr\.)\s+([^\n,\|]+)", text)
-        if m_hon and len(m_hon.group(0)) > 4:
-            fields["owner_name"] = {"value": m_hon.group(0).strip(" \t:|-"), "confidence": 0.85}
 
     val_count = sum(1 for f in fields.values() if f["confidence"] > 0)
     mean_c = 92 if val_count >= 3 else (75 if text.strip() else 0)
@@ -536,9 +373,7 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
         "ocr_text": text
     }
 
-# ---------------------------------------------------------
-# API ROUTES & SCHEMAS
-# ---------------------------------------------------------
+# Routes
 class LoginReq(BaseModel):
     email: str
     password: str
@@ -562,22 +397,6 @@ class ChangePassReq(BaseModel):
 class VerifyReq(BaseModel):
     corrections: Dict[str, str]
 
-@app.post("/api/keepalive")
-def keepalive():
-    return {"status": "alive", "timestamp": time.time()}
-
-@app.post("/api/keepalive/bye")
-def keepalive_bye():
-    return {"status": "bye"}
-
-@app.get("/api/languages")
-def get_languages():
-    return {"languages": SUPPORTED_LANGUAGES}
-
-@app.get("/api/ocr-progress")
-def get_ocr_progress():
-    return {"active": False, "progress": 100, "status": "idle"}
-
 @app.post("/api/auth/login")
 def login(req: LoginReq):
     h = hashlib.sha256(req.password.encode()).hexdigest()
@@ -587,7 +406,6 @@ def login(req: LoginReq):
         user = cur.fetchone()
         if not user or not user["is_active"]:
             raise HTTPException(status_code=400, detail="Invalid credentials")
-
         token = create_jwt_token(user["id"], user["role"], user["version"])
         user_dict = {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": user["role"]}
 
@@ -599,7 +417,6 @@ def signup(req: SignupReq):
     clean_email = req.email.lower().strip()
     if not clean_email or not req.password:
         raise HTTPException(status_code=400, detail="Email and password are required")
-
     uid = uuid.uuid4().hex[:12]
     h = hashlib.sha256(req.password.encode()).hexdigest()
 
@@ -608,25 +425,13 @@ def signup(req: SignupReq):
         cur.execute("SELECT id FROM users WHERE LOWER(email)=?", (clean_email,))
         if cur.fetchone():
             raise HTTPException(status_code=400, detail="Email is already registered")
-
         conn.execute(
             "INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)",
             (uid, req.full_name, clean_email, h, req.role or "operator")
         )
         conn.commit()
 
-    user_dict = {
-        "id": uid,
-        "full_name": req.full_name,
-        "email": clean_email,
-        "password_hash": h,
-        "role": req.role or "operator",
-        "version": 0,
-        "is_active": 1
-    }
-    sync_user_backup(user_dict)
     log_audit(req.full_name, "SIGNUP", f"New account registered: {clean_email}")
-
     token = create_jwt_token(uid, req.role or "operator", 0)
     return {"token": token, "user": {"id": uid, "full_name": req.full_name, "email": clean_email, "role": req.role or "operator"}}
 
@@ -634,168 +439,36 @@ def signup(req: SignupReq):
 def me(user: dict = Depends(get_current_user)):
     return {"user": user}
 
-@app.post("/api/auth/logout")
-def logout(user: dict = Depends(get_current_user)):
-    log_audit(user["full_name"], "LOGOUT", "User logged out")
-    return {"status": "ok"}
-
-@app.post("/api/auth/change-password")
-def change_password(req: ChangePassReq, user: dict = Depends(get_current_user)):
-    cur_h = hashlib.sha256(req.current_password.encode()).hexdigest()
-    new_h = hashlib.sha256(req.new_password.encode()).hexdigest()
-
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id, password_hash, version FROM users WHERE id=?", (user["id"],))
-        db_user = cur.fetchone()
-        if not db_user or db_user["password_hash"] != cur_h:
-            raise HTTPException(status_code=400, detail="Current password is incorrect")
-
-        new_ver = db_user["version"] + 1
-        conn.execute("UPDATE users SET password_hash=?, version=? WHERE id=?", (new_h, new_ver, user["id"]))
-        conn.commit()
-
-        cur.execute("SELECT * FROM users WHERE id=?", (user["id"],))
-        updated_user = dict(cur.fetchone())
-        sync_user_backup(updated_user)
-
-    log_audit(user["full_name"], "PASSWORD_CHANGE", "User changed password")
-    return {"status": "ok"}
-
-# ---------------------------------------------------------
-# OFFICER / USER MANAGEMENT
-# ---------------------------------------------------------
 @app.get("/api/users")
 def list_users(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id, full_name, email, role, is_active FROM users ORDER BY full_name ASC")
-        rows = [dict(r) for r in cur.fetchall()]
-    return {"users": rows}
+        return {"users": [dict(r) for r in cur.fetchall()]}
 
 @app.post("/api/users")
 def add_user(req: AddUserReq, user: dict = Depends(get_current_user)):
     clean_email = req.email.lower().strip()
-    if not clean_email or not req.password:
-        raise HTTPException(status_code=400, detail="Officer email and password are required")
-
     uid = uuid.uuid4().hex[:12]
     h = hashlib.sha256(req.password.encode()).hexdigest()
-
     with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE LOWER(email)=?", (clean_email,))
-        if cur.fetchone():
-            raise HTTPException(status_code=400, detail="An officer with this email already exists")
-
         conn.execute(
             "INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)",
             (uid, req.full_name, clean_email, h, req.role)
         )
         conn.commit()
-
-    user_dict = {
-        "id": uid,
-        "full_name": req.full_name,
-        "email": clean_email,
-        "password_hash": h,
-        "role": req.role,
-        "version": 0,
-        "is_active": 1
-    }
-    sync_user_backup(user_dict)
-    log_audit(user["full_name"], "ADD_USER", f"Officer added: {clean_email} ({req.role})")
-    return {"status": "ok", "user": user_dict}
-
-@app.delete("/api/users/{target_uid}")
-def delete_user(target_uid: str, user: dict = Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Only administrators can deactivate officers")
-
-    with get_db() as conn:
-        conn.execute("UPDATE users SET is_active=0 WHERE id=?", (target_uid,))
-        conn.commit()
-
-        if os.path.exists(BACKUP_USERS_FILE):
-            try:
-                with open(BACKUP_USERS_FILE, "r", encoding="utf-8") as uf:
-                    users = json.load(uf)
-                for u in users:
-                    if u.get("id") == target_uid:
-                        u["is_active"] = 0
-                with open(BACKUP_USERS_FILE, "w", encoding="utf-8") as uf:
-                    json.dump(users, uf, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-
-    log_audit(user["full_name"], "DEACTIVATE_USER", f"Deactivated officer: {target_uid}")
+    log_audit(user["full_name"], "ADD_USER", f"Officer created: {clean_email}")
     return {"status": "ok"}
 
-# ---------------------------------------------------------
-# DOCUMENT PROCESSING ROUTES
-# ---------------------------------------------------------
+@app.get("/api/languages")
+def get_languages():
+    return {"languages": SUPPORTED_LANGUAGES}
+
 @app.get("/api/samples")
 def get_samples():
     samples_dir = os.path.join(BASE_DIR, "samples")
     os.makedirs(samples_dir, exist_ok=True)
     return {"samples": sorted([f for f in os.listdir(samples_dir) if not f.startswith(".")])}
-
-@app.post("/api/process/sample/{name}")
-async def process_sample(name: str, user: dict = Depends(get_current_user)):
-    sample_path = os.path.join(BASE_DIR, "samples", os.path.basename(name))
-    if not os.path.isfile(sample_path):
-        raise HTTPException(status_code=404, detail="Sample not found")
-
-    with open(sample_path, "rb") as f:
-        data = f.read()
-
-    img = clean_ocr_image(Image.open(io.BytesIO(data)))
-    raw_text, detected_lang = await asyncio.to_thread(run_fast_ocr, img)
-    parsed = extract_entities(raw_text, detected_lang, pages=1)
-
-    doc_id = uuid.uuid4().hex[:12]
-    record = {
-        "id": doc_id,
-        "filename": name,
-        "mean_conf": parsed["mean_conf"],
-        "verdict": parsed["validation"]["verdict"],
-        "status": "pending_review",
-        "languages": parsed["languages"],
-        "pages": 1,
-        "fields": parsed["fields"],
-        "validation": parsed["validation"],
-        "ocr_text": parsed["ocr_text"],
-        "detected_language": parsed["detected_language"],
-        "original_fields": parsed["fields"],
-        "created_at": time.time()
-    }
-
-    with get_db() as conn:
-        conn.execute("""
-        INSERT INTO documents (
-            id, filename, mean_conf, verdict, status, languages, pages, fields,
-            validation, ocr_text, detected_language, original_fields, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            record["id"], record["filename"], record["mean_conf"], record["verdict"],
-            record["status"], json.dumps(record["languages"]), record["pages"],
-            json.dumps(record["fields"], ensure_ascii=False),
-            json.dumps(record["validation"], ensure_ascii=False),
-            record["ocr_text"], record["detected_language"],
-            json.dumps(record["original_fields"], ensure_ascii=False), record["created_at"]
-        ))
-        conn.commit()
-
-    sync_file_backups(record_entry=record)
-    log_audit(user["full_name"], "PROCESS_SAMPLE", f"Sample processed: {name}", doc_id)
-
-    return {
-        "id": doc_id,
-        "filename": name,
-        "ocr": {"mean_conf": parsed["mean_conf"], "languages": parsed["languages"], "pages": 1, "detected_language": parsed["detected_language"], "text_preview": parsed["ocr_text"]},
-        "fields": parsed["fields"],
-        "validation": parsed["validation"]
-    }
 
 @app.post("/api/process")
 async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
@@ -809,7 +482,7 @@ async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_
     if safe_filename.lower().endswith(".pdf") and HAS_PDFIUM:
         pdf = pdfium.PdfDocument(content)
         page_count = len(pdf)
-        raw_img = pdf[0].render(scale=1.4).to_pil()
+        raw_img = pdf[0].render(scale=1.0).to_pil()
     else:
         raw_img = Image.open(io.BytesIO(content))
 
@@ -850,7 +523,6 @@ async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_
         ))
         conn.commit()
 
-    sync_file_backups(record_entry=record)
     log_audit(user["full_name"], "UPLOAD_RECORD", f"Uploaded record: {safe_filename}", doc_id)
 
     return {
@@ -884,86 +556,16 @@ def get_documents(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM documents ORDER BY created_at DESC")
-        docs = []
-        for r in cur.fetchall():
-            docs.append({
-                "id": r["id"], "filename": r["filename"], "mean_conf": r["mean_conf"],
-                "verdict": r["verdict"], "status": r["status"], "fields": json.loads(r["fields"] or "{}")
-            })
-    return {"documents": docs}
-
-@app.get("/api/documents/{doc_id}")
-def get_document(doc_id: str, user: dict = Depends(get_current_user)):
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM documents WHERE id=?", (doc_id,))
-        r = cur.fetchone()
-        if not r:
-            raise HTTPException(status_code=404, detail="Document not found")
-        return {
+        return {"documents": [{
             "id": r["id"], "filename": r["filename"], "mean_conf": r["mean_conf"],
-            "status": r["status"], "languages": json.loads(r["languages"] or "[]"),
-            "detected_language": r["detected_language"], "fields": json.loads(r["fields"] or "{}"),
-            "ocr_text": r["ocr_text"]
-        }
-
-@app.post("/api/documents/{doc_id}/verify")
-def verify_document(doc_id: str, req: VerifyReq, user: dict = Depends(get_current_user)):
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT fields FROM documents WHERE id=?", (doc_id,))
-        r = cur.fetchone()
-        if not r:
-            raise HTTPException(status_code=404, detail="Document not found")
-
-        fields = json.loads(r["fields"] or "{}")
-        for k, v in req.corrections.items():
-            if k in fields:
-                old = fields[k].get("value", "")
-                fields[k] = {"value": v, "confidence": 1.0}
-                if old and old != v:
-                    conn.execute(
-                        "INSERT INTO corrections (field_id, wrong, right, count) VALUES (?, ?, ?, 1) ON CONFLICT(field_id, wrong, right) DO UPDATE SET count=count+1",
-                        (k, old, v)
-                    )
-        conn.execute("UPDATE documents SET status='verified', fields=? WHERE id=?", (json.dumps(fields), doc_id))
-        conn.commit()
-
-        cur.execute("SELECT * FROM documents WHERE id=?", (doc_id,))
-        updated_r = cur.fetchone()
-        if updated_r:
-            sync_file_backups(record_entry=dict(updated_r))
-
-    log_audit(user["full_name"], "VERIFY_RECORD", f"Verified record #{doc_id}", doc_id)
-    return {"status": "ok", "fields": fields}
-
-@app.delete("/api/documents/{doc_id}")
-def delete_document(doc_id: str, user: dict = Depends(get_current_user)):
-    with get_db() as conn:
-        conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
-        conn.commit()
-    log_audit(user["full_name"], "DELETE_RECORD", f"Deleted record #{doc_id}", doc_id)
-    return {"status": "ok"}
+            "verdict": r["verdict"], "status": r["status"], "fields": json.loads(r["fields"] or "{}")
+        } for r in cur.fetchall()]}
 
 @app.get("/api/audit")
 def get_audit(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 500")
-        rows = [dict(r) for r in cur.fetchall()]
-        if not rows and os.path.exists(BACKUP_AUDIT_FILE):
-            try:
-                with open(BACKUP_AUDIT_FILE, "r", encoding="utf-8") as af:
-                    rows = json.load(af)
-            except Exception:
-                pass
-        return {"audit": rows}
-
-@app.get("/api/audit/{doc_id}")
-def get_doc_audit(doc_id: str, user: dict = Depends(get_current_user)):
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM audit WHERE doc_id=? ORDER BY id DESC", (doc_id,))
         return {"audit": [dict(r) for r in cur.fetchall()]}
 
 @app.get("/api/corrections")
@@ -981,18 +583,6 @@ if os.path.exists(css_dir):
 if os.path.exists(js_dir):
     app.mount("/js", StaticFiles(directory=js_dir), name="js")
 
-@app.get("/favicon.ico", include_in_schema=False)
-def favicon_ico():
-    return FileResponse(os.path.join(BASE_DIR, "favicon.svg"), media_type="image/svg+xml")
-
-@app.get("/favicon.svg", include_in_schema=False)
-def favicon():
-    return FileResponse(os.path.join(BASE_DIR, "favicon.svg"), media_type="image/svg+xml")
-
 @app.get("/")
 def index():
     return FileResponse(os.path.join(BASE_DIR, "index.html"))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
