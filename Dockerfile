@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install Tesseract engine and regional language packs including Telugu
+# Install Tesseract OCR engine, compilers, and Indian language models
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -23,7 +23,6 @@ COPY . .
 
 RUN mkdir -p /app/data
 
-# Prevent CPU thread contention on single-core cloud containers
 ENV OMP_THREAD_LIMIT=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 ENV PORT=10000
