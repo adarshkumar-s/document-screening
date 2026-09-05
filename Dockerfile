@@ -9,9 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-hin \
     tesseract-ocr-tel \
     tesseract-ocr-tam \
+    tesseract-ocr-ben \
     tesseract-ocr-mar \
     tesseract-ocr-guj \
-    tesseract-ocr-ben \
+    libpq-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -21,9 +23,10 @@ COPY . .
 
 RUN mkdir -p /app/data
 
+# Prevent CPU thread contention on single-core cloud containers
+ENV OMP_THREAD_LIMIT=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 ENV PORT=10000
-ENV DB_PATH=/app/data/land_records.db
 
 EXPOSE 10000
 
