@@ -258,9 +258,7 @@ async function upload(file){
   $('#processing').classList.remove('hidden'); 
   $('#result').classList.add('hidden');
 
-  // Grab the chosen OCR Language Mode directly from the dedicated select element
   const selectedLang = ($('#docTargetLang') ? $('#docTargetLang').value : 'auto');
-
   const fd = new FormData(); 
   fd.append('file', file);
 
@@ -418,7 +416,7 @@ function showResult(doc){
   goToUploadStep(1);
 }
 
-function buildInputField(container, fid, fieldObj){
+function buildInputField(container, fid, fieldObj, prefix='uploadfield'){
   fieldObj = fieldObj || {value:'', confidence:0};
   const missing = !fieldObj.value;
   const isLowConf = fieldObj.confidence < 0.75;
@@ -428,7 +426,7 @@ function buildInputField(container, fid, fieldObj){
       <span>${LABELS[fid] || fid}</span>
       ${missing ? '<span style="color:var(--err);font-size:11px">✚ Required</span>' : `<span class="pill ${isLowConf?'review':'valid'}">${Math.round(fieldObj.confidence*100)}%</span>`}
     </div>
-    <input type="text" value="${escapeHtml(fieldObj.value || '')}" data-uploadfield="${fid}" class="${missing || isLowConf ? 'lowconf' : ''}">
+    <input type="text" value="${escapeHtml(fieldObj.value || '')}" data-${prefix}="${fid}" class="${missing || isLowConf ? 'lowconf' : ''}">
   `;
   container.appendChild(wrap);
 }
@@ -476,6 +474,7 @@ let docCurrentPage = 1;
 const docPageSize = 8;
 let currentDocDetailId = null;
 let currentDocDetailStep = 1;
+let currentLoadedDocData = null;
 
 async function loadDocuments(){
   const d = await api('/api/documents');
@@ -533,7 +532,7 @@ function renderDocTable(){
     tr.appendChild(el('td', null, escapeHtml(parts.join(' · ')) || '<span style="color:var(--muted)">—</span>'));
 
     const td = el('td'); td.style.textAlign = 'right'; td.style.whiteSpace = 'nowrap';
-    const vb = el('button', 'btn ghost', '🔍 View');
+    const vb = el('button', 'btn ghost', '🔍 Edit & View');
     vb.style.padding = '5px 10px'; vb.style.fontSize = '12px'; vb.style.marginRight = '6px';
     vb.onclick = ()=>showDocDetail(doc.id);
     td.appendChild(vb);
@@ -555,12 +554,35 @@ if($('#docSearchInput')){
 function prevDocPage(){ if(docCurrentPage > 1){ docCurrentPage--; renderDocTable(); } }
 function nextDocPage(){ const totalPages = Math.ceil(allLoadedDocs.length / docPageSize); if(docCurrentPage < totalPages){ docCurrentPage++; renderDocTable(); } }
 
+function goToDocDetailStep(stepNum){
+  stepNum = Math.max(1, Math.min(3, parseInt(stepNum, 10) || 1));
+  currentDocDetailStep = stepNum;
+
+  for(let i=1; i<=3; i++){
+    const pane = $('#docDetailStep' + i);
+    if(pane) pane.classList.toggle('active', i === stepNum);
+  }
+
+  document.querySelectorAll('#docDetailStepIndicators .step-pill').forEach((pill, idx)=>{
+    pill.classList.toggle('active', (idx + 1) === stepNum);
+  });
+
+  const prevBtn = $('#btnDocDetailPrev');
+  if(prevBtn) prevBtn.disabled = (stepNum <= 1);
+  const nextBtn = $('#btnDocDetailNext');
+  if(nextBtn) nextBtn.disabled = (stepNum >= 3);
+}
+
 async function showDocDetail(id){
   try{
     const d = await api('/api/documents/' + id);
     currentDocDetailId = id;
+    currentLoadedDocData = d;
     const box = $('#docDetail');
     box.classList.remove('hidden');
+
+    const f = d.fields || {};
+
     box.innerHTML = `
       <div class="card-header">
         <div>
@@ -572,18 +594,111 @@ async function showDocDetail(id){
         </div>
         <button class="btn ghost" onclick="closeDocDetail()" style="padding:6px 12px;font-size:12px">✕ Close</button>
       </div>
-      <div class="form-section-card">
-        <h4 style="margin:0 0 10px;font-size:14px;color:var(--gov-navy)">OCR Raw Text</h4>
-        <div class="raw-ocr-box">${escapeHtml(d.ocr_text || 'No raw text stored')}</div>
+
+      <div class="stepper-header" style="margin-top:10px">
+        <div class="step-indicators" id="docDetailStepIndicators">
+          <div class="step-pill active" onclick="goToDocDetailStep(1)">
+            <span class="step-num">1</span> 👤 Ownership & Land
+          </div>
+          <div class="step-pill" onclick="goToDocDetailStep(2)">
+            <span class="step-num">2</span> 🏛️ Location & Registry
+          </div>
+          <div class="step-pill" onclick="goToDocDetailStep(3)">
+            <span class="step-num">3</span> 📜 Raw OCR Text
+          </div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="arrow-nav-btn" id="btnDocDetailPrev" onclick="goToDocDetailStep(currentDocDetailStep - 1)">◀ पिछला चरण (Prev)</button>
+          <button class="arrow-nav-btn primary" id="btnDocDetailNext" onclick="goToDocDetailStep(currentDocDetailStep + 1)">अगला चरण (Next) ▶</button>
+        </div>
+      </div>
+
+      <!-- STEP 1: OWNERSHIP -->
+      <div class="section-pane active" id="docDetailStep1">
+        <div class="form-section-card">
+          <h4 style="margin:0 0 14px;font-size:14px;color:var(--gov-navy)">👤 Owner, Khasra, Khata & Area Particulars</h4>
+          <div class="field-grid" id="detailStep1Fields"></div>
+        </div>
+      </div>
+
+      <!-- STEP 2: LOCATION -->
+      <div class="section-pane" id="docDetailStep2">
+        <div class="form-section-card">
+          <h4 style="margin:0 0 14px;font-size:14px;color:var(--gov-navy)">🏛️ Village, Tehsil, District, Mutation & Registration</h4>
+          <div class="field-grid" id="detailStep2Fields"></div>
+        </div>
+      </div>
+
+      <!-- STEP 3: OCR RAW -->
+      <div class="section-pane" id="docDetailStep3">
+        <div class="form-section-card">
+          <h4 style="margin:0 0 10px;font-size:14px;color:var(--gov-navy)">🔍 OCR Raw Extracted Text</h4>
+          <div class="raw-ocr-box">${escapeHtml(d.ocr_text || 'No raw text stored')}</div>
+        </div>
+      </div>
+
+      <!-- BOTTOM SAVE & VERIFY BAR -->
+      <div style="display:flex;align-items:center;justify-content:space-between;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px 18px;margin-top:16px">
+        <div>
+          <div style="font-weight:700;color:#166534;font-size:13px">✍️ संपादन एवं मानवीय सत्यापन (Verifier Action)</div>
+          <div style="font-size:12px;color:#475569">फ़ील्ड में आवश्यक संशोधन करें और 'सत्यापित करें' बटन दबाएं।</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span id="detailVerifyNote" style="font-size:12px;font-weight:600"></span>
+          <button class="btn saffron" id="btnSaveDetailVerify" onclick="saveRecordDetail('${id}')" style="padding:8px 18px">✓ Save & Verify</button>
+        </div>
       </div>
     `;
+
+    const s1 = $('#detailStep1Fields');
+    ['owner_name', 'father_name', 'survey_number', 'khasra_number', 'khata_number', 'plot_number', 'area'].forEach(fid=>{
+      buildInputField(s1, fid, f[fid], 'detailfield');
+    });
+
+    const s2 = $('#detailStep2Fields');
+    ['village', 'tehsil', 'district', 'state', 'land_class', 'ownership_type', 'mutation_no', 'registration_no', 'khatauni_year'].forEach(fid=>{
+      buildInputField(s2, fid, f[fid], 'detailfield');
+    });
+
+    goToDocDetailStep(1);
     box.scrollIntoView({behavior: 'smooth', block: 'nearest'});
   }catch(e){ alert(e.message); }
+}
+
+async function saveRecordDetail(id){
+  const corrections = {};
+  document.querySelectorAll('input[data-detailfield]').forEach(i=>{
+    const fid = i.dataset.detailfield;
+    corrections[fid] = i.value;
+  });
+
+  const btn = $('#btnSaveDetailVerify');
+  const note = $('#detailVerifyNote');
+  if(btn) btn.disabled = true;
+
+  try{
+    const d = await api('/api/documents/' + id + '/verify', {
+      method: 'POST',
+      body: JSON.stringify({corrections})
+    });
+    if(note){
+      note.textContent = '✓ Record verified & updated successfully!';
+      note.style.color = 'var(--ok)';
+    }
+    await loadDocuments();
+  }catch(e){
+    if(note){
+      note.textContent = 'Error: ' + e.message;
+      note.style.color = 'var(--err)';
+    }
+  }
+  if(btn) btn.disabled = false;
 }
 
 function closeDocDetail(){
   $('#docDetail').classList.add('hidden');
   currentDocDetailId = null;
+  currentLoadedDocData = null;
 }
 
 async function delDoc(id){
