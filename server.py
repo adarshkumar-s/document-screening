@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image, ImageOps, ImageEnhance
 
+# Limit CPU threads to prevent thrashing on shared cloud vCPUs
 os.environ["OMP_THREAD_LIMIT"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -39,13 +40,18 @@ except ImportError:
     HAS_TESSERACT = False
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-IS_POSTGRES = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
 
-if IS_POSTGRES:
+# Check if psycopg2 is available
+HAS_PSYCOPG2 = False
+if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        HAS_PSYCOPG2 = True
+    except ImportError:
+        HAS_PSYCOPG2 = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -79,13 +85,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------
+# FAIL-SAFE DATABASE ADAPTER WITH FAST TIMEOUT
+# ---------------------------------------------------------
 class DBConnection:
     def __init__(self):
-        self.is_pg = IS_POSTGRES
-        if self.is_pg:
-            self.conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        else:
-            self.conn = sqlite3.connect(SQLITE_PATH, timeout=30.0, check_same_thread=False)
+        self.is_pg = False
+        self.conn = None
+
+        if HAS_PSYCOPG2 and DATABASE_URL:
+            try:
+                # connect_timeout=3 ensures the server NEVER hangs during deployment
+                self.conn = psycopg2.connect(
+                    DATABASE_URL,
+                    cursor_factory=RealDictCursor,
+                    connect_timeout=3
+                )
+                self.is_pg = True
+            except Exception as e:
+                # Log error and immediately fallback to SQLite
+                print(f"[POSTGRES CONNECT WARNING] {e}. Falling back to SQLite.")
+                self.is_pg = False
+                self.conn = None
+
+        if not self.is_pg:
+            self.conn = sqlite3.connect(SQLITE_PATH, timeout=10.0, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -94,11 +118,12 @@ class DBConnection:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            self.conn.commit()
-        else:
-            self.conn.rollback()
-        self.conn.close()
+        if self.conn:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+            self.conn.close()
 
     def execute(self, query: str, params: tuple = ()):
         cur = self.conn.cursor()
@@ -221,7 +246,7 @@ def init_db():
             )
             db.execute(
                 "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                (time.time(), "SYSTEM", "INIT", "System initialized with permanent administrative credentials", None)
+                (time.time(), "SYSTEM", "INIT", "System initialized", None)
             )
 
 init_db()
@@ -234,9 +259,15 @@ def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = N
                 (time.time(), username or "System", action, detail, doc_id)
             )
     except Exception as e:
-        print(f"[AUDIT DB ERROR] {e}")
+        print(f"[AUDIT LOG ERROR] {e}")
 
-# JWT
+# Instant Healthcheck endpoint for Render
+@app.get("/healthz")
+@app.get("/api/health")
+def healthcheck():
+    return {"status": "healthy", "time": time.time()}
+
+# JWT Helpers
 def b64_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
@@ -280,7 +311,7 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
 # ---------------------------------------------------------
-# RELAXED HIGH-FIDELITY INDIC EXTRACTION
+# RELAXED INDIC EXTRACTION
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
     "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
@@ -296,7 +327,7 @@ FIELD_KEYS = (
 
 FIELD_LABELS = {
     "owner_name": [
-        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Record Holder", "Owner",
+        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Owner",
         "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
         "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు", "భూమి యజమాని", "రైతు పేరు",
         "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பட்டாதாரர்", "உரிமையாளர்",
@@ -310,8 +341,8 @@ FIELD_LABELS = {
         "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்",
         "পিতার নাম", "স্বামীর নাম", "પિતાનું નામ", "પતિનું નામ"
     ],
-    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "పుల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
-    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "కసరా எண்", "দাগ নম্বর", "দাগ নং"],
+    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "புల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
+    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর", "দাগ নং"],
     "khata_number": ["Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र", "खाता", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "ఖాతా", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
     "plot_number": ["Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "பிளாட் எண்", "প্লট নম্বর"],
     "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "நிலப்பரப்பு", "জমির পরিমাণ", "ક્ષેત્રફળ", "વિસ્તાર"],
@@ -319,9 +350,9 @@ FIELD_LABELS = {
     "tehsil": ["Tehsil", "Taluk", "Taluka", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা", "તાલુકો"],
     "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
     "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
-    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "పుஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
-    "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর", "નોંધણી નંબર"],
+    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "புஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
+    "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকана", "માલિકી પ્રકાર"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "మాற்ற எண்", "নামজারি নম্বর", "નોંધણી નંબર"],
     "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "দলিল নম্বর", "દસ્તાવેજ નંબર"],
     "khatauni_year": ["Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল", "વર્ષ"]
 }
@@ -335,11 +366,9 @@ def clean_ocr_image(image: Image.Image) -> Image.Image:
         scale = 1800.0 / float(img.width)
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.BILINEAR)
 
-    # Adaptive binarization to clean up scanned stamps and background noise
     img = ImageOps.autocontrast(img, cutoff=0.5)
     enhancer = ImageEnhance.Sharpness(img)
-    img = enhancer.enhance(1.5)
-    return img
+    return enhancer.enhance(1.5)
 
 def detect_primary_script(text: str) -> str:
     hin = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
@@ -358,11 +387,9 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
     if not HAS_TESSERACT:
         return "", "English"
 
-    # Fully automatic page segmentation handles scattered tabular forms
     cfg = "--oem 1 --psm 3"
     raw_text = ""
 
-    # Map user-selected language to Tesseract models
     lang_map = {
         "hin": "hin+eng",
         "tel": "tel+eng",
@@ -379,7 +406,6 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
         except Exception:
             raw_text = ""
 
-    # If auto-detect or if chosen language returned sparse characters
     if not raw_text or len(raw_text.strip()) < 15:
         for combo in ["hin+eng+tel", "tam+eng+ben+guj", "eng"]:
             try:
@@ -389,7 +415,6 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
             except Exception:
                 continue
 
-    # Fallback to PSM 6 if the document was dense without standard margins
     if len(raw_text.strip()) < 10:
         try:
             raw_text = pytesseract.image_to_string(image, lang="hin+tel+eng", config="--oem 1 --psm 6")
@@ -410,7 +435,6 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
 
     lines = [line.strip() for line in text.split("\n") if line.strip()]
 
-    # Search with relaxed delimiters (supports colon, full-width colon, dash, vertical bars, danda, or tab/double spaces)
     for key, labels in FIELD_LABELS.items():
         escaped = "|".join(re.escape(x) for x in labels)
         pat = rf"(?:{escaped})\s*[:：\-।|–—\s]?\s*([^\n\r\|;]+)"
@@ -423,7 +447,6 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
             if val and len(val) > 0:
                 fields[key] = {"value": val, "confidence": 0.95}
 
-    # Contextual line heuristic for Owner Name
     if not fields["owner_name"]["value"]:
         for line in lines:
             if any(term in line for term in ["खातेदार", "భూ యజమాని", "పట్టాదారు", "பட்டாதாரர்", "Owner", "Holder"]):
@@ -432,7 +455,6 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
                     fields["owner_name"] = {"value": parts[1].strip(" \t:|-।"), "confidence": 0.89}
                     break
 
-    # Honorific lookup (Shri/Smt/Sri/Thiru)
     if not fields["owner_name"]["value"]:
         m_hon = re.search(r"\b(श्री|श्रीमती|శ్రీ|శ్రీమతి|திரு|திருமதி|Shri|Smt|Mr\.)\s+([^\n,\|;]+)", text)
         if m_hon and len(m_hon.group(0)) > 4:
@@ -452,7 +474,7 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
     }
 
 # ---------------------------------------------------------
-# API ROUTES
+# ROUTES
 # ---------------------------------------------------------
 class LoginReq(BaseModel):
     email: str
