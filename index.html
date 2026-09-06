@@ -6,19 +6,6 @@
   <title id="pageTitle">Digital Land Records Portal | DILRMP</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
   <link rel="stylesheet" href="css/style.css">
-  <style>
-    .vf-brand-header {
-      display: inline-flex;
-      align-items: center;
-      height: 28px;
-    }
-    .vf-brand-footer {
-      display: inline-flex;
-      align-items: center;
-      height: 40px;
-      margin-bottom: 8px;
-    }
-  </style>
 </head>
 <body>
 
@@ -28,17 +15,8 @@
 <div id="authView" class="auth-hero-wrap">
   <div class="gov-utility-bar">
     <div style="display:flex;align-items:center">
-      <!-- VECTORFLOW LOGO: Pure Vector Reproduction of Document Icon + Wordmark -->
-      <div class="vf-brand-header">
-        <svg viewBox="0 0 280 70" style="height:24px;width:auto;overflow:visible" xmlns="http://www.w3.org/2000/svg">
-          <!-- Geometric Document Icon with Fold/Cut Corner -->
-          <polygon points="10,8 54,8 72,26 72,50 60,62 10,62" fill="#ffffff"/>
-          <polygon points="54,8 54,26 72,26" fill="#091a2c" opacity="0.3"/>
-          <polygon points="44,62 72,34 72,40 50,62" fill="#091a2c"/>
-          <!-- Clean, Sleek Wordmark "Vectorflow" -->
-          <text x="86" y="47" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="600" font-size="38" fill="#ffffff" letter-spacing="-0.5px">Vectorflow</text>
-        </svg>
-      </div>
+      <!-- EXACT WINGED VECTORFLOW LOGO -->
+      <img class="vectorflow-logo vectorflow-logo-utility" src="/assets/vectorflow-logo.png" alt="Vectorflow">
     </div>
     <div class="access-controls">
       <button class="font-size-btn" onclick="adjustFontSize(-1)">A-</button>
@@ -133,15 +111,8 @@
 <div id="appView" class="hidden">
   <div class="gov-utility-bar">
     <div style="display:flex;align-items:center">
-      <!-- VECTORFLOW LOGO REPLACING 'Government of India' -->
-      <div class="vf-brand-header">
-        <svg viewBox="0 0 280 70" style="height:26px;width:auto;overflow:visible" xmlns="http://www.w3.org/2000/svg">
-          <polygon points="10,8 54,8 72,26 72,50 60,62 10,62" fill="#ffffff"/>
-          <polygon points="54,8 54,26 72,26" fill="#091a2c" opacity="0.3"/>
-          <polygon points="44,62 72,34 72,40 50,62" fill="#091a2c"/>
-          <text x="86" y="47" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="600" font-size="38" fill="#ffffff" letter-spacing="-0.5px">Vectorflow</text>
-        </svg>
-      </div>
+      <!-- EXACT WINGED VECTORFLOW LOGO IN HEADER -->
+      <img class="vectorflow-logo vectorflow-logo-utility" src="/assets/vectorflow-logo.png" alt="Vectorflow">
     </div>
     <div class="access-controls">
       <span id="liveClock" style="margin-right:10px;font-family:monospace"></span>
@@ -172,11 +143,11 @@
         <path d="M50 5 L60 25 L40 25 Z" fill="#fbd38d"/>
         <circle cx="50" cy="40" r="18" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
         <circle cx="50" cy="40" r="6" fill="#ea580c"/>
-        <rect x="25" y="65" width="50" height="10" rx="3" fill="#fbd38d"/>
+        <rect x="25" y="65" width="50" height="10" rx="3" fill="#b45309"/>
         <text x="50" y="73" font-size="7" fill="#0f2b48" font-weight="bold" text-anchor="middle">सत्यमेव जयते</text>
-        <path d="M20 80 Q50 95 80 80 L75 105 Q50 115 25 105 Z" fill="#ffffff"/>
-        <circle cx="50" cy="95" r="8" fill="#0f2b48"/>
-        <circle cx="50" cy="95" r="2" fill="#ea580c"/>
+        <path d="M20 80 Q50 95 80 80 L75 105 Q50 115 25 105 Z" fill="#0f2b48"/>
+        <circle cx="50" cy="95" r="8" fill="#ffffff"/>
+        <circle cx="50" cy="95" r="2" fill="#1b4965"/>
       </svg>
       <div class="gov-titles">
         <div class="gov-sub-title">Digital India Land Records Modernization Programme (DILRMP)</div>
@@ -567,14 +538,9 @@
   <div class="gov-footer">
     <div class="gov-footer-inner">
       <div>
-        <!-- VECTORFLOW EXACT LOGO IN FOOTER -->
-        <div class="vf-brand-footer">
-          <svg viewBox="0 0 280 70" style="height:38px;width:auto;overflow:visible" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="10,8 54,8 72,26 72,50 60,62 10,62" fill="#ffffff"/>
-            <polygon points="54,8 54,26 72,26" fill="#091a2c" opacity="0.3"/>
-            <polygon points="44,62 72,34 72,40 50,62" fill="#091a2c"/>
-            <text x="86" y="47" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="600" font-size="38" fill="#ffffff" letter-spacing="-0.5px">Vectorflow</text>
-          </svg>
+        <!-- EXACT WINGED VECTORFLOW LOGO IN FOOTER -->
+        <div style="margin-bottom:8px">
+          <img class="vectorflow-logo vectorflow-logo-footer" src="/assets/vectorflow-logo.png" alt="Vectorflow">
         </div>
         <div style="font-size:11px;color:#94a3b8">Intelligent Land Record Digitization &amp; Multilingual Extraction Engine</div>
         <div style="font-size:11px;margin-top:6px;color:#cbd5e1">Website Content Owned by Vector Flow</div>
@@ -611,6 +577,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
-<script src="js/app.js?v=9"></script>
+<script src="js/app.js?v=11"></script>
 </body>
 </html>

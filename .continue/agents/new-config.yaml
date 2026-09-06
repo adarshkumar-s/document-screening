@@ -1,0 +1,20 @@
+name: Personal Dev Setup
+version: 1.0.0
+schema: v1
+
+models:
+  - name: Gemini 2.5 Flash
+    provider: gemini
+    model: gemini-2.5-flash
+    apiKey: AQ.Ab8RN6IUdXGwNKwzASxXasOOH3XbVvfByY2UfyE1N3u5OBl_TQ
+    roles:
+      - chat
+      - edit
+
+  - name: Gemini 2.5 Pro
+    provider: gemini
+    model: gemini-2.5-pro
+    apiKey: AQ.Ab8RN6IUdXGwNKwzASxXasOOH3XbVvfByY2UfyE1N3u5OBl_TQ
+    roles:
+      - chat
+      - edit

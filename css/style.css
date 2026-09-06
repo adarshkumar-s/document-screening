@@ -79,6 +79,22 @@ body {
 }
 .gov-utility-bar button:hover { background: rgba(255,255,255,0.15); color: #ffffff; }
 .access-controls { display: flex; align-items: center; gap: 4px; }
+/* Vectorflow brand logo */
+.vectorflow-logo {
+  display: block;
+  width: auto;
+  object-fit: contain;
+  filter: invert(1);
+}
+.vectorflow-logo-utility {
+  height: 28px;
+  max-width: 220px;
+}
+.vectorflow-logo-footer {
+  height: 38px;
+  max-width: 300px;
+}
+
 .font-size-btn {
   border: 1px solid #475569 !important;
   font-weight: 600;
