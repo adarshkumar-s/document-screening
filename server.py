@@ -344,7 +344,7 @@ FIELD_LABELS = {
     "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "நிலப்பரப்பு", "জমির পরিমাণ", "ક્ષેત્રફળ", "વિસ્તાર"],
     "village": ["Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "గ్రామం", "గ్రామము", "கிராமம்", "গ্রাম", "ગામ"],
     "tehsil": ["Tehsil", "Taluk", "Taluka", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা", "તાલુકો"],
-    "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્ლო"],
+    "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
     "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
     "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "புஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
     "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
@@ -796,13 +796,35 @@ def get_corrections(user: dict = Depends(get_current_user)):
         cur = db.execute("SELECT field_id, wrong, right_val as right, count FROM corrections ORDER BY count DESC")
         return {"corrections": [dict(r) for r in cur.fetchall()]}
 
-# Static mounts
+# ---------------------------------------------------------
+# STATIC DIRECTORY MOUNTS & ASSET ROUTES
+# ---------------------------------------------------------
 css_dir = os.path.join(BASE_DIR, "css")
 js_dir = os.path.join(BASE_DIR, "js")
+assets_dir = os.path.join(BASE_DIR, "assets")
+
 if os.path.exists(css_dir):
     app.mount("/css", StaticFiles(directory=css_dir), name="css")
 if os.path.exists(js_dir):
     app.mount("/js", StaticFiles(directory=js_dir), name="js")
+if os.path.exists(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+# Logo file handler supporting all common naming and path requests
+@app.get("/vectorflow.png", include_in_schema=False)
+@app.get("/assets/vectorflow-logo.png", include_in_schema=False)
+@app.get("/assets/vectorflow.png", include_in_schema=False)
+def serve_logo():
+    candidates = [
+        os.path.join(BASE_DIR, "vectorflow.png"),
+        os.path.join(BASE_DIR, "Vectorflow.png"),
+        os.path.join(BASE_DIR, "assets", "vectorflow-logo.png"),
+        os.path.join(BASE_DIR, "assets", "vectorflow.png"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return FileResponse(path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Vectorflow logo image file not found")
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon_ico():
