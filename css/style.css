@@ -61,7 +61,6 @@ body {
   background: #091a2c;
   color: #cbd5e1;
   padding: 4px 18px;
-  font-size: 11px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -79,12 +78,16 @@ body {
 }
 .gov-utility-bar button:hover { background: rgba(255,255,255,0.15); color: #ffffff; }
 .access-controls { display: flex; align-items: center; gap: 4px; }
-/* Vectorflow brand logo */
+
+/* Vectorflow brand logo fixed */
 .vectorflow-logo {
-  display: block;
+  display: inline-block;
   width: auto;
   object-fit: contain;
-  filter: invert(1);
+  background: #ffffff;
+  padding: 3px 8px;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
 .vectorflow-logo-utility {
   height: 28px;
