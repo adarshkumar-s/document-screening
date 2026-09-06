@@ -262,7 +262,6 @@ async function upload(file){
 
   const fd = new FormData(); 
   fd.append('file', file);
-  fd.append('lang', selectedLang);
 
   try{
     const r = await fetch(authUrl('/api/process?lang=' + encodeURIComponent(selectedLang)),{

@@ -86,7 +86,7 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------
-# FAIL-SAFE DATABASE ADAPTER WITH FAST TIMEOUT
+# FAIL-SAFE DATABASE ADAPTER (With 3s Fast-Timeout)
 # ---------------------------------------------------------
 class DBConnection:
     def __init__(self):
@@ -95,7 +95,7 @@ class DBConnection:
 
         if HAS_PSYCOPG2 and DATABASE_URL:
             try:
-                # connect_timeout=3 ensures the server NEVER hangs during deployment
+                # 3-second timeout prevents Render deployment hangs
                 self.conn = psycopg2.connect(
                     DATABASE_URL,
                     cursor_factory=RealDictCursor,
@@ -103,7 +103,6 @@ class DBConnection:
                 )
                 self.is_pg = True
             except Exception as e:
-                # Log error and immediately fallback to SQLite
                 print(f"[POSTGRES CONNECT WARNING] {e}. Falling back to SQLite.")
                 self.is_pg = False
                 self.conn = None
@@ -246,7 +245,7 @@ def init_db():
             )
             db.execute(
                 "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                (time.time(), "SYSTEM", "INIT", "System initialized", None)
+                (time.time(), "SYSTEM", "INIT", "System initialized with permanent credentials", None)
             )
 
 init_db()
@@ -261,7 +260,6 @@ def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = N
     except Exception as e:
         print(f"[AUDIT LOG ERROR] {e}")
 
-# Instant Healthcheck endpoint for Render
 @app.get("/healthz")
 @app.get("/api/health")
 def healthcheck():
@@ -311,10 +309,10 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
 # ---------------------------------------------------------
-# RELAXED INDIC EXTRACTION
+# RELAXED MULTI-SCRIPT EXTRACTION
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
     "0123456789012345678901234567890123456789123456789001234567890123456789"
 )
 
@@ -327,7 +325,7 @@ FIELD_KEYS = (
 
 FIELD_LABELS = {
     "owner_name": [
-        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Owner",
+        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Record Holder", "Owner",
         "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
         "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు", "భూమి యజమాని", "రైతు పేరు",
         "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பட்டாதாரர்", "உரிமையாளர்",
@@ -341,8 +339,8 @@ FIELD_LABELS = {
         "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்",
         "পিতার নাম", "স্বামীর নাম", "પિતાનું નામ", "પતિનું નામ"
     ],
-    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "புల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
-    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর", "দাগ নং"],
+    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "పుల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
+    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "కసరా எண்", "দাগ নম্বর", "দাগ নং"],
     "khata_number": ["Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र", "खाता", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "ఖాతా", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
     "plot_number": ["Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "பிளாட் எண்", "প্লট নম্বর"],
     "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "நிலப்பரப்பு", "জমির পরিমাণ", "ક્ષેત્રફળ", "વિસ્તાર"],
@@ -351,8 +349,8 @@ FIELD_LABELS = {
     "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
     "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
     "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "புஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
-    "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকана", "માલિકી પ્રકાર"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "మాற்ற எண்", "নামজারি নম্বর", "નોંધણી નંબર"],
+    "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর", "નોંધણી નંબર"],
     "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "দলিল নম্বর", "દસ્તાવેજ નંબર"],
     "khatauni_year": ["Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল", "વર્ષ"]
 }
