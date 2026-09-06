@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image, ImageOps, ImageEnhance
 
-# Thread pinning to prevent CPU contention on cloud containers
+# Limit CPU threads to prevent thrashing on shared cloud vCPUs
 os.environ["OMP_THREAD_LIMIT"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -84,6 +84,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------
+# FAIL-SAFE DATABASE ADAPTER (With 3s Fast-Timeout)
+# ---------------------------------------------------------
 class DBConnection:
     def __init__(self):
         self.is_pg = False
@@ -260,17 +263,6 @@ def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = N
 def healthcheck():
     return {"status": "healthy", "time": time.time()}
 
-# Serve user's custom vectorflow logo directly
-@app.get("/vectorflow.png", include_in_schema=False)
-def serve_logo():
-    for candidate in [
-        os.path.join(BASE_DIR, "vectorflow.png"),
-        os.path.join(BASE_DIR, "vectorflow.png.png")
-    ]:
-        if os.path.isfile(candidate):
-            return FileResponse(candidate, media_type="image/png")
-    return JSONResponse(status_code=404, content={"detail": "vectorflow.png not found"})
-
 # JWT Helpers
 def b64_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
@@ -315,10 +307,10 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
 # ---------------------------------------------------------
-# OCR PREPROCESSING & EXTRACTION
+# OCR PREPROCESSING & TABULAR FORM EXTRACTION
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷८९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
     "0123456789012345678901234567890123456789123456789001234567890123456789"
 )
 
@@ -345,18 +337,18 @@ FIELD_LABELS = {
         "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்",
         "পিতার নাম", "স্বামীর নাম", "પિતાનું નામ", "પતિનું નામ"
     ],
-    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "புல எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
+    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "పుల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
     "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর", "দাগ নং"],
     "khata_number": ["Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र", "खाता", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "ఖాతా", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
     "plot_number": ["Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "பிளாட் எண்", "প্লট নম্বর"],
     "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "நிலப்பரப்பு", "জমির পরিমাণ", "ક્ષેત્રફળ", "વિસ્તાર"],
     "village": ["Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "గ్రామం", "గ్రామము", "கிராமம்", "গ্রাম", "ગામ"],
     "tehsil": ["Tehsil", "Taluk", "Taluka", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা", "તાલુકો"],
-    "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
+    "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્ლო"],
     "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
-    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "పుஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
+    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "புஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
     "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর", "नोंदणी नंबर"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "नामजারি নম্বর", "नोंदणी नंबर"],
     "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "दलिल নম্বর", "દસ્તાવેજ નંબર"],
     "khatauni_year": ["Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল", "વર્ષ"]
 }
