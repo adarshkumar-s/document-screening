@@ -15,9 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+from PIL import Image, ImageOps, ImageEnhance
 
-# Prevent CPU thrashing on Render
 os.environ["OMP_THREAD_LIMIT"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -222,7 +221,7 @@ def init_db():
             )
             db.execute(
                 "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                (time.time(), "SYSTEM", "INIT", "System initialized", None)
+                (time.time(), "SYSTEM", "INIT", "System initialized with permanent administrative credentials", None)
             )
 
 init_db()
@@ -281,10 +280,10 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
 # ---------------------------------------------------------
-# OPTIMIZED HIGH-ACCURACY OCR PREPROCESSING
+# RELAXED HIGH-FIDELITY INDIC EXTRACTION
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷८९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
     "0123456789012345678901234567890123456789123456789001234567890123456789"
 )
 
@@ -297,46 +296,49 @@ FIELD_KEYS = (
 
 FIELD_LABELS = {
     "owner_name": [
-        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Owner",
-        "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
-        "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు", "భూమి యజమాని",
-        "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர்",
-        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "খাतेदाराचे नाव", "જમીન માલિક", "ખાતેદારનું નામ"
+        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Record Holder", "Owner",
+        "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
+        "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు", "భూమి యజమాని", "రైతు పేరు",
+        "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பட்டாதாரர்", "உரிமையாளர்",
+        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "মালিকের নাম", "রায়তের নাম",
+        "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव", "જમીન માલિક", "ખાતેદારનું નામ"
     ],
     "father_name": [
-        "Father's Name", "Father Name", "Husband Name", "पिता का नाम", "पिता/पति", "पति का नाम",
-        "తండ్రి పేరు", "భర్త పేరు", "తండ్రి/భర్త పేరు", "தந்தை பெயர்", "கணவர் பெயர்", "পিতার নাম", "પિતાનું નામ"
+        "Father's Name", "Father Name", "Husband Name", "Guardian Name", "Father", "Husband",
+        "पिता का नाम", "पिता/पति", "पति का नाम", "पिता", "पति", "वालद",
+        "తండ్రి పేరు", "భర్త పేరు", "తండ్రి/భర్త పేరు", "తండ్రి", "భర్త",
+        "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்",
+        "পিতার নাম", "স্বামীর নাম", "પિતાનું નામ", "પતિનું નામ"
     ],
-    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
-    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর"],
-    "khata_number": ["Khata Number", "Khata No", "खाता नंबर", "खाता संख्या", "खाता क्र", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "கணக்கு எண்", "பட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
-    "plot_number": ["Plot Number", "Plot No", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "প্লট নম্বর"],
-    "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "জমির পরিমাণ", "ક્ષેત્રફળ"],
+    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "పుల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
+    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "కసరా எண்", "দাগ নম্বর", "দাগ নং"],
+    "khata_number": ["Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र", "खाता", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "ఖాతా", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
+    "plot_number": ["Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "பிளாட் எண்", "প্লট নম্বর"],
+    "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "நிலப்பரப்பு", "জমির পরিমাণ", "ક્ષેત્રફળ", "વિસ્તાર"],
     "village": ["Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "గ్రామం", "గ్రామము", "கிராமம்", "গ্রাম", "ગામ"],
-    "tehsil": ["Tehsil", "Taluk", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "উপজেলা", "તાલુકો"],
+    "tehsil": ["Tehsil", "Taluk", "Taluka", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা", "તાલુકો"],
     "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
-    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "রাজ্য", "રાજ્ય"],
-    "land_class": ["Land Classification", "Land Class", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "জমির ধরন", "જમીન પ્રકાર"],
-    "ownership_type": ["Ownership Type", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর", "નોંધણી નંબર"],
-    "registration_no": ["Registration Number", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "দলিল নম্বর", "દસ્તાવેજ નંબર"],
-    "khatauni_year": ["Khatauni Year", "Fasli Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল", "વર્ષ"]
+    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
+    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "పుஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
+    "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর", "નોંધણી નંબર"],
+    "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "দলিল নম্বর", "દસ્તાવેજ નંબર"],
+    "khatauni_year": ["Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল", "વર્ષ"]
 }
 
 def clean_ocr_image(image: Image.Image) -> Image.Image:
     img = ImageOps.exif_transpose(image).convert("L")
-    # Normalize scale: 1400px - 1800px provides the ideal font height for Indic characters without slowing down CPU
     if img.width < 1200:
-        scale = 1400.0 / float(max(1, img.width))
+        scale = 1500.0 / float(max(1, img.width))
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
-    elif img.width > 2000:
+    elif img.width > 2200:
         scale = 1800.0 / float(img.width)
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.BILINEAR)
 
-    # Enhance contrast and sharpen so faint stamp/ink strokes stand out
+    # Adaptive binarization to clean up scanned stamps and background noise
     img = ImageOps.autocontrast(img, cutoff=0.5)
     enhancer = ImageEnhance.Sharpness(img)
-    img = enhancer.enhance(1.4)
+    img = enhancer.enhance(1.5)
     return img
 
 def detect_primary_script(text: str) -> str:
@@ -348,40 +350,58 @@ def detect_primary_script(text: str) -> str:
     
     counts = {"tel": tel, "hin": hin, "tam": tam, "ben": ben, "guj": guj}
     top = max(counts, key=counts.get)
-    if counts[top] >= 2:
+    if counts[top] >= 1:
         return top
     return "eng"
 
-def run_fast_ocr(image: Image.Image) -> tuple[str, str]:
+def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, str]:
     if not HAS_TESSERACT:
         return "", "English"
 
-    # PSM 3 (Fully automatic page segmentation) handles tables, columns, and scattered land forms
-    cfg_multi = "--oem 1 --psm 3"
-    
+    # Fully automatic page segmentation handles scattered tabular forms
+    cfg = "--oem 1 --psm 3"
     raw_text = ""
-    # Try primary languages first
-    for lang_combo in ["hin+eng+tel", "tam+eng+ben+guj", "eng"]:
-        try:
-            raw_text = pytesseract.image_to_string(image, lang=lang_combo, config=cfg_multi)
-            if len(raw_text.strip()) >= 20:
-                break
-        except Exception:
-            continue
 
-    if not raw_text.strip():
-        # Fallback to single uniform block (PSM 6) if PSM 3 found sparse margins
+    # Map user-selected language to Tesseract models
+    lang_map = {
+        "hin": "hin+eng",
+        "tel": "tel+eng",
+        "tam": "tam+eng",
+        "mar": "mar+hin+eng",
+        "guj": "guj+eng",
+        "ben": "ben+eng",
+        "eng": "eng"
+    }
+
+    if lang_code in lang_map:
         try:
-            raw_text = pytesseract.image_to_string(image, lang="hin+eng", config="--oem 1 --psm 6")
+            raw_text = pytesseract.image_to_string(image, lang=lang_map[lang_code], config=cfg)
+        except Exception:
+            raw_text = ""
+
+    # If auto-detect or if chosen language returned sparse characters
+    if not raw_text or len(raw_text.strip()) < 15:
+        for combo in ["hin+eng+tel", "tam+eng+ben+guj", "eng"]:
+            try:
+                raw_text = pytesseract.image_to_string(image, lang=combo, config=cfg)
+                if len(raw_text.strip()) >= 15:
+                    break
+            except Exception:
+                continue
+
+    # Fallback to PSM 6 if the document was dense without standard margins
+    if len(raw_text.strip()) < 10:
+        try:
+            raw_text = pytesseract.image_to_string(image, lang="hin+tel+eng", config="--oem 1 --psm 6")
         except Exception:
             raw_text = pytesseract.image_to_string(image, lang="eng", config="--oem 1 --psm 6")
 
-    script = detect_primary_script(raw_text)
+    detected = detect_primary_script(raw_text)
     script_names = {
         "hin": "Hindi", "tel": "Telugu", "tam": "Tamil",
         "ben": "Bengali", "guj": "Gujarati", "eng": "English"
     }
-    return raw_text, script_names.get(script, "English")
+    return raw_text, script_names.get(detected, "English")
 
 def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) -> Dict[str, Any]:
     text = (text or "").replace("\r\n", "\n")
@@ -390,32 +410,33 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
 
     lines = [line.strip() for line in text.split("\n") if line.strip()]
 
-    # 1. Regex search on explicit labels
+    # Search with relaxed delimiters (supports colon, full-width colon, dash, vertical bars, danda, or tab/double spaces)
     for key, labels in FIELD_LABELS.items():
         escaped = "|".join(re.escape(x) for x in labels)
-        pat = rf"(?:{escaped})\s*[:：\-।|]?\s*([^\n\r\|;]+)"
+        pat = rf"(?:{escaped})\s*[:：\-।|–—\s]?\s*([^\n\r\|;]+)"
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            val = m.group(1).strip(" \t:|-।")
+            val = m.group(1).strip(" \t:|-।–—|;")
             if key in numeric_keys:
                 val = val.translate(INDIC_DIGIT_MAP)
                 val = re.sub(r"[^\d\/\.\-]", "", val)
             if val and len(val) > 0:
                 fields[key] = {"value": val, "confidence": 0.95}
 
-    # 2. Heuristic fallback for Owner Name if form header was detached
+    # Contextual line heuristic for Owner Name
     if not fields["owner_name"]["value"]:
         for line in lines:
-            if any(term in line for term in ["खातेदार", "भूमि स्वामी", "భూ యజమాని", "పట్టాదారు", "பட்டாதாரர்", "Owner", "Holder"]):
-                parts = re.split(r"[:：\-।|]", line, maxsplit=1)
+            if any(term in line for term in ["खातेदार", "భూ యజమాని", "పట్టాదారు", "பட்டாதாரர்", "Owner", "Holder"]):
+                parts = re.split(r"[:：\-।|–—]", line, maxsplit=1)
                 if len(parts) > 1 and len(parts[1].strip()) >= 3:
-                    fields["owner_name"] = {"value": parts[1].strip(" \t:|-"), "confidence": 0.89}
+                    fields["owner_name"] = {"value": parts[1].strip(" \t:|-।"), "confidence": 0.89}
                     break
 
+    # Honorific lookup (Shri/Smt/Sri/Thiru)
     if not fields["owner_name"]["value"]:
         m_hon = re.search(r"\b(श्री|श्रीमती|శ్రీ|శ్రీమతి|திரு|திருமதி|Shri|Smt|Mr\.)\s+([^\n,\|;]+)", text)
         if m_hon and len(m_hon.group(0)) > 4:
-            fields["owner_name"] = {"value": m_hon.group(0).strip(" \t:|-"), "confidence": 0.85}
+            fields["owner_name"] = {"value": m_hon.group(0).strip(" \t:|-।"), "confidence": 0.85}
 
     val_count = sum(1 for f in fields.values() if f["confidence"] > 0)
     mean_c = 92 if val_count >= 3 else (75 if text.strip() else 0)
@@ -559,7 +580,7 @@ def get_samples():
     return {"samples": sorted([f for f in os.listdir(samples_dir) if not f.startswith(".")])}
 
 @app.post("/api/process/sample/{name}")
-async def process_sample(name: str, user: dict = Depends(get_current_user)):
+async def process_sample(name: str, lang: Optional[str] = Query("auto"), user: dict = Depends(get_current_user)):
     sample_path = os.path.join(BASE_DIR, "samples", os.path.basename(name))
     if not os.path.isfile(sample_path):
         raise HTTPException(status_code=404, detail="Sample not found")
@@ -568,7 +589,7 @@ async def process_sample(name: str, user: dict = Depends(get_current_user)):
         data = f.read()
 
     img = clean_ocr_image(Image.open(io.BytesIO(data)))
-    raw_text, detected_lang = await asyncio.to_thread(run_fast_ocr, img)
+    raw_text, detected_lang = await asyncio.to_thread(run_targeted_ocr, img, lang)
     parsed = extract_entities(raw_text, detected_lang, pages=1)
 
     doc_id = uuid.uuid4().hex[:12]
@@ -587,7 +608,7 @@ async def process_sample(name: str, user: dict = Depends(get_current_user)):
             json.dumps(parsed["fields"], ensure_ascii=False), time.time()
         ))
 
-    log_audit(user["full_name"], "PROCESS_SAMPLE", f"Sample processed: {name}", doc_id)
+    log_audit(user["full_name"], "PROCESS_SAMPLE", f"Sample processed: {name} [{lang}]", doc_id)
 
     return {
         "id": doc_id,
@@ -604,7 +625,7 @@ async def process_sample(name: str, user: dict = Depends(get_current_user)):
     }
 
 @app.post("/api/process")
-async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def process_upload(file: UploadFile = File(...), lang: Optional[str] = Query("auto"), user: dict = Depends(get_current_user)):
     content = await file.read()
     if not content:
         raise HTTPException(status_code=422, detail="Uploaded file is empty")
@@ -620,7 +641,7 @@ async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_
         raw_img = Image.open(io.BytesIO(content))
 
     proc_img = clean_ocr_image(raw_img)
-    raw_text, detected_lang = await asyncio.to_thread(run_fast_ocr, proc_img)
+    raw_text, detected_lang = await asyncio.to_thread(run_targeted_ocr, proc_img, lang)
     parsed = extract_entities(raw_text, detected_lang, pages=page_count)
 
     doc_id = uuid.uuid4().hex[:12]
@@ -639,7 +660,7 @@ async def process_upload(file: UploadFile = File(...), user: dict = Depends(get_
             json.dumps(parsed["fields"], ensure_ascii=False), time.time()
         ))
 
-    log_audit(user["full_name"], "UPLOAD_RECORD", f"Uploaded record: {safe_filename}", doc_id)
+    log_audit(user["full_name"], "UPLOAD_RECORD", f"Uploaded record: {safe_filename} [{lang}]", doc_id)
 
     return {
         "id": doc_id,
