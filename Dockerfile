@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install Tesseract OCR engine, compilers, and Indian language models
+# Install Tesseract engine and all 11 regional language models
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-ben \
     tesseract-ocr-mar \
     tesseract-ocr-guj \
+    tesseract-ocr-pan \
+    tesseract-ocr-kan \
+    tesseract-ocr-ori \
+    tesseract-ocr-urd \
     libpq-dev \
     gcc \
     && rm -rf /var/lib/apt/lists/*

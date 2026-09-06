@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -20,6 +21,8 @@
       <button class="font-size-btn" onclick="adjustFontSize(0)">A</button>
       <button class="font-size-btn" onclick="adjustFontSize(1)">A+</button>
       <button onclick="toggleContrast()">🌓 <span data-i18n="high_contrast">High Contrast</span></button>
+      
+      <!-- PORTAL UI LANGUAGE SELECTOR (LOGIN SCREEN) -->
       <select id="authLangSelect" onchange="changeLanguage(this.value)" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">
         <option value="en">English</option>
         <option value="hi">हिंदी (Hindi)</option>
@@ -116,6 +119,8 @@
       <button class="font-size-btn" onclick="adjustFontSize(0)">A</button>
       <button class="font-size-btn" onclick="adjustFontSize(1)">A+</button>
       <button onclick="toggleContrast()">🌓 <span data-i18n="high_contrast">High Contrast</span></button>
+      
+      <!-- PORTAL UI LANGUAGE SELECTOR (DASHBOARD HEADER) -->
       <select id="appLangSelect" onchange="changeLanguage(this.value)" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">
         <option value="en">English</option>
         <option value="hi">हिंदी (Hindi)</option>
@@ -197,34 +202,37 @@
         <div class="card">
           <div class="card-header">
             <h3 class="card-title">📄 Upload Scanned Land Records</h3>
-            <span class="chip">Indic Scripts Supported: All 11 Official Indian Languages</span>
+            <span class="chip">Supports: Hindi, Telugu, Tamil, Marathi, Gujarati, Bengali, Punjabi, Kannada, Odia, Urdu, English</span>
           </div>
 
-          <!-- TARGET DOCUMENT SCRIPT SELECTOR -->
-          <div style="background:#f8fafc;border:1px solid var(--gov-border);border-radius:6px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <!-- DEDICATED OCR DOCUMENT LANGUAGE SELECTOR (Inside upload box, directly above drop zone) -->
+          <div class="ocr-lang-panel" style="background:#f1f5f9;border:1.5px solid #cbd5e1;border-radius:8px;padding:12px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
             <div>
-              <span style="font-weight:700;color:var(--gov-navy);font-size:13px">🎯 Document Language / Script Mode:</span>
-              <div style="font-size:12px;color:var(--muted)">Selecting the exact language yields maximum accuracy; Auto-Detect handles unknown/mixed forms.</div>
+              <div style="font-weight:700;color:#0f2b48;font-size:13px;display:flex;align-items:center;gap:6px">
+                <span>🔤 Document OCR Language Mode:</span>
+              </div>
+              <div style="font-size:12px;color:#475569;margin-top:2px">Select your land record's language for maximum reading accuracy.</div>
             </div>
-            <select id="docTargetLang" style="width:auto;min-width:260px;font-weight:600;padding:6px 12px;border:1.5px solid var(--gov-navy)">
-              <option value="auto">⚡ Auto-Detect (All Indian Scripts)</option>
-              <option value="hin">हिंदी (Hindi / Khatauni / Khasra)</option>
-              <option value="tel">తెలుగు (Telugu / ROR 1B / Pahani / Patta)</option>
-              <option value="tam">தமிழ் (Tamil / Patta / Chitta)</option>
-              <option value="mar">मराठी (Marathi / 7/12 / Ferfar)</option>
-              <option value="guj">ગુજરાતી (Gujarati / 7/12 / 8-A)</option>
-              <option value="ben">বাংলা (Bengali / Khatian / Porcha)</option>
-              <option value="pan">ਪੰਜਾਬੀ (Punjabi / Jamabandi / Fard)</option>
-              <option value="kan">ಕನ್ನಡ (Kannada / RTC / Pahani)</option>
-              <option value="ori">ଓଡ଼ିଆ (Odia / RoR / Patta)</option>
-              <option value="urd">اردو (Urdu / Khasra / Intiqal)</option>
-              <option value="eng">English (Land Deeds / Registry)</option>
+            
+            <select id="docTargetLang" style="background:#ffffff;color:#0f2b48;border:2px solid #0f2b48;border-radius:6px;font-weight:700;font-size:13px;padding:8px 14px;cursor:pointer;outline:none;min-width:280px">
+              <option value="auto">⚡ Auto-Detect (All 11 Languages)</option>
+              <option value="hin">1. हिंदी (Hindi / Khatauni / Khasra)</option>
+              <option value="tel">2. తెలుగు (Telugu / 1-B / Pahani / Patta)</option>
+              <option value="tam">3. தமிழ் (Tamil / Patta / Chitta)</option>
+              <option value="mar">4. मराठी (Marathi / 7/12 / Ferfar)</option>
+              <option value="guj">5. ગુજરાતી (Gujarati / 7/12 / 8-A)</option>
+              <option value="ben">6. বাংলা (Bengali / Khatian / Porcha)</option>
+              <option value="pan">7. ਪੰਜਾਬੀ (Punjabi / Jamabandi / Fard)</option>
+              <option value="kan">8. ಕನ್ನಡ (Kannada / RTC / Pahani)</option>
+              <option value="ori">9. ଓଡ଼ିଆ (Odia / RoR / Patta)</option>
+              <option value="urd">10. اردو (Urdu / Intiqal / Khasra)</option>
+              <option value="eng">11. English (Registry / Deeds)</option>
             </select>
           </div>
 
           <div class="drop-zone" id="drop">
             <div class="drop-icon">📁</div>
-            <div style="font-size:15px"><b>Drag and drop file here</b> or click to browse from device</div>
+            <div style="font-size:15px"><b>Drag and drop scanned record here</b> or click to browse from device</div>
             <div style="color:var(--muted);font-size:12px;margin-top:6px">Scanned PDF, JPG, PNG, TIFF (Khatauni, Patta, Pahani, 7/12, Khasra, Jamabandi)</div>
             <input type="file" id="fileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
           </div>
@@ -237,7 +245,7 @@
           </div>
 
           <div id="processing" class="hidden" style="margin-top:16px;padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;color:#166534;font-weight:600">
-            <span class="spinner" style="border-top-color:#166534"></span> Processing multilingual OCR, entity extraction &amp; rule validation... Please wait.
+            <span class="spinner" style="border-top-color:#166534"></span> Scanning &amp; extracting document fields... Please wait.
           </div>
         </div>
 
@@ -545,6 +553,110 @@
   </div>
 </div>
 
-<script src="js/app.js?v=5"></script>
+<script>
+// Interface translation dictionary - explicitly targets only the UI header select boxes
+const siteTranslations = {
+  en: {
+    page_title: "Digital Land Records Portal | DILRMP",
+    high_contrast: "High Contrast",
+    gov_header_auth: "Government of India · Ministry of Rural Development",
+    digital_india_tag: "Digital India · DILRMP Portal",
+    auth_heading: "Land Records Digitization System",
+    auth_subheading: "Intelligent Land Record Digitization & Validation System",
+    email_label: "Official Email ID",
+    password_label: "Password",
+    btn_signin: "Sign In",
+    no_account: "Don't have an account?",
+    btn_register: "Sign Up",
+    fullname_label: "Full Name",
+    confirm_pass_label: "Confirm Password",
+    btn_register_submit: "Register Account",
+    already_registered: "Already registered?",
+    gov_top_title: "🇮🇳 Government of India",
+    gov_top_dept: "Department of Land Resources"
+  },
+  hi: {
+    page_title: "डिजिटल भू-अभिलेख पोर्टल | DILRMP",
+    high_contrast: "उच्च कंट्रास्ट",
+    gov_header_auth: "भारत सरकार · ग्रामीण विकास मंत्रालय",
+    digital_india_tag: "डिजिटल इंडिया · DILRMP पोर्टल",
+    auth_heading: "भू-अभिलेख डिजिटलीकरण प्रणाली",
+    auth_subheading: "स्मार्ट भू-अभिलेख डिजिटलीकरण एवं सत्यापन प्रणाली",
+    email_label: "आधिकारिक ईमेल आईडी",
+    password_label: "पासवर्ड",
+    btn_signin: "लॉग इन करें",
+    no_account: "खाता नहीं है?",
+    btn_register: "पंजीकरण करें",
+    fullname_label: "पूरा नाम",
+    confirm_pass_label: "पासवर्ड की पुष्टि करें",
+    btn_register_submit: "खाता बनाएं",
+    already_registered: "पहले से पंजीकृत हैं?",
+    gov_top_title: "🇮🇳 भारत सरकार",
+    gov_top_dept: "भू-संसाधन विभाग"
+  },
+  te: {
+    page_title: "డిజిటల్ భూ రికార్డుల పోర్టల్ | DILRMP",
+    high_contrast: "హై కాంట్రాస్ట్",
+    gov_header_auth: "భారత ప్రభుత్వం · గ్రామీణాభివృద్ధి మంత్రిత్వ శాఖ",
+    digital_india_tag: "డిజిటల్ ఇండియా · DILRMP పోర్టల్",
+    auth_heading: "భూ రికార్డుల డిజిటలైజేషన్ సిస్టమ్",
+    auth_subheading: "ఇంటెలిజెంట్ ల్యాండ్ రికార్డ్ డిజిటలైజేషన్ & ధృవీకరణ వ్యవస్థ",
+    email_label: "అధికారిక ఇమెయిల్ ID",
+    password_label: "పాస్‌వర్డ్",
+    btn_signin: "సైన్ ఇన్",
+    no_account: "ఖాతా లేదా?",
+    btn_register: "రిజిస్టర్",
+    fullname_label: "పూర్తి పేరు",
+    confirm_pass_label: "పాస్‌వర్డ్ నిర్ధారించండి",
+    btn_register_submit: "ఖాతా సృష్టించండి",
+    already_registered: "ఇప్పటికే నమోదు చేసుకున్నారా?",
+    gov_top_title: "🇮🇳 భారత ప్రభుత్వం",
+    gov_top_dept: "భూ వనరుల శాఖ"
+  }
+};
+
+let activeLang = 'en';
+
+function applyLanguage(lang) {
+  activeLang = lang;
+  localStorage.setItem('dilrmp_ui_lang', lang);
+  
+  const authSelect = document.getElementById('authLangSelect');
+  const appSelect = document.getElementById('appLangSelect');
+  if (authSelect) authSelect.value = lang;
+  if (appSelect) appSelect.value = lang;
+  
+  const dict = siteTranslations[lang] || siteTranslations.en;
+  
+  const titleEl = document.getElementById('pageTitle');
+  if (titleEl && dict.page_title) titleEl.innerText = dict.page_title;
+  
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (dict[key]) {
+      el.innerText = dict[key];
+    } else if (siteTranslations.en[key]) {
+      el.innerText = siteTranslations.en[key];
+    }
+  });
+
+  if (lang === 'ur') {
+    document.documentElement.setAttribute('dir', 'rtl');
+  } else {
+    document.documentElement.setAttribute('dir', 'ltr');
+  }
+}
+
+function changeLanguage(lang) {
+  applyLanguage(lang);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('dilrmp_ui_lang') || 'en';
+  applyLanguage(saved);
+});
+</script>
+
+<script src="js/app.js?v=6"></script>
 </body>
 </html>

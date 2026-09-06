@@ -41,7 +41,6 @@ except ImportError:
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# Check if psycopg2 is available
 HAS_PSYCOPG2 = False
 if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
     if DATABASE_URL.startswith("postgres://"):
@@ -95,7 +94,6 @@ class DBConnection:
 
         if HAS_PSYCOPG2 and DATABASE_URL:
             try:
-                # 3-second timeout prevents Render deployment hangs
                 self.conn = psycopg2.connect(
                     DATABASE_URL,
                     cursor_factory=RealDictCursor,
@@ -312,7 +310,7 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
 # RELAXED MULTI-SCRIPT EXTRACTION
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
     "0123456789012345678901234567890123456789123456789001234567890123456789"
 )
 
@@ -325,7 +323,7 @@ FIELD_KEYS = (
 
 FIELD_LABELS = {
     "owner_name": [
-        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Record Holder", "Owner",
+        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Owner",
         "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
         "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు", "భూమి యజమాని", "రైతు పేరు",
         "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பட்டாதாரர்", "உரிமையாளர்",
@@ -340,18 +338,18 @@ FIELD_LABELS = {
         "পিতার নাম", "স্বামীর নাম", "પિતાનું નામ", "પતિનું નામ"
     ],
     "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "పుల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
-    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "కసరా எண்", "দাগ নম্বর", "দাগ নং"],
+    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর", "দাগ নং"],
     "khata_number": ["Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र", "खाता", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "ఖాతా", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
     "plot_number": ["Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "பிளாட் எண்", "প্লট নম্বর"],
     "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "நிலப்பரப்பு", "জমির পরিমাণ", "ક્ષેત્રફળ", "વિસ્તાર"],
     "village": ["Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "గ్రామం", "గ్రామము", "கிராமம்", "গ্রাম", "ગામ"],
     "tehsil": ["Tehsil", "Taluk", "Taluka", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা", "તાલુકો"],
     "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
-    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
+    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "మాநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
     "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "புஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
     "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর", "નોંધણી નંબર"],
-    "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "দলিল নম্বর", "દસ્તાવેજ નંબર"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "మాற்ற எண்", "নামজারি নম্বর", "नोंदणी नंबर"],
+    "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "दलिल নম্বর", "દસ્તાવેજ નંબર"],
     "khatauni_year": ["Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল", "વર્ષ"]
 }
 
@@ -371,11 +369,18 @@ def clean_ocr_image(image: Image.Image) -> Image.Image:
 def detect_primary_script(text: str) -> str:
     hin = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
     ben = sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF)
+    pan = sum(1 for c in text if 0x0A00 <= ord(c) <= 0x0A7F)
+    guj = sum(1 for c in text if 0x0A80 <= ord(c) <= 0x0AFF)
+    ori = sum(1 for c in text if 0x0B00 <= ord(c) <= 0x0B7F)
     tam = sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF)
     tel = sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F)
-    guj = sum(1 for c in text if 0x0A80 <= ord(c) <= 0x0AFF)
+    kan = sum(1 for c in text if 0x0C80 <= ord(c) <= 0x0CFF)
+    urd = sum(1 for c in text if 0x0600 <= ord(c) <= 0x06FF)
     
-    counts = {"tel": tel, "hin": hin, "tam": tam, "ben": ben, "guj": guj}
+    counts = {
+        "tel": tel, "hin": hin, "tam": tam, "ben": ben,
+        "guj": guj, "pan": pan, "kan": kan, "ori": ori, "urd": urd
+    }
     top = max(counts, key=counts.get)
     if counts[top] >= 1:
         return top
@@ -388,6 +393,7 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
     cfg = "--oem 1 --psm 3"
     raw_text = ""
 
+    # Specific bilingual mapping when user explicitly selects a language
     lang_map = {
         "hin": "hin+eng",
         "tel": "tel+eng",
@@ -395,6 +401,10 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
         "mar": "mar+hin+eng",
         "guj": "guj+eng",
         "ben": "ben+eng",
+        "pan": "pan+eng",
+        "kan": "kan+eng",
+        "ori": "ori+eng",
+        "urd": "urd+eng",
         "eng": "eng"
     }
 
@@ -404,8 +414,9 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
         except Exception:
             raw_text = ""
 
+    # Auto-detect fallback: tests common Indian scripts
     if not raw_text or len(raw_text.strip()) < 15:
-        for combo in ["hin+eng+tel", "tam+eng+ben+guj", "eng"]:
+        for combo in ["hin+eng+tel", "tam+ben+guj", "kan+ori+pan", "urd+eng", "eng"]:
             try:
                 raw_text = pytesseract.image_to_string(image, lang=combo, config=cfg)
                 if len(raw_text.strip()) >= 15:
@@ -422,7 +433,9 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
     detected = detect_primary_script(raw_text)
     script_names = {
         "hin": "Hindi", "tel": "Telugu", "tam": "Tamil",
-        "ben": "Bengali", "guj": "Gujarati", "eng": "English"
+        "ben": "Bengali", "guj": "Gujarati", "mar": "Marathi",
+        "pan": "Punjabi", "kan": "Kannada", "ori": "Odia",
+        "urd": "Urdu", "eng": "English"
     }
     return raw_text, script_names.get(detected, "English")
 
