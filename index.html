@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,14 +14,14 @@
 <!-- AUTHENTICATION SCREEN -->
 <div id="authView" class="auth-hero-wrap">
   <div class="gov-utility-bar">
-    <div data-i18n="gov_header_auth">Government of India · Ministry of Rural Development</div>
+    <div>Government of India · Ministry of Rural Development</div>
     <div class="access-controls">
       <button class="font-size-btn" onclick="adjustFontSize(-1)">A-</button>
       <button class="font-size-btn" onclick="adjustFontSize(0)">A</button>
       <button class="font-size-btn" onclick="adjustFontSize(1)">A+</button>
-      <button onclick="toggleContrast()">🌓 <span data-i18n="high_contrast">High Contrast</span></button>
+      <button onclick="toggleContrast()">🌓 High Contrast</button>
       
-      <!-- PORTAL UI LANGUAGE SELECTOR (LOGIN SCREEN) -->
+      <!-- TOP BAR UI TRANSLATION SELECTOR -->
       <select id="authLangSelect" onchange="changeLanguage(this.value)" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">
         <option value="en">English</option>
         <option value="hi">हिंदी (Hindi)</option>
@@ -52,54 +51,54 @@
           <circle cx="50" cy="95" r="8" fill="#ffffff"/>
           <circle cx="50" cy="95" r="2" fill="#1b4965"/>
         </svg>
-        <div style="font-size:12px;color:var(--gov-saffron);font-weight:700;letter-spacing:1px;text-transform:uppercase" data-i18n="digital_india_tag">Digital India · DILRMP Portal</div>
-        <h2 style="margin:4px 0 6px;color:var(--gov-navy);font-size:19px" data-i18n="auth_heading">Land Records Digitization System</h2>
-        <div style="font-size:13px;color:var(--muted)" data-i18n="auth_subheading">Intelligent Land Record Digitization &amp; Validation System</div>
+        <div style="font-size:12px;color:var(--gov-saffron);font-weight:700;letter-spacing:1px;text-transform:uppercase">Digital India · DILRMP Portal</div>
+        <h2 style="margin:4px 0 6px;color:var(--gov-navy);font-size:19px">Land Records Digitization System</h2>
+        <div style="font-size:13px;color:var(--muted)">Intelligent Land Record Digitization &amp; Validation System</div>
       </div>
 
       <!-- Login Form -->
       <div id="loginForm">
         <div class="formfield">
-          <label class="field-label" data-i18n="email_label">Official Email ID</label>
+          <label class="field-label">Official Email ID</label>
           <input type="email" id="loginEmail" placeholder="officer@landrec.gov.in" autocomplete="username">
         </div>
         <div class="formfield">
-          <label class="field-label" data-i18n="password_label">Password</label>
+          <label class="field-label">Password</label>
           <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
         </div>
         <div id="loginError" class="errorbox hidden"></div>
-        <button class="btn block saffron" id="loginBtn" data-i18n="btn_signin">Sign In</button>
+        <button class="btn block saffron" id="loginBtn">Sign In</button>
         <div style="text-align:center;margin-top:14px;font-size:12px;color:var(--muted)">
-          <span data-i18n="no_account">Don't have an account?</span> <button type="button" class="btn ghost" style="padding:2px 8px;font-size:12px;margin-left:4px" id="toSignup" data-i18n="btn_register">Sign Up</button>
+          <span>Don't have an account?</span> <button type="button" class="btn ghost" style="padding:2px 8px;font-size:12px;margin-left:4px" id="toSignup">Sign Up</button>
         </div>
       </div>
 
       <!-- Signup Form -->
       <div id="signupForm" class="hidden">
         <div class="formfield">
-          <label class="field-label" data-i18n="fullname_label">Full Name</label>
+          <label class="field-label">Full Name</label>
           <input type="text" id="suName" placeholder="e.g. Ramesh Kumar">
         </div>
         <div class="formfield">
-          <label class="field-label" data-i18n="email_label">Official Email ID</label>
+          <label class="field-label">Official Email ID</label>
           <input type="email" id="suEmail" placeholder="officer@landrec.gov.in">
         </div>
         <div class="formfield">
-          <label class="field-label" data-i18n="password_label">Password</label>
+          <label class="field-label">Password</label>
           <input type="password" id="suPass" placeholder="Min. 8 characters">
         </div>
         <div class="formfield">
-          <label class="field-label" data-i18n="confirm_pass_label">Confirm Password</label>
+          <label class="field-label">Confirm Password</label>
           <input type="password" id="suPass2" placeholder="Re-enter password">
         </div>
         <div id="signupError" class="errorbox hidden"></div>
-        <button class="btn block saffron" id="signupBtn" data-i18n="btn_register_submit">Register Account</button>
+        <button class="btn block saffron" id="signupBtn">Register Account</button>
         <div style="text-align:center;margin-top:14px;font-size:12px;color:var(--muted)">
-          <span data-i18n="already_registered">Already registered?</span> <button type="button" class="btn ghost" style="padding:2px 8px;font-size:12px;margin-left:4px" id="toLogin" data-i18n="btn_signin">Sign In</button>
+          <span>Already registered?</span> <button type="button" class="btn ghost" style="padding:2px 8px;font-size:12px;margin-left:4px" id="toLogin">Sign In</button>
         </div>
       </div>
 
-      <div style="border-top:1px solid #e2e8f0;margin-top:20px;padding-top:12px;text-align:center;font-size:11px;color:#94a3b8" data-i18n="nic_footer_auth">
+      <div style="border-top:1px solid #e2e8f0;margin-top:20px;padding-top:12px;text-align:center;font-size:11px;color:#94a3b8">
         National Informatics Centre (NIC) · Government of India
       </div>
     </div>
@@ -109,18 +108,18 @@
 <!-- MAIN APPLICATION -->
 <div id="appView" class="hidden">
   <div class="gov-utility-bar">
-    <div>
-      <span data-i18n="gov_top_title">🇮🇳 Government of India</span> &nbsp;·&nbsp;
-      <span data-i18n="gov_top_dept">Department of Land Resources</span>
+    <div style="display:flex;align-items:center;gap:8px">
+      <img src="/vectorflow.png" alt="Vector Flow" style="height:20px;filter:brightness(0) invert(1);vertical-align:middle" onerror="this.style.display='none'">
+      <span style="font-weight:700;color:#fbd38d;font-size:12px;letter-spacing:0.5px">VECTOR FLOW · DILRMP</span>
     </div>
     <div class="access-controls">
       <span id="liveClock" style="margin-right:10px;font-family:monospace"></span>
       <button class="font-size-btn" onclick="adjustFontSize(-1)">A-</button>
       <button class="font-size-btn" onclick="adjustFontSize(0)">A</button>
       <button class="font-size-btn" onclick="adjustFontSize(1)">A+</button>
-      <button onclick="toggleContrast()">🌓 <span data-i18n="high_contrast">High Contrast</span></button>
+      <button onclick="toggleContrast()">🌓 High Contrast</button>
       
-      <!-- PORTAL UI LANGUAGE SELECTOR (DASHBOARD HEADER) -->
+      <!-- TOP BAR UI TRANSLATION SELECTOR -->
       <select id="appLangSelect" onchange="changeLanguage(this.value)" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">
         <option value="en">English</option>
         <option value="hi">हिंदी (Hindi)</option>
@@ -202,19 +201,19 @@
         <div class="card">
           <div class="card-header">
             <h3 class="card-title">📄 Upload Scanned Land Records</h3>
-            <span class="chip">Supports: Hindi, Telugu, Tamil, Marathi, Gujarati, Bengali, Punjabi, Kannada, Odia, Urdu, English</span>
+            <span class="chip">Supports All 11 Official Indian Regional Scripts</span>
           </div>
 
-          <!-- DEDICATED OCR DOCUMENT LANGUAGE SELECTOR (Inside upload box, directly above drop zone) -->
-          <div class="ocr-lang-panel" style="background:#f1f5f9;border:1.5px solid #cbd5e1;border-radius:8px;padding:12px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+          <!-- DEDICATED OCR DOCUMENT LANGUAGE / SCRIPT SELECTOR -->
+          <div style="background:#f8fafc;border:2px solid #0f2b48;border-radius:8px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
             <div>
-              <div style="font-weight:700;color:#0f2b48;font-size:13px;display:flex;align-items:center;gap:6px">
-                <span>🔤 Document OCR Language Mode:</span>
+              <div style="font-weight:800;color:#0f2b48;font-size:14px;display:flex;align-items:center;gap:6px">
+                <span>🎯 Document Language for OCR:</span>
               </div>
-              <div style="font-size:12px;color:#475569;margin-top:2px">Select your land record's language for maximum reading accuracy.</div>
+              <div style="font-size:12px;color:#475569;margin-top:2px">Selecting the exact language gives highest accuracy; Auto-Detect works on mixed records.</div>
             </div>
             
-            <select id="docTargetLang" style="background:#ffffff;color:#0f2b48;border:2px solid #0f2b48;border-radius:6px;font-weight:700;font-size:13px;padding:8px 14px;cursor:pointer;outline:none;min-width:280px">
+            <select id="docTargetLang" style="background:#ffffff;color:#0f2b48;border:2px solid #ea580c;border-radius:6px;font-weight:700;font-size:13px;padding:8px 14px;cursor:pointer;outline:none;min-width:280px">
               <option value="auto">⚡ Auto-Detect (All 11 Languages)</option>
               <option value="hin">1. हिंदी (Hindi / Khatauni / Khasra)</option>
               <option value="tel">2. తెలుగు (Telugu / 1-B / Pahani / Patta)</option>
@@ -537,15 +536,18 @@
   <div class="gov-footer">
     <div class="gov-footer-inner">
       <div>
-        <div style="font-weight:700;color:#ffffff;font-size:13px;margin-bottom:6px">🏛️ National Informatics Centre (NIC)</div>
-        <div>Ministry of Electronics &amp; Information Technology, Government of India</div>
-        <div style="font-size:11px;margin-top:6px;color:#64748b">Website Content Owned by Department of Land Resources, Ministry of Rural Development, GoI</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <img src="/vectorflow.png" alt="Vector Flow" style="height:28px;filter:brightness(0) invert(1)" onerror="this.style.display='none'">
+          <span style="font-weight:800;color:#ffffff;font-size:15px;letter-spacing:1px">VECTOR FLOW</span>
+        </div>
+        <div style="font-size:11px;color:#94a3b8">Intelligent Land Record Digitization &amp; Multilingual Extraction Engine</div>
+        <div style="font-size:11px;margin-top:6px;color:#cbd5e1">Website Content Owned by Vector Flow</div>
       </div>
       <div>
         <div class="footer-links">
-          <a href="javascript:void(0)" onclick="alert('Helpdesk Toll Free: 1800-111-555 (Mon-Fri 9:30 AM - 6:00 PM IST)\nEmail: support@landrec.gov.in')">📞 Helpdesk</a>
+          <a href="javascript:void(0)" onclick="alert('Helpdesk Toll Free: 1800-111-555\nEmail: support@landrec.gov.in')">📞 Helpdesk</a>
           <a href="javascript:void(0)" onclick="alert('Guidelines for Indian Government Websites (GIGW 3.0) Compliant')">GIGW 3.0</a>
-          <a href="javascript:void(0)" onclick="alert('System Version: v2.5 (Indic OCR with Custom Script Selection)')">v2.5</a>
+          <a href="javascript:void(0)" onclick="alert('System Version: v2.5 (11 Indic Languages Supported)')">v2.5</a>
         </div>
         <div style="font-size:11px;margin-top:8px;color:#64748b">Last Updated: September 2026</div>
       </div>
@@ -554,92 +556,13 @@
 </div>
 
 <script>
-// Interface translation dictionary - explicitly targets only the UI header select boxes
-const siteTranslations = {
-  en: {
-    page_title: "Digital Land Records Portal | DILRMP",
-    high_contrast: "High Contrast",
-    gov_header_auth: "Government of India · Ministry of Rural Development",
-    digital_india_tag: "Digital India · DILRMP Portal",
-    auth_heading: "Land Records Digitization System",
-    auth_subheading: "Intelligent Land Record Digitization & Validation System",
-    email_label: "Official Email ID",
-    password_label: "Password",
-    btn_signin: "Sign In",
-    no_account: "Don't have an account?",
-    btn_register: "Sign Up",
-    fullname_label: "Full Name",
-    confirm_pass_label: "Confirm Password",
-    btn_register_submit: "Register Account",
-    already_registered: "Already registered?",
-    gov_top_title: "🇮🇳 Government of India",
-    gov_top_dept: "Department of Land Resources"
-  },
-  hi: {
-    page_title: "डिजिटल भू-अभिलेख पोर्टल | DILRMP",
-    high_contrast: "उच्च कंट्रास्ट",
-    gov_header_auth: "भारत सरकार · ग्रामीण विकास मंत्रालय",
-    digital_india_tag: "डिजिटल इंडिया · DILRMP पोर्टल",
-    auth_heading: "भू-अभिलेख डिजिटलीकरण प्रणाली",
-    auth_subheading: "स्मार्ट भू-अभिलेख डिजिटलीकरण एवं सत्यापन प्रणाली",
-    email_label: "आधिकारिक ईमेल आईडी",
-    password_label: "पासवर्ड",
-    btn_signin: "लॉग इन करें",
-    no_account: "खाता नहीं है?",
-    btn_register: "पंजीकरण करें",
-    fullname_label: "पूरा नाम",
-    confirm_pass_label: "पासवर्ड की पुष्टि करें",
-    btn_register_submit: "खाता बनाएं",
-    already_registered: "पहले से पंजीकृत हैं?",
-    gov_top_title: "🇮🇳 भारत सरकार",
-    gov_top_dept: "भू-संसाधन विभाग"
-  },
-  te: {
-    page_title: "డిజిటల్ భూ రికార్డుల పోర్టల్ | DILRMP",
-    high_contrast: "హై కాంట్రాస్ట్",
-    gov_header_auth: "భారత ప్రభుత్వం · గ్రామీణాభివృద్ధి మంత్రిత్వ శాఖ",
-    digital_india_tag: "డిజిటల్ ఇండియా · DILRMP పోర్టల్",
-    auth_heading: "భూ రికార్డుల డిజిటలైజేషన్ సిస్టమ్",
-    auth_subheading: "ఇంటెలిజెంట్ ల్యాండ్ రికార్డ్ డిజిటలైజేషన్ & ధృవీకరణ వ్యవస్థ",
-    email_label: "అధికారిక ఇమెయిల్ ID",
-    password_label: "పాస్‌వర్డ్",
-    btn_signin: "సైన్ ఇన్",
-    no_account: "ఖాతా లేదా?",
-    btn_register: "రిజిస్టర్",
-    fullname_label: "పూర్తి పేరు",
-    confirm_pass_label: "పాస్‌వర్డ్ నిర్ధారించండి",
-    btn_register_submit: "ఖాతా సృష్టించండి",
-    already_registered: "ఇప్పటికే నమోదు చేసుకున్నారా?",
-    gov_top_title: "🇮🇳 భారత ప్రభుత్వం",
-    gov_top_dept: "భూ వనరుల శాఖ"
-  }
-};
-
-let activeLang = 'en';
-
-function applyLanguage(lang) {
-  activeLang = lang;
-  localStorage.setItem('dilrmp_ui_lang', lang);
-  
+// Separate UI Language Switcher (Top Header only)
+function changeLanguage(lang) {
   const authSelect = document.getElementById('authLangSelect');
   const appSelect = document.getElementById('appLangSelect');
   if (authSelect) authSelect.value = lang;
   if (appSelect) appSelect.value = lang;
-  
-  const dict = siteTranslations[lang] || siteTranslations.en;
-  
-  const titleEl = document.getElementById('pageTitle');
-  if (titleEl && dict.page_title) titleEl.innerText = dict.page_title;
-  
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    const key = el.getAttribute('data-i18n');
-    if (dict[key]) {
-      el.innerText = dict[key];
-    } else if (siteTranslations.en[key]) {
-      el.innerText = siteTranslations.en[key];
-    }
-  });
-
+  localStorage.setItem('dilrmp_ui_lang', lang);
   if (lang === 'ur') {
     document.documentElement.setAttribute('dir', 'rtl');
   } else {
@@ -647,16 +570,12 @@ function applyLanguage(lang) {
   }
 }
 
-function changeLanguage(lang) {
-  applyLanguage(lang);
-}
-
 document.addEventListener('DOMContentLoaded', () => {
   const saved = localStorage.getItem('dilrmp_ui_lang') || 'en';
-  applyLanguage(saved);
+  changeLanguage(saved);
 });
 </script>
 
-<script src="js/app.js?v=6"></script>
+<script src="js/app.js?v=7"></script>
 </body>
 </html>

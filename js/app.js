@@ -62,7 +62,7 @@ function updateLiveClock(){
 setInterval(updateLiveClock, 1000);
 updateLiveClock();
 
-// Navigation History
+// Navigation
 function recordHistoryState(state){
   try {
     let hash = '#' + (state.tab || 'upload');
@@ -230,7 +230,7 @@ function switchTab(name, pushHistory=true){
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>switchTab(t.dataset.tab));
 
 // ==========================================================================
-// UPLOAD & MULTI-SCRIPT PROCESSING
+// UPLOAD & MULTI-SCRIPT OCR
 // ==========================================================================
 const drop=$('#drop'), fi=$('#fileInput');
 let activeScanId = 0;
@@ -258,6 +258,7 @@ async function upload(file){
   $('#processing').classList.remove('hidden'); 
   $('#result').classList.add('hidden');
 
+  // Grab the chosen OCR Language Mode directly from the dedicated select element
   const selectedLang = ($('#docTargetLang') ? $('#docTargetLang').value : 'auto');
 
   const fd = new FormData(); 
