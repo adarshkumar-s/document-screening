@@ -84,9 +84,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------
-# FAIL-SAFE DATABASE ADAPTER (With 3s Fast-Timeout)
-# ---------------------------------------------------------
 class DBConnection:
     def __init__(self):
         self.is_pg = False
@@ -263,6 +260,17 @@ def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = N
 def healthcheck():
     return {"status": "healthy", "time": time.time()}
 
+# Serve user's custom vectorflow logo directly
+@app.get("/vectorflow.png", include_in_schema=False)
+def serve_logo():
+    for candidate in [
+        os.path.join(BASE_DIR, "vectorflow.png"),
+        os.path.join(BASE_DIR, "vectorflow.png.png")
+    ]:
+        if os.path.isfile(candidate):
+            return FileResponse(candidate, media_type="image/png")
+    return JSONResponse(status_code=404, content={"detail": "vectorflow.png not found"})
+
 # JWT Helpers
 def b64_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
@@ -307,10 +315,10 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
 # ---------------------------------------------------------
-# RELAXED MULTI-SCRIPT & TABULAR FORM EXTRACTION
+# OCR PREPROCESSING & EXTRACTION
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
-    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
+    "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷८९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
     "0123456789012345678901234567890123456789123456789001234567890123456789"
 )
 
@@ -323,7 +331,7 @@ FIELD_KEYS = (
 
 FIELD_LABELS = {
     "owner_name": [
-        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Record Holder", "Owner",
+        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Owner",
         "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
         "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు", "భూమి యజమాని", "రైతు పేరు",
         "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பட்டாதாரர்", "உரிமையாளர்",
@@ -337,7 +345,7 @@ FIELD_LABELS = {
         "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்",
         "পিতার নাম", "স্বামীর নাম", "પિતાનું નામ", "પતિનું નામ"
     ],
-    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "పుల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
+    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "புல எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
     "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর", "দাগ নং"],
     "khata_number": ["Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र", "खाता", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "ఖాతా", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
     "plot_number": ["Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "பிளாட் எண்", "প্লট নম্বর"],
@@ -345,8 +353,8 @@ FIELD_LABELS = {
     "village": ["Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "గ్రామం", "గ్రామము", "கிராமம்", "গ্রাম", "ગામ"],
     "tehsil": ["Tehsil", "Taluk", "Taluka", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা", "તાલુકો"],
     "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
-    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "మాநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
-    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "புஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
+    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
+    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "పుஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
     "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
     "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "নামজারি নম্বর", "नोंदणी नंबर"],
     "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "दलिल নম্বর", "દસ્તાવેજ નંબર"],
@@ -362,7 +370,6 @@ def clean_ocr_image(image: Image.Image) -> Image.Image:
         scale = 1800.0 / float(img.width)
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.BILINEAR)
 
-    # Sharp binarization so faint ink / stamp strokes stand out
     img = ImageOps.autocontrast(img, cutoff=0.5)
     enhancer = ImageEnhance.Sharpness(img)
     return enhancer.enhance(1.5)
@@ -391,11 +398,9 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
     if not HAS_TESSERACT:
         return "", "English"
 
-    # PSM 3 (Fully automatic segmentation) reads tables, multiple columns, and freeform text blocks
     cfg = "--oem 1 --psm 3"
     raw_text = ""
 
-    # Targeted bilingual mapping when user explicitly selects their document language
     lang_map = {
         "hin": "hin+eng",
         "tel": "tel+eng",
@@ -416,7 +421,6 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
         except Exception:
             raw_text = ""
 
-    # Auto-detect fallback: tests grouped scripts sequentially
     if not raw_text or len(raw_text.strip()) < 15:
         for combo in ["hin+eng+tel", "tam+ben+guj", "kan+ori+pan", "urd+eng", "eng"]:
             try:
@@ -426,7 +430,6 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
             except Exception:
                 continue
 
-    # Fallback to single block if document was dense without standard margins
     if len(raw_text.strip()) < 10:
         try:
             raw_text = pytesseract.image_to_string(image, lang="hin+tel+eng", config="--oem 1 --psm 6")
@@ -449,7 +452,6 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
 
     lines = [line.strip() for line in text.split("\n") if line.strip()]
 
-    # 1. Regex search supporting all standard Indian form delimiters
     for key, labels in FIELD_LABELS.items():
         escaped = "|".join(re.escape(x) for x in labels)
         pat = rf"(?:{escaped})\s*[:：\-।|–—\s]?\s*([^\n\r\|;]+)"
@@ -462,7 +464,6 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
             if val and len(val) > 0:
                 fields[key] = {"value": val, "confidence": 0.95}
 
-    # 2. Contextual heuristic for tabular formats (where label and value are on the same line)
     if not fields["owner_name"]["value"]:
         for line in lines:
             if any(term in line for term in ["खातेदार", "భూ యజమాని", "పట్టాదారు", "பட்டாதாரர்", "Owner", "Holder"]):
@@ -471,7 +472,6 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
                     fields["owner_name"] = {"value": parts[1].strip(" \t:|-।"), "confidence": 0.89}
                     break
 
-    # 3. Honorific title matching
     if not fields["owner_name"]["value"]:
         m_hon = re.search(r"\b(श्री|श्रीमती|శ్రీ|శ్రీమతి|திரு|திருமதி|Shri|Smt|Mr\.)\s+([^\n,\|;]+)", text)
         if m_hon and len(m_hon.group(0)) > 4:
@@ -491,7 +491,7 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
     }
 
 # ---------------------------------------------------------
-# API ROUTES
+# ROUTES
 # ---------------------------------------------------------
 class LoginReq(BaseModel):
     email: str
@@ -819,13 +819,6 @@ def favicon_ico():
 @app.get("/favicon.svg", include_in_schema=False)
 def favicon():
     return FileResponse(os.path.join(BASE_DIR, "favicon.svg"), media_type="image/svg+xml")
-
-@app.get("/vectorflow.png", include_in_schema=False)
-def vectorflow_logo():
-    vf = os.path.join(BASE_DIR, "vectorflow.png")
-    if os.path.isfile(vf):
-        return FileResponse(vf, media_type="image/png")
-    return JSONResponse(status_code=404, content={"detail": "Logo not found"})
 
 @app.get("/")
 def index():

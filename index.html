@@ -14,10 +14,9 @@
 <!-- AUTHENTICATION SCREEN -->
 <div id="authView" class="auth-hero-wrap">
   <div class="gov-utility-bar">
-    <div style="display:flex;align-items:center;gap:8px">
-      <!-- VECTOR FLOW LOGO (Self-contained SVG data URI) -->
-      <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 450 160'><text x='50%25' y='65%25' text-anchor='middle' font-family='Impact, sans-serif' font-weight='900' font-size='68' fill='%23ffffff' letter-spacing='2'>VECTORFLOW</text></svg>" alt="Vector Flow" style="height:22px;vertical-align:middle">
-      <span style="font-weight:700;color:#fbd38d;font-size:12px;letter-spacing:0.5px">VECTOR FLOW</span>
+    <div style="display:flex;align-items:center">
+      <!-- EXACT LOGO PLACED IN AUTH HEADER -->
+      <img src="/vectorflow.png" alt="Logo" style="height:26px;filter:brightness(0) invert(1);vertical-align:middle" onerror="this.src='/vectorflow.png.png'">
     </div>
     <div class="access-controls">
       <button class="font-size-btn" onclick="adjustFontSize(-1)">A-</button>
@@ -111,10 +110,9 @@
 <!-- MAIN APPLICATION -->
 <div id="appView" class="hidden">
   <div class="gov-utility-bar">
-    <div style="display:flex;align-items:center;gap:10px">
-      <!-- REPLACED: Government of India replaced with Vector Flow logo -->
-      <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 450 160'><text x='50%25' y='65%25' text-anchor='middle' font-family='Impact, sans-serif' font-weight='900' font-size='64' fill='%23ffffff' letter-spacing='2'>VECTORFLOW</text></svg>" alt="Vector Flow Logo" style="height:22px;vertical-align:middle">
-      <span style="font-weight:700;color:#fbd38d;font-size:12px;letter-spacing:0.5px">VECTOR FLOW</span>
+    <div style="display:flex;align-items:center">
+      <!-- REPLACED: Government of India replaced entirely with user's provided logo -->
+      <img src="/vectorflow.png" alt="Logo" style="height:28px;filter:brightness(0) invert(1);vertical-align:middle" onerror="this.src='/vectorflow.png.png'">
     </div>
     <div class="access-controls">
       <span id="liveClock" style="margin-right:10px;font-family:monospace"></span>
@@ -540,13 +538,12 @@
   <div class="gov-footer">
     <div class="gov-footer-inner">
       <div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-          <!-- REPLACED: NIC removed and Vector Flow logo placed here -->
-          <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 450 160'><text x='50%25' y='65%25' text-anchor='middle' font-family='Impact, sans-serif' font-weight='900' font-size='64' fill='%23ffffff' letter-spacing='2'>VECTORFLOW</text></svg>" alt="Vector Flow Logo" style="height:32px">
-          <span style="font-weight:800;color:#ffffff;font-size:16px;letter-spacing:1px">VECTOR FLOW</span>
+        <div style="display:flex;align-items:center;margin-bottom:8px">
+          <!-- REPLACED: NIC removed and user's logo placed here -->
+          <img src="/vectorflow.png" alt="Logo" style="height:38px;filter:brightness(0) invert(1)" onerror="this.src='/vectorflow.png.png'">
         </div>
         <div style="font-size:11px;color:#94a3b8">Intelligent Land Record Digitization &amp; Multilingual Extraction Engine</div>
-        <!-- REPLACED: Updated ownership string -->
+        <!-- REPLACED: Updated ownership line -->
         <div style="font-size:11px;margin-top:6px;color:#cbd5e1">Website Content Owned by Vector Flow</div>
       </div>
       <div>
@@ -562,7 +559,6 @@
 </div>
 
 <script>
-// Isolated UI Language Switcher (Top Utility Bar Only)
 function changeLanguage(lang) {
   const authSelect = document.getElementById('authLangSelect');
   const appSelect = document.getElementById('appLangSelect');
