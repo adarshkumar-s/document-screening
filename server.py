@@ -892,8 +892,13 @@ def get_documents(user: dict = Depends(get_current_user)):
 def get_document(doc_id: str, user: dict = Depends(get_current_user)):
     with get_db() as db:
         r = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
-        if not r: raise HTTPException(status_path=404, detail="Not found")
+        if not r: raise HTTPException(status_code=404, detail="Not found")
         return {**dict(r), "fields": json.loads(r["fields"] or "{}"), "ai_decision_support": json.loads(r["ai_decision_support"] or "{}")}
+
+# Mount assets and static folders correctly
+os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
 
 app.mount("/css", StaticFiles(directory=os.path.join(BASE_DIR, "css")), name="css")
 app.mount("/js", StaticFiles(directory=os.path.join(BASE_DIR, "js")), name="js")
