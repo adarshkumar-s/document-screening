@@ -10,11 +10,16 @@ import uuid
 import re
 import asyncio
 from typing import Optional, Dict, Any, List
+from dotenv import load_dotenv
+
+# Load local environment variables (.env) if present
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Query, Request, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image, ImageOps, ImageEnhance
 
 # Limit CPU threads to prevent thrashing on shared cloud vCPUs
@@ -39,6 +44,15 @@ try:
 except ImportError:
     HAS_TESSERACT = False
 
+# AI Engine Setup
+try:
+    from google import genai
+    from google.genai import types
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+    ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+except ImportError:
+    ai_client = None
+
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 HAS_PSYCOPG2 = False
@@ -56,7 +70,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 SQLITE_PATH = os.getenv("DB_PATH", os.path.join(DATA_DIR, "land_records.db"))
-FALLBACK_STORE = os.path.join(DATA_DIR, "system_seed.json")
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dilrmp-hackathon-secure-secret-2026")
 
@@ -85,7 +98,7 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------
-# FAIL-SAFE DATABASE ADAPTER (With 3s Fast-Timeout)
+# DATABASE CONNECTION
 # ---------------------------------------------------------
 class DBConnection:
     def __init__(self):
@@ -261,9 +274,15 @@ def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = N
 @app.get("/healthz")
 @app.get("/api/health")
 def healthcheck():
-    return {"status": "healthy", "time": time.time()}
+    return {
+        "status": "healthy",
+        "ai_enabled": ai_client is not None,
+        "time": time.time()
+    }
 
-# JWT Helpers
+# ---------------------------------------------------------
+# AUTHENTICATION HELPERS
+# ---------------------------------------------------------
 def b64_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
@@ -307,7 +326,7 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
     return {"id": "5cc810682c7f", "full_name": "System Administrator", "email": "admin@landrec.gov.in", "role": "admin"}
 
 # ---------------------------------------------------------
-# OCR PREPROCESSING & TABULAR FORM EXTRACTION
+# OCR PREPROCESSING & OCR ENGINE
 # ---------------------------------------------------------
 INDIC_DIGIT_MAP = str.maketrans(
     "०१२३४५६७८९০১২৩৪৫৬৭৮৯٠١٢٣٤٥٦٧٨٩۰۱۲३४۵۶۷۸९௧௨௩௪௫௬௭௮௯௦૦૧૨૩૪૫૬૭૮૯౦౧౨౩౪౫౬౭౮౯",
@@ -322,35 +341,22 @@ FIELD_KEYS = (
 )
 
 FIELD_LABELS = {
-    "owner_name": [
-        "Record Holder Name", "Landowner Name", "Land Owner Name", "Owner Name", "Owner",
-        "भूमि स्वामी का नाम", "खातेदार का नाम", "भूमिधारक का नाम", "मालिक का नाम", "खातेदार", "भूमि स्वामी", "काश्तकार",
-        "భూ యజమాని పేరు", "పట్టాదారు పేరు", "యజమాని పేరు", "పట్టాదారుని పేరు", "భూమి యజమాని", "రైతు పేరు",
-        "பட்டாதாரர் பெயர்", "நில உரிமையாளர்", "உரிமையாளர் பெயர்", "பட்டாதாரர்", "உரிமையாளர்",
-        "জমির মালিকের নাম", "খতিয়ানধারীর নাম", "মালিকের নাম", "রায়তের নাম",
-        "खातेदाराचे नाव", "जमीन मालक", "मालकाचे नाव", "જમીન માલિક", "ખાતેદારનું નામ"
-    ],
-    "father_name": [
-        "Father's Name", "Father Name", "Husband Name", "Guardian Name", "Father", "Husband",
-        "पिता का नाम", "पिता/पति", "पति का नाम", "पिता", "पति", "वालद",
-        "తండ్రి పేరు", "భర్త పేరు", "తండ్రి/భర్త పేరు", "తండ్రి", "భర్త",
-        "தந்தை பெயர்", "கணவர் பெயர்", "தந்தையின் பெயர்", "பாதுகாவலர் பெயர்",
-        "পিতার নাম", "স্বামীর নাম", "પિતાનું નામ", "પતિનું નામ"
-    ],
-    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్", "సర్వే నెం", "సర్వే నం", "పుల எண்", "சர்வே எண்", "সার্ভে নম্বর", "સર્વે નંબર"],
-    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "खसरा क्रमांक", "खसरा", "ఖస్రా నంబర్", "கசரா எண்", "দাগ নম্বর", "দাগ নং"],
-    "khata_number": ["Khata Number", "Khata No", "Khata", "खाता नंबर", "खाता संख्या", "खाता क्र", "खाता", "ఖాతా నంబరు", "ఖాతా సంఖ్య", "ఖాతా నెం", "ఖాతా", "கணக்கு எண்", "பட்டா எண்", "சிட்டா எண்", "খতিয়ান নং", "ખાતા નંબર"],
-    "plot_number": ["Plot Number", "Plot No", "Plot", "प्लॉट नंबर", "प्लॉट क्रमांक", "ప్లాట్ నంబర్", "மனை எண்", "பிளாட் எண்", "প্লট নম্বর"],
-    "area": ["Plot Area", "Land Area", "Area", "Extent", "क्षेत्रफल", "रकबा", "విస్తీర్ణం", "విస్తీర్ణము", "பரப்பளவு", "நிலப்பரப்பு", "জমির পরিমাণ", "ક્ષેત્રફળ", "વિસ્તાર"],
-    "village": ["Village Name", "Village", "Gram", "Mauza", "ग्राम", "गाँव", "गाव", "मौजा", "గ్రామం", "గ్రామము", "கிராமம்", "গ্রাম", "ગામ"],
-    "tehsil": ["Tehsil", "Taluk", "Taluka", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం", "తాలూకా", "வட்டம்", "தாலுகா", "উপজেলা", "તાલુકો"],
-    "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా", "மாவட்டம்", "জেলা", "જિલ્લો"],
-    "state": ["State Name", "State", "राज्य", "రాష్ట్రం", "மாநிலம்", "தமிழ்நாடு", "রাজ্য", "ગુજરાત"],
-    "land_class": ["Land Classification", "Land Class", "Land Type", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी", "భూమి రకం", "వర్గీకరణ", "நில வகை", "நஞ்சை", "புஞ்சை", "জমির ধরন", "જમીન પ્રકાર"],
-    "ownership_type": ["Ownership Type", "Ownership", "स्वामित्व प्रकार", "स्वामित्व", "యాజమాన్య రకం", "உரிமை வகை", "மালিকানা", "માલિકી પ્રકાર"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్", "மாற்ற எண்", "नामजারি নম্বর", "नोंदणी नंबर"],
-    "registration_no": ["Registration Number", "Registration No", "Reg No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య", "பதிவு எண்", "दलिल নম্বর", "દસ્તાવેજ નંબર"],
-    "khatauni_year": ["Khatauni Year", "Fasli Year", "Record Year", "Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष", "ఫసలీ సంవత్సరం", "ஆண்டு", "সাল", "વર્ષ"]
+    "owner_name": ["Record Holder Name", "Landowner Name", "Owner Name", "भूमि स्वामी", "खातेदार", "భూ యजమాని", "பட்டாதாரர்", "খতিয়ানধারীর নাম"],
+    "father_name": ["Father's Name", "Father Name", "Husband Name", "पिता का नाम", "पिता/पति", "తండ్రి పేరు", "தந்தை பெயர்"],
+    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर", "सर्वे क्रमांक", "సర్వే నంబర్"],
+    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर", "खसरा संख्या", "ఖస్రా నంబర్"],
+    "khata_number": ["Khata Number", "Khata No", "खाता नंबर", "खाता संख्या", "ఖాతా సంఖ్య", "பட்டா எண்"],
+    "plot_number": ["Plot Number", "Plot No", "प्लॉट नंबर", "प्लॉट क्रमांक"],
+    "area": ["Plot Area", "Land Area", "Area", "क्षेत्रफल", "रकबा", "విస్తీర్ణం"],
+    "village": ["Village Name", "Village", "Gram", "ग्राम", "गाँव", "मौजा", "గ్రామం"],
+    "tehsil": ["Tehsil", "Taluk", "Mandal", "तहसील", "तालुका", "मंडल", "మండలం"],
+    "district": ["District Name", "District", "जिला", "जिल्हा", "జిల్లా"],
+    "state": ["State Name", "State", "राज्य", "రాష్ట్రం"],
+    "land_class": ["Land Classification", "Land Class", "भूमि का प्रकार", "भू-वर्गीकरण", "श्रेणी"],
+    "ownership_type": ["Ownership Type", "स्वामित्व प्रकार", "स्वामित्व"],
+    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या", "नामांतरण नंबर", "మ్యుటేషన్ నంబర్"],
+    "registration_no": ["Registration Number", "Registration No", "पंजीकरण संख्या", "రిజిస్ట్రేషన్ సంఖ్య"],
+    "khatauni_year": ["Khatauni Year", "Fasli Year", "खतौनी वर्ष", "फसली वर्ष", "वर्ष"]
 }
 
 def clean_ocr_image(image: Image.Image) -> Image.Image:
@@ -367,24 +373,19 @@ def clean_ocr_image(image: Image.Image) -> Image.Image:
     return enhancer.enhance(1.5)
 
 def detect_primary_script(text: str) -> str:
-    hin = sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F)
-    ben = sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF)
-    pan = sum(1 for c in text if 0x0A00 <= ord(c) <= 0x0A7F)
-    guj = sum(1 for c in text if 0x0A80 <= ord(c) <= 0x0AFF)
-    ori = sum(1 for c in text if 0x0B00 <= ord(c) <= 0x0B7F)
-    tam = sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF)
-    tel = sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F)
-    kan = sum(1 for c in text if 0x0C80 <= ord(c) <= 0x0CFF)
-    urd = sum(1 for c in text if 0x0600 <= ord(c) <= 0x06FF)
-    
     counts = {
-        "tel": tel, "hin": hin, "tam": tam, "ben": ben,
-        "guj": guj, "pan": pan, "kan": kan, "ori": ori, "urd": urd
+        "hin": sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F),
+        "ben": sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF),
+        "pan": sum(1 for c in text if 0x0A00 <= ord(c) <= 0x0A7F),
+        "guj": sum(1 for c in text if 0x0A80 <= ord(c) <= 0x0AFF),
+        "ori": sum(1 for c in text if 0x0B00 <= ord(c) <= 0x0B7F),
+        "tam": sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF),
+        "tel": sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F),
+        "kan": sum(1 for c in text if 0x0C80 <= ord(c) <= 0x0CFF),
+        "urd": sum(1 for c in text if 0x0600 <= ord(c) <= 0x06FF),
     }
     top = max(counts, key=counts.get)
-    if counts[top] >= 1:
-        return top
-    return "eng"
+    return top if counts[top] >= 1 else "eng"
 
 def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, str]:
     if not HAS_TESSERACT:
@@ -392,19 +393,10 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
 
     cfg = "--oem 1 --psm 3"
     raw_text = ""
-
     lang_map = {
-        "hin": "hin+eng",
-        "tel": "tel+eng",
-        "tam": "tam+eng",
-        "mar": "mar+hin+eng",
-        "guj": "guj+eng",
-        "ben": "ben+eng",
-        "pan": "pan+eng",
-        "kan": "kan+eng",
-        "ori": "ori+eng",
-        "urd": "urd+eng",
-        "eng": "eng"
+        "hin": "hin+eng", "tel": "tel+eng", "tam": "tam+eng", "mar": "mar+hin+eng",
+        "guj": "guj+eng", "ben": "ben+eng", "pan": "pan+eng", "kan": "kan+eng",
+        "ori": "ori+eng", "urd": "urd+eng", "eng": "eng"
     }
 
     if lang_code in lang_map:
@@ -430,19 +422,87 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, 
 
     detected = detect_primary_script(raw_text)
     script_names = {
-        "hin": "Hindi", "tel": "Telugu", "tam": "Tamil",
-        "ben": "Bengali", "guj": "Gujarati", "mar": "Marathi",
-        "pan": "Punjabi", "kan": "Kannada", "ori": "Odia",
-        "urd": "Urdu", "eng": "English"
+        "hin": "Hindi", "tel": "Telugu", "tam": "Tamil", "ben": "Bengali",
+        "guj": "Gujarati", "mar": "Marathi", "pan": "Punjabi", "kan": "Kannada",
+        "ori": "Odia", "urd": "Urdu", "eng": "English"
     }
     return raw_text, script_names.get(detected, "English")
 
-def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) -> Dict[str, Any]:
+# ---------------------------------------------------------
+# AI FIELD EXTRACTION PIPELINE
+# ---------------------------------------------------------
+class AILandRecordSchema(BaseModel):
+    owner_name: Optional[str] = Field(default="", description="Name of the record holder / landowner")
+    father_name: Optional[str] = Field(default="", description="Father or husband name")
+    survey_number: Optional[str] = Field(default="", description="Survey number")
+    khasra_number: Optional[str] = Field(default="", description="Khasra number")
+    khata_number: Optional[str] = Field(default="", description="Khata or Patta number")
+    plot_number: Optional[str] = Field(default="", description="Plot number")
+    area: Optional[str] = Field(default="", description="Land area with unit (Hectare, Acre, etc.)")
+    village: Optional[str] = Field(default="", description="Village / Gram")
+    tehsil: Optional[str] = Field(default="", description="Tehsil / Taluka / Mandal")
+    district: Optional[str] = Field(default="", description="District")
+    state: Optional[str] = Field(default="", description="State")
+    land_class: Optional[str] = Field(default="", description="Land classification (e.g. Bhumidhar)")
+    ownership_type: Optional[str] = Field(default="", description="Type of ownership")
+    mutation_no: Optional[str] = Field(default="", description="Mutation order or reference number")
+    registration_no: Optional[str] = Field(default="", description="Registration number")
+    khatauni_year: Optional[str] = Field(default="", description="Khatauni or Fasli year")
+    confidence_score: float = Field(default=0.92, description="Overall confidence level 0.0 to 1.0")
+
+def get_learned_corrections_context() -> str:
+    try:
+        with get_db() as db:
+            cur = db.execute("SELECT field_id, wrong, right_val, count FROM corrections ORDER BY count DESC LIMIT 15")
+            rows = cur.fetchall()
+            if not rows:
+                return ""
+            rules = "\n".join([f"- For '{r['field_id']}', previous OCR erroneously read '{r['wrong']}' which was corrected to '{r['right_val']}'" for r in rows])
+            return f"\nLEARNED HUMAN VERIFIER CORRECTIONS:\n{rules}\n"
+    except Exception:
+        return ""
+
+async def extract_entities_ai(text: str, detected_lang: str) -> Optional[Dict[str, Any]]:
+    if not ai_client or not text or len(text.strip()) < 10:
+        return None
+
+    learned_context = get_learned_corrections_context()
+    prompt = f"""
+    You are an AI document digitization system for the Digital India Land Records Modernization Programme (DILRMP).
+    Extract all land record fields from this OCR text detected in {detected_lang} script.
+    Normalize any regional Indic digits into standard numerals.
+    {learned_context}
+    
+    OCR TEXT TO EXTRACT FROM:
+    \"\"\"{text}\"\"\"
+    """
+
+    try:
+        response = await asyncio.to_thread(
+            ai_client.models.generate_content,
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=AILandRecordSchema,
+                temperature=0.0
+            )
+        )
+        parsed_json = json.loads(response.text)
+        fields = {}
+        for key in FIELD_KEYS:
+            val = str(parsed_json.get(key, "") or "").strip()
+            conf = float(parsed_json.get("confidence_score", 0.92)) if val else 0.0
+            fields[key] = {"value": val, "confidence": conf}
+        return fields
+    except Exception as e:
+        print(f"[AI PIPELINE FALLBACK] {e}")
+        return None
+
+def extract_entities_regex(text: str) -> Dict[str, Any]:
     text = (text or "").replace("\r\n", "\n")
     fields = {k: {"value": "", "confidence": 0.0} for k in FIELD_KEYS}
     numeric_keys = {"survey_number", "khasra_number", "khata_number", "plot_number", "mutation_no", "registration_no", "khatauni_year"}
-
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
 
     for key, labels in FIELD_LABELS.items():
         escaped = "|".join(re.escape(x) for x in labels)
@@ -454,23 +514,28 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
                 val = val.translate(INDIC_DIGIT_MAP)
                 val = re.sub(r"[^\d\/\.\-]", "", val)
             if val and len(val) > 0:
-                fields[key] = {"value": val, "confidence": 0.95}
+                fields[key] = {"value": val, "confidence": 0.85}
 
     if not fields["owner_name"]["value"]:
-        for line in lines:
-            if any(term in line for term in ["खातेदार", "భూ యజమాని", "పట్టాదారు", "பட்டாதாரர்", "Owner", "Holder"]):
-                parts = re.split(r"[:：\-।|–—]", line, maxsplit=1)
-                if len(parts) > 1 and len(parts[1].strip()) >= 3:
-                    fields["owner_name"] = {"value": parts[1].strip(" \t:|-।"), "confidence": 0.89}
-                    break
+        m_hon = re.search(r"\b(श्री|श्रीमती|శ్రీ|திரு|Shri|Smt|Mr\.)\s+([^\n,\|;]+)", text)
+        if m_hon:
+            fields["owner_name"] = {"value": m_hon.group(0).strip(" \t:|-।"), "confidence": 0.80}
 
+    return fields
+
+async def parse_document_content(text: str, detected_lang: str, pages: int = 1) -> Dict[str, Any]:
+    fields = await extract_entities_ai(text, detected_lang)
+    if not fields:
+        fields = extract_entities_regex(text)
+
+    val_count = sum(1 for f in fields.values() if f.get("confidence", 0) > 0)
+    mean_c = 94 if val_count >= 3 else (70 if text.strip() else 0)
+
+    issues = []
     if not fields["owner_name"]["value"]:
-        m_hon = re.search(r"\b(श्री|श्रीमती|శ్రీ|శ్రీమతి|திரு|திருமதி|Shri|Smt|Mr\.)\s+([^\n,\|;]+)", text)
-        if m_hon and len(m_hon.group(0)) > 4:
-            fields["owner_name"] = {"value": m_hon.group(0).strip(" \t:|-।"), "confidence": 0.85}
-
-    val_count = sum(1 for f in fields.values() if f["confidence"] > 0)
-    mean_c = 92 if val_count >= 3 else (75 if text.strip() else 0)
+        issues.append({"severity": "warning", "msg": "Landowner name could not be resolved automatically."})
+    if not fields["khasra_number"]["value"] and not fields["survey_number"]["value"]:
+        issues.append({"severity": "warning", "msg": "Neither Survey Number nor Khasra Number was extracted."})
 
     return {
         "mean_conf": mean_c,
@@ -478,7 +543,7 @@ def extract_entities(text: str, detected_lang: str = "English", pages: int = 1) 
         "pages": pages,
         "detected_language": detected_lang,
         "fields": fields,
-        "validation": {"verdict": "valid" if fields["owner_name"]["value"] else "review", "issues": []},
+        "validation": {"verdict": "valid" if (fields["owner_name"]["value"] and not issues) else "review", "issues": issues},
         "ocr_text": text
     }
 
@@ -621,7 +686,7 @@ async def process_sample(name: str, lang: Optional[str] = Query("auto"), user: d
 
     img = clean_ocr_image(Image.open(io.BytesIO(data)))
     raw_text, detected_lang = await asyncio.to_thread(run_targeted_ocr, img, lang)
-    parsed = extract_entities(raw_text, detected_lang, pages=1)
+    parsed = await parse_document_content(raw_text, detected_lang, pages=1)
 
     doc_id = uuid.uuid4().hex[:12]
     with get_db() as db:
@@ -673,7 +738,7 @@ async def process_upload(file: UploadFile = File(...), lang: Optional[str] = Que
 
     proc_img = clean_ocr_image(raw_img)
     raw_text, detected_lang = await asyncio.to_thread(run_targeted_ocr, proc_img, lang)
-    parsed = extract_entities(raw_text, detected_lang, pages=page_count)
+    parsed = await parse_document_content(raw_text, detected_lang, pages=page_count)
 
     doc_id = uuid.uuid4().hex[:12]
     with get_db() as db:
@@ -797,7 +862,7 @@ def get_corrections(user: dict = Depends(get_current_user)):
         return {"corrections": [dict(r) for r in cur.fetchall()]}
 
 # ---------------------------------------------------------
-# STATIC DIRECTORY MOUNTS & ASSET ROUTES
+# ASSETS & STATIC
 # ---------------------------------------------------------
 css_dir = os.path.join(BASE_DIR, "css")
 js_dir = os.path.join(BASE_DIR, "js")
@@ -810,7 +875,6 @@ if os.path.exists(js_dir):
 if os.path.exists(assets_dir):
     app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
-# Logo file handler supporting all common naming and path requests
 @app.get("/vectorflow.png", include_in_schema=False)
 @app.get("/assets/vectorflow-logo.png", include_in_schema=False)
 @app.get("/assets/vectorflow.png", include_in_schema=False)
@@ -824,15 +888,15 @@ def serve_logo():
     for path in candidates:
         if os.path.isfile(path):
             return FileResponse(path, media_type="image/png")
-    raise HTTPException(status_code=404, detail="Vectorflow logo image file not found")
+    raise HTTPException(status_code=404, detail="Logo file not found")
 
 @app.get("/favicon.ico", include_in_schema=False)
-def favicon_ico():
-    return FileResponse(os.path.join(BASE_DIR, "favicon.svg"), media_type="image/svg+xml")
-
 @app.get("/favicon.svg", include_in_schema=False)
 def favicon():
-    return FileResponse(os.path.join(BASE_DIR, "favicon.svg"), media_type="image/svg+xml")
+    fav_path = os.path.join(BASE_DIR, "favicon.svg")
+    if os.path.isfile(fav_path):
+        return FileResponse(fav_path, media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="Favicon not found")
 
 @app.get("/")
 def index():
