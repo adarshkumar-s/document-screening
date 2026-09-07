@@ -126,26 +126,26 @@
     </div>
   </div>
 
-  <!-- INTERFACE A: SIMPLE VIEWER & DATA OFFICER PORTAL -->
+  <!-- INTERFACE A: VIEWER & DATA OFFICER WORKSPACE -->
   <div id="simplePortal" class="hidden">
     <div class="simple-nav-bar">
       <div class="simple-nav-container" id="simpleNavItems"></div>
     </div>
-    <div class="wrap" style="max-width:1100px">
+    <div class="wrap">
       <!-- Viewer Home: Search & Catalog -->
       <div id="s-view-home" class="simple-pane hidden">
-        <div class="simple-hero-card">
-          <h2>Verified Land Records Repository</h2>
-          <p>Search legally approved cadastral records, Khatauni entries, and registered title deeds.</p>
-          <div class="simple-search-row">
-            <input type="text" id="simpleSearchInput" placeholder="Enter Landowner name, Khasra/Survey #, Village, or Document ID...">
-            <button class="btn saffron" onclick="doSimpleSearch()">Search Records</button>
+        <div class="card" style="border-top:3px solid var(--gov-navy);text-align:center;padding:32px 20px">
+          <h2 style="margin:0 0 6px;color:var(--gov-navy);font-size:22px">Verified Land Records Repository</h2>
+          <p style="margin:0 0 20px;color:var(--muted);font-size:14px">Search legally approved cadastral records, Khatauni entries, and registered title deeds.</p>
+          <div style="max-width:680px;margin:0 auto;display:flex;gap:10px">
+            <input type="text" id="simpleSearchInput" placeholder="Enter Landowner name, Khasra/Survey #, Village, or Document ID..." style="padding:10px 14px;font-size:14px">
+            <button class="btn saffron" onclick="doSimpleSearch()">Search</button>
           </div>
         </div>
 
-        <div class="card" style="margin-top:16px;padding:14px">
+        <div class="card" style="padding:14px">
           <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-            <span style="font-size:12px;font-weight:700;color:var(--gov-navy)">Filters:</span>
+            <span style="font-size:12px;font-weight:700;color:var(--gov-navy)">Refine Records:</span>
             <input type="text" id="viewFilterVillage" placeholder="Village..." style="width:160px;font-size:12px;padding:4px 8px">
             <input type="text" id="viewFilterDistrict" placeholder="District..." style="width:160px;font-size:12px;padding:4px 8px">
             <select id="viewFilterType" style="width:180px;font-size:12px;padding:4px 8px">
@@ -155,12 +155,12 @@
               <option value="Sale Deed">Sale Deed</option>
               <option value="Tax Receipt">Tax Receipt</option>
             </select>
-            <button class="btn ghost" onclick="applyViewerFilters()" style="padding:4px 10px;font-size:12px">Apply Filters</button>
+            <button class="btn ghost" onclick="applyViewerFilters()" style="padding:4px 10px;font-size:12px">Filter</button>
             <button class="btn ghost" onclick="resetViewerFilters()" style="padding:4px 10px;font-size:12px">Reset</button>
           </div>
         </div>
 
-        <div class="card" style="margin-top:14px">
+        <div class="card">
           <div class="card-header">
             <h3 class="card-title">📜 Available Cadastral Records</h3>
             <span class="chip" id="simpleRecordCount">0 records</span>
@@ -174,106 +174,152 @@
         </div>
       </div>
 
-      <!-- Data Officer Home Dashboard -->
+      <!-- Data Officer Operational Dashboard -->
       <div id="s-do-dash" class="simple-pane hidden">
-        <div class="simple-action-banner">
-          <div>
-            <h3 style="margin:0 0 4px;color:var(--gov-navy)">Welcome back, <span id="doWelcomeName">Officer</span></h3>
-            <p style="margin:0;font-size:13px;color:var(--muted)">Digitize new land deeds, save drafts, and submit records for verification.</p>
+        <div class="do-hero-banner">
+          <div class="do-hero-text">
+            <h3>Operational Intake Console</h3>
+            <p>Welcome, <span id="doWelcomeName">Officer</span>. Digitize physical deeds, resolve returned validation discrepancies, and submit records to the statutory queue.</p>
           </div>
-          <button class="btn saffron large-action-btn" onclick="openSimpleNewDoc()">➕ New Document Scan</button>
+          <div style="display:flex;gap:10px">
+            <button class="btn saffron large-action-btn" onclick="openSimpleNewDoc()">➕ Ingest New Record</button>
+            <button class="btn ghost large-action-btn" onclick="setSimpleFilter('all')">📑 View Submissions</button>
+          </div>
         </div>
-        <div class="simple-quick-stats">
-          <div class="simple-stat-card" onclick="setSimpleFilter('DRAFT')">
-            <div class="stat-icon">📝</div>
-            <div class="stat-val" id="doStatDrafts">0</div>
-            <div class="stat-lbl">Drafts in Progress</div>
+
+        <div class="do-stats-matrix">
+          <div class="do-stat-box" style="border-top:3px solid #64748b" onclick="setSimpleFilter('DRAFT')">
+            <div class="do-stat-top">
+              <span class="do-stat-num" style="color:var(--gov-navy)" id="doStatDrafts">0</span>
+              <span class="do-stat-icon">📝</span>
+            </div>
+            <div class="do-stat-lbl">Active Drafts in Progress</div>
           </div>
-          <div class="simple-stat-card" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">
-            <div class="stat-icon" style="color:var(--err)">↩️</div>
-            <div class="stat-val" id="doStatReturned">0</div>
-            <div class="stat-lbl">Returned (Requires Correction)</div>
+          <div class="do-stat-box" style="border-top:3px solid var(--err)" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">
+            <div class="do-stat-top">
+              <span class="do-stat-num" style="color:var(--err)" id="doStatReturned">0</span>
+              <span class="do-stat-icon">↩️</span>
+            </div>
+            <div class="do-stat-lbl">Returned / Action Required</div>
           </div>
-          <div class="simple-stat-card" onclick="setSimpleFilter('PENDING_VERIFICATION')">
-            <div class="stat-icon" style="color:var(--warn)">⏳</div>
-            <div class="stat-val" id="doStatPending">0</div>
-            <div class="stat-lbl">Pending Verification</div>
+          <div class="do-stat-box" style="border-top:3px solid var(--warn)" onclick="setSimpleFilter('PENDING_VERIFICATION')">
+            <div class="do-stat-top">
+              <span class="do-stat-num" style="color:var(--warn)" id="doStatPending">0</span>
+              <span class="do-stat-icon">⏳</span>
+            </div>
+            <div class="do-stat-lbl">Awaiting Statutory Review</div>
           </div>
-          <div class="simple-stat-card" onclick="setSimpleFilter('all')">
-            <div class="stat-icon" style="color:var(--ok)">📤</div>
-            <div class="stat-val" id="doStatSubmissions">0</div>
-            <div class="stat-lbl">Total Submissions</div>
+          <div class="do-stat-box" style="border-top:3px solid var(--ok)" onclick="setSimpleFilter('APPROVED')">
+            <div class="do-stat-top">
+              <span class="do-stat-num" style="color:var(--ok)" id="doStatApproved">0</span>
+              <span class="do-stat-icon">✓</span>
+            </div>
+            <div class="do-stat-lbl">Certified &amp; Approved</div>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🚨 Immediate Action: Records Returned for Correction</h3>
+            <button class="btn ghost" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')" style="padding:4px 10px;font-size:12px">View All</button>
+          </div>
+          <div id="doReturnedNoticeContainer"></div>
         </div>
       </div>
 
-      <!-- Data Officer Upload & Intake -->
+      <!-- Data Officer Upload, OCR & Editing Suite -->
       <div id="s-do-newdoc" class="simple-pane hidden">
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">📤 Upload &amp; Digitize Land Record</h3>
-            <button class="btn ghost" onclick="switchSimpleTab('s-do-dash')">Cancel</button>
+            <h3 class="card-title">📥 Cadastral Record Ingestion &amp; Digitization Suite</h3>
+            <button class="btn ghost" onclick="switchSimpleTab('s-do-dash')">✕ Exit to Dashboard</button>
           </div>
+          
           <div class="guided-step-banner">
             <span class="step-circle">1</span>
-            <div><b>Select Document File &amp; Classification:</b> Scanned deed, Khatauni, Mutation record, or Tax Receipt.</div>
+            <div><b>Step 1: Document Evidence Ingestion:</b> Attach a cadastral scan, Khatauni statement, or registered transfer instrument.</div>
           </div>
-          <div class="drop-zone" id="simpleDropZone" style="margin:16px 0">
-            <div class="drop-icon">📄</div>
-            <div style="font-size:16px;font-weight:700">Click to Browse or Drag File Here</div>
-            <div style="font-size:12px;color:var(--muted);margin-top:4px">PDF, JPG, PNG, TIFF</div>
+
+          <div class="drop-zone" id="simpleDropZone">
+            <div class="drop-icon">📑</div>
+            <div style="font-size:16px;font-weight:800;color:var(--gov-navy)">Drag &amp; Drop Cadastral Document Here or Browse</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px">Accepts Official PDF, TIFF, JPG, and PNG Scans up to 25MB</div>
             <input type="file" id="simpleFileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
           </div>
-          <div style="margin:12px 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-            <div>
-              <span style="font-size:12px;font-weight:700">Document Type:</span>
-              <select id="simpleDocTypeSelect" style="padding:4px 8px;border-radius:4px;border:1px solid var(--gov-border)">
+
+          <div style="background:#f8fafc;border:1px solid var(--gov-border);border-radius:6px;padding:14px;margin:16px 0;display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+            <div style="flex:1;min-width:240px">
+              <label class="field-label">Document Classification</label>
+              <select id="simpleDocTypeSelect">
                 <option value="Land Record">Land Record (Khatauni / ROR / 7/12)</option>
                 <option value="Mutation Record">Mutation Record (Namantaran / Ferfar)</option>
                 <option value="Sale Deed">Sale Deed (Registry / Conveyance)</option>
                 <option value="Tax Receipt">Tax Receipt (Lagan / Revenue Slip)</option>
               </select>
             </div>
-            <div>
-              <span style="font-size:12px;font-weight:700">Script Language:</span>
-              <select id="simpleLangSelect" style="max-width:200px">
-                <option value="auto">Auto-Detect Script</option>
-                <option value="hin">Hindi (खतौनी / खसरा)</option>
-                <option value="tel">Telugu (పట్టా / 1-B)</option>
-                <option value="tam">Tamil (பட்டா / சிட்டா)</option>
-                <option value="mar">Marathi (7/12)</option>
-                <option value="eng">English</option>
+            <div style="flex:1;min-width:240px">
+              <label class="field-label">Regional Script / Language Engine</label>
+              <select id="simpleLangSelect">
+                <option value="auto">Auto-Detect Script (Indic Optical Parser)</option>
+                <option value="hin">Hindi (Devanagari - खतौनी / खसरा)</option>
+                <option value="tel">Telugu (తెలుగు - పట్టా / 1-B)</option>
+                <option value="tam">Tamil (தமிழ் - பட்டா / சிட்டா)</option>
+                <option value="mar">Marathi (मराठी - 7/12)</option>
+                <option value="eng">English (Standard Cadastral Format)</option>
               </select>
             </div>
           </div>
+
           <div id="simpleProcessing" class="hidden simple-spinner-box">
-            <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
-            <b>Scanning document and extracting fields with Indic AI...</b>
+            <span class="spinner"></span>
+            <span>Parsing document geometry, running multilingual OCR, and extracting structured parameters with Gemini AI...</span>
           </div>
-          <div id="simpleUploadEditor" class="hidden" style="margin-top:20px;border-top:2px solid var(--gov-border-light);padding-top:16px">
+
+          <div id="simpleUploadEditor" class="hidden" style="margin-top:24px;border-top:2px solid var(--gov-border);padding-top:20px">
             <div class="guided-step-banner">
               <span class="step-circle">2</span>
-              <div><b>Review Extracted Information &amp; Field Validation:</b> Confirm entries and validation warnings prior to submission.</div>
+              <div><b>Step 2: Structured Parameter Validation &amp; Verification Readiness:</b> Review parsed values and resolve validation warnings.</div>
             </div>
-            <div class="field-grid" id="simpleFieldsGrid" style="margin:16px 0"></div>
-            <div class="simple-editor-actions">
-              <button class="btn ghost large-action-btn" id="simpleBtnSaveDraft">💾 Save as Draft</button>
-              <button class="btn saffron large-action-btn" id="simpleBtnSubmit">🚀 Submit for Verification</button>
+
+            <div id="simpleValidationBanner" style="margin-bottom:16px"></div>
+
+            <div class="field-grid" id="simpleFieldsGrid" style="margin-bottom:20px"></div>
+
+            <div style="background:#f8fafc;border:1px solid var(--gov-border);border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+              <div style="font-size:12px;color:var(--muted)">
+                <b>Mandatory Audit Notice:</b> Submitting will lock this record and route it to the statutory verification queue.
+              </div>
+              <div style="display:flex;gap:12px">
+                <button class="btn ghost large-action-btn" id="simpleBtnSaveDraft">💾 Save Draft</button>
+                <button class="btn saffron large-action-btn" id="simpleBtnSubmit">🚀 Submit for Statutory Verification</button>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Data Officer Records List -->
+      <!-- Data Officer Submission Workspace Table -->
       <div id="s-do-list" class="simple-pane hidden">
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title" id="simpleListTitle">My Submissions</h3>
-            <button class="btn ghost" onclick="loadMyRecordsSimple()">🔄 Refresh</button>
+            <div>
+              <h3 class="card-title" id="simpleListTitle">Cadastral Submissions Registry</h3>
+              <p style="margin:2px 0 0;font-size:12px;color:var(--muted)">Track lifecycle progress of all records submitted under your officer credentials.</p>
+            </div>
+            <button class="btn ghost" onclick="loadMyRecordsSimple()">🔄 Refresh Records</button>
           </div>
+
+          <div style="display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding-bottom:4px">
+            <button class="btn ghost" onclick="setSimpleFilter('all')" style="font-size:12px;padding:5px 12px">All Records</button>
+            <button class="btn ghost" onclick="setSimpleFilter('DRAFT')" style="font-size:12px;padding:5px 12px">📝 Drafts</button>
+            <button class="btn ghost" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')" style="font-size:12px;padding:5px 12px;color:var(--err)">↩️ Returned for Correction</button>
+            <button class="btn ghost" onclick="setSimpleFilter('PENDING_VERIFICATION')" style="font-size:12px;padding:5px 12px;color:var(--warn)">⏳ Pending Verification</button>
+            <button class="btn ghost" onclick="setSimpleFilter('APPROVED')" style="font-size:12px;padding:5px 12px;color:var(--ok)">✓ Certified Approved</button>
+          </div>
+
           <table class="gov-table" id="simpleSubmissionsTable">
             <thead>
-              <tr><th>Record ID</th><th>File</th><th>Type</th><th>Status</th><th>Reviewer Notes</th><th>Particulars</th><th style="text-align:right">Action</th></tr>
+              <tr><th>Record ID</th><th>Source File</th><th>Classification</th><th>Status</th><th>Reviewer Comments</th><th>Cadastral Identifiers</th><th style="text-align:right">Action</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -285,13 +331,13 @@
         <div class="card">
           <div class="card-header">
             <div>
-              <h3 class="card-title" id="simpleDetailTitle">Record Details</h3>
+              <h3 class="card-title" id="simpleDetailTitle">Cadastral Record Metadata &amp; Extraction Manifest</h3>
               <div style="font-size:12px;color:var(--muted)" id="simpleDetailSub"></div>
             </div>
-            <button class="btn ghost" onclick="closeSimpleDetail()">✕ Back</button>
+            <button class="btn ghost" onclick="closeSimpleDetail()">✕ Return</button>
           </div>
-          <div class="field-grid" id="simpleDetailGrid" style="margin-top:16px"></div>
-          <div id="simpleDetailNotesBox" class="hidden" style="margin-top:16px"></div>
+          <div id="simpleDetailNotesBox" class="hidden" style="margin-bottom:16px"></div>
+          <div class="field-grid" id="simpleDetailGrid"></div>
         </div>
       </div>
     </div>
@@ -356,8 +402,8 @@
               </div>
             </div>
             <div id="staffProcessing" class="hidden simple-spinner-box">
-              <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
-              <b>Scanning document and extracting fields with Indic AI...</b>
+              <span class="spinner"></span>
+              <span>Scanning document and extracting fields with Indic AI...</span>
             </div>
             <div id="staffUploadEditor" class="hidden" style="margin-top:20px;border-top:2px solid var(--gov-border-light);padding-top:16px">
               <div class="guided-step-banner">
@@ -365,7 +411,7 @@
                 <div><b>Review Extracted Information &amp; Field Validation:</b> Confirm entries and validation warnings prior to submission.</div>
               </div>
               <div class="field-grid" id="staffFieldsGrid" style="margin:16px 0"></div>
-              <div class="simple-editor-actions">
+              <div class="simple-editor-actions" style="display:flex;justify-content:flex-end;gap:12px;border-top:1px solid var(--gov-border);padding-top:14px">
                 <button class="btn ghost large-action-btn" id="staffBtnSaveDraft">💾 Save as Draft</button>
                 <button class="btn saffron large-action-btn" id="staffBtnSubmit">🚀 Submit to Queue</button>
               </div>
@@ -411,8 +457,8 @@
               </div>
             </div>
             <div id="consistencyLoadingBox" class="hidden simple-spinner-box" style="margin-top:16px">
-              <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
-              <b>Cross-referencing parameters across selected records and evaluating title consistency...</b>
+              <span class="spinner"></span>
+              <span>Cross-referencing parameters across selected records and evaluating title consistency...</span>
             </div>
             <div id="consistencyReportContainer" style="margin-top:16px"></div>
           </div>
@@ -441,8 +487,8 @@
               <button class="btn saffron" onclick="runStaffDiffFiles()" style="height:38px">Scan &amp; Compare</button>
             </div>
             <div id="compSpinner" class="hidden simple-spinner-box" style="margin-top:16px">
-              <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
-              <b>Processing OCR, mapping structured parameters, and analyzing variances with AI...</b>
+              <span class="spinner"></span>
+              <span>Processing OCR, mapping structured parameters, and analyzing variances with AI...</span>
             </div>
             <div id="staffDiffResults" style="margin-top:18px"></div>
           </div>
@@ -532,6 +578,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=24"></script>
+<script src="js/app.js?v=25"></script>
 </body>
 </html>

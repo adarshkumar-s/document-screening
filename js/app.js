@@ -167,9 +167,9 @@ function renderFieldInputCard(key, fObj, prefix='editfield', isReadOnly=false){
   const borderClass = status === 'INVALID' ? 'border:2px solid #dc2626;background:#fff5f5' : (status === 'WARNING' ? 'border:1px solid #f59e0b;background:#fffbeb' : '');
 
   return `
-    <div class="formfield" style="margin-bottom:12px">
-      <div class="field-label" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <span style="font-weight:700;color:var(--gov-navy)">${escapeHtml(key.replace('_',' ').toUpperCase())}</span>
+    <div class="formfield">
+      <div class="field-label">
+        <span style="font-weight:700;color:var(--gov-navy)">${escapeHtml(key.replace(/_/g,' ').toUpperCase())}</span>
         ${getValidationStatusPill(status, conf)}
       </div>
       <input type="text" data-${prefix}="${key}" value="${escapeHtml(val)}" style="${borderClass}" ${isReadOnly ? 'disabled' : ''}>
@@ -197,10 +197,10 @@ function setupSimplePortal(role){
     $('#doWelcomeName').textContent = me.full_name;
     navBox.innerHTML = `
       <button class="simple-nav-btn active" data-spane="s-do-dash">🏠 Dashboard</button>
-      <button class="simple-nav-btn" data-spane="s-do-newdoc" onclick="openSimpleNewDoc()">➕ New Document Intake</button>
-      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('all')">📑 My Submissions</button>
-      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('DRAFT')">📝 Drafts</button>
-      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">↩️ Returned Records</button>
+      <button class="simple-nav-btn" data-spane="s-do-newdoc" onclick="openSimpleNewDoc()">➕ Ingest New Record</button>
+      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('all')">📑 Submissions Registry</button>
+      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('DRAFT')">📝 Active Drafts</button>
+      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">↩️ Returned Discrepancies</button>
     `;
     switchSimpleTab('s-do-dash');
     loadDataOfficerCounts();
@@ -287,7 +287,7 @@ function renderSimpleTable(docs){
       <td><b>${escapeHtml(f.owner_name?.value || '—')}</b></td>
       <td>${escapeHtml(f.khasra_number?.value || f.survey_number?.value || '—')}</td>
       <td>${escapeHtml(f.village?.value || '—')}, ${escapeHtml(f.district?.value || '—')}</td>
-      <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
+      <td><span class="chip">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
       <td>${getStatusBadge(doc.status)}</td>
       <td style="text-align:right">
         <button class="btn ghost" onclick="openSimpleDetail('${doc.id}')" style="padding:4px 10px;font-size:12px">View Details</button>
@@ -300,8 +300,8 @@ function renderSimpleTable(docs){
 async function openSimpleDetail(docId){
   try{
     const d = await api('/api/documents/' + docId);
-    $('#simpleDetailTitle').textContent = `${d.doc_type || 'Land Record'} #${d.id}`;
-    $('#simpleDetailSub').textContent = `File: ${d.filename} | Status: ${d.status} | Owner: ${d.fields?.owner_name?.value || '—'}`;
+    $('#simpleDetailTitle').textContent = `${d.doc_type || 'Cadastral Record'} #${d.id}`;
+    $('#simpleDetailSub').textContent = `File: ${d.filename} | Status: ${d.status} | Submitter: ${d.uploaded_by || '—'}`;
 
     const grid = $('#simpleDetailGrid');
     grid.innerHTML = '';
@@ -315,7 +315,12 @@ async function openSimpleDetail(docId){
     const notesBox = $('#simpleDetailNotesBox');
     if(d.reviewer_comments && me.role !== ROLE_VIEWER){
       notesBox.classList.remove('hidden');
-      notesBox.innerHTML = `<div class="issue-box warning"><b>Official Reviewer Notes:</b> ${escapeHtml(d.reviewer_comments)}</div>`;
+      notesBox.innerHTML = `
+        <div class="issue-box error">
+          <div style="font-weight:800;margin-bottom:2px">Official Statutory Reviewer Directions:</div>
+          <div>${escapeHtml(d.reviewer_comments)}</div>
+        </div>
+      `;
     } else {
       notesBox.classList.add('hidden');
     }
@@ -335,7 +340,19 @@ async function loadDataOfficerCounts(){
     $('#doStatDrafts').textContent = d.drafts || 0;
     $('#doStatReturned').textContent = d.returned || 0;
     $('#doStatPending').textContent = d.pending_verification || 0;
-    $('#doStatSubmissions').textContent = d.total_submissions || 0;
+    $('#doStatApproved').textContent = d.approved || 0;
+
+    const noticeBox = $('#doReturnedNoticeContainer');
+    if(d.returned > 0){
+      noticeBox.innerHTML = `
+        <div class="issue-box error" style="display:flex;justify-content:space-between;align-items:center">
+          <div><b>Action Required:</b> You have <b>${d.returned}</b> record(s) returned by the statutory reviewer requiring field modifications.</div>
+          <button class="btn danger" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')" style="padding:4px 10px;font-size:11px">Inspect Returned</button>
+        </div>
+      `;
+    } else {
+      noticeBox.innerHTML = `<div class="successbox" style="margin:0">✓ All returned items resolved. No outstanding verification discrepancies.</div>`;
+    }
   }catch(e){}
 }
 
@@ -352,37 +369,40 @@ async function loadMyRecordsSimple(){
 
     if(simpleActiveFilter === STATUS_DRAFT){
       docs = docs.filter(x=>x.status === STATUS_DRAFT);
-      $('#simpleListTitle').textContent = 'My Drafts';
+      $('#simpleListTitle').textContent = 'My Active Drafts';
     } else if(simpleActiveFilter === STATUS_RETURNED){
       docs = docs.filter(x=>x.status === STATUS_RETURNED);
-      $('#simpleListTitle').textContent = 'Returned Records (Requires Officer Fix)';
+      $('#simpleListTitle').textContent = 'Returned Records (Requires Officer Correction)';
     } else if(simpleActiveFilter === STATUS_PENDING_VERIFICATION){
       docs = docs.filter(x=>x.status === STATUS_PENDING_VERIFICATION);
       $('#simpleListTitle').textContent = 'Submissions Pending Verification';
+    } else if(simpleActiveFilter === STATUS_APPROVED){
+      docs = docs.filter(x=>x.status === STATUS_APPROVED);
+      $('#simpleListTitle').textContent = 'Certified Approved Records';
     } else {
-      $('#simpleListTitle').textContent = 'All My Submissions';
+      $('#simpleListTitle').textContent = 'Cadastral Submissions Registry';
     }
 
     const tb = $('#simpleSubmissionsTable tbody');
     tb.innerHTML = '';
     if(!docs.length){
-      tb.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No records found in this queue.</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">No records found matching current queue criteria.</td></tr>`;
       return;
     }
 
     docs.forEach(doc=>{
       const f = doc.fields || {};
-      const parts = [f.owner_name?.value, f.survey_number?.value].filter(Boolean).join(' · ') || '—';
+      const parts = [f.owner_name?.value, f.khasra_number?.value || f.survey_number?.value, f.village?.value].filter(Boolean).join(' · ') || '—';
       const tr = el('tr');
       const isEditable = (doc.status === STATUS_DRAFT || doc.status === STATUS_RETURNED);
 
       tr.innerHTML = `
         <td><span class="mono">#${doc.id}</span></td>
         <td><b>${escapeHtml(doc.filename)}</b></td>
-        <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
+        <td><span class="chip">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
         <td>${getStatusBadge(doc.status)}</td>
-        <td style="color:var(--err)">${escapeHtml(doc.reviewer_comments || 'None')}</td>
-        <td>${escapeHtml(parts)}</td>
+        <td style="color:${doc.reviewer_comments ? 'var(--err)' : 'var(--muted)'};font-size:12px">${escapeHtml(doc.reviewer_comments || 'None')}</td>
+        <td style="font-size:12px">${escapeHtml(parts)}</td>
         <td style="text-align:right">
           ${isEditable ? `<button class="btn saffron" onclick="openSimpleEditor('${doc.id}')" style="padding:4px 8px;font-size:11px">Edit &amp; Submit</button>` : `<button class="btn ghost" onclick="openSimpleDetail('${doc.id}')" style="padding:4px 8px;font-size:11px">View</button>`}
         </td>
@@ -397,6 +417,7 @@ function openSimpleNewDoc(){
   currentEditingDocId = null;
   $('#simpleUploadEditor').classList.add('hidden');
   $('#simpleProcessing').classList.add('hidden');
+  $('#simpleValidationBanner').innerHTML = '';
   switchSimpleTab('s-do-newdoc');
 }
 
@@ -441,6 +462,21 @@ function populateSimpleEditor(doc){
   const grid = $('#simpleFieldsGrid');
   grid.innerHTML = '';
   const f = doc.fields || {};
+  const v = doc.validation || {summary:{valid:0, warning:0, invalid:0, missing:0}};
+
+  const banner = $('#simpleValidationBanner');
+  banner.innerHTML = `
+    <div style="background:#f8fafc;border:1px solid var(--gov-border);border-radius:6px;padding:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div style="font-size:12px;font-weight:800;color:var(--gov-navy)">
+        Digitized Record: #${doc.id} · <span style="color:var(--muted)">Mean Confidence: ${doc.mean_conf || 90}%</span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <span class="chip" style="background:#dcfce7;color:#166534">✓ ${v.summary.valid || 0} Valid</span>
+        <span class="chip" style="background:#fef3c7;color:#92400e">⚠ ${v.summary.warning || 0} Warnings</span>
+        <span class="chip" style="background:#fee2e2;color:#991b1b">✕ ${v.summary.invalid || 0} Invalid</span>
+      </div>
+    </div>
+  `;
 
   Object.keys(f).forEach(k=>{
     if(k === 'document_type') return;
@@ -457,8 +493,8 @@ $('#simpleBtnSaveDraft').onclick = async()=>{
   document.querySelectorAll('input[data-simplefield]').forEach(i=>{ fields[i.dataset.simplefield] = i.value; });
   try{
     const res = await api('/api/documents/' + currentEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
-    alert('Draft saved. Validation status updated.');
-    populateSimpleEditor({id: currentEditingDocId, fields: res.fields});
+    alert('Draft updated successfully. Field validations refreshed.');
+    populateSimpleEditor({id: currentEditingDocId, fields: res.fields, validation: res.validation});
   }catch(e){ alert(e.message); }
 };
 
@@ -469,7 +505,7 @@ $('#simpleBtnSubmit').onclick = async()=>{
   try{
     await api('/api/documents/' + currentEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
     await api('/api/documents/' + currentEditingDocId + '/submit', {method:'POST'});
-    alert('Document successfully submitted for verification.');
+    alert('Document successfully submitted to the statutory verification queue.');
     setSimpleFilter('PENDING_VERIFICATION');
   }catch(e){ alert(e.message); }
 };
