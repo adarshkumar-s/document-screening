@@ -43,7 +43,6 @@ async function api(path, opts={}){
   return data;
 }
 
-// Accessibility
 let currentFontScale = 14;
 function adjustFontSize(delta){
   currentFontScale = delta === 0 ? 14 : Math.max(12, Math.min(18, currentFontScale + delta));
@@ -61,9 +60,6 @@ function updateLiveClock(){
 setInterval(updateLiveClock, 1000);
 updateLiveClock();
 
-// ==========================================================================
-// ROLE ROUTER
-// ==========================================================================
 function routePortal(){
   if(!me) return;
   const role = me.role;
@@ -121,9 +117,6 @@ $('#toLogin').onclick=()=>{ $('#signupForm').classList.add('hidden'); $('#loginF
 $('#logoutBtn').onclick=()=>doLogout(false);
 $('#loginPassword').addEventListener('keydown',e=>{ if(e.key==='Enter')$('#loginBtn').click(); });
 
-// ==========================================================================
-// FIELD-LEVEL VALIDATION UI BUILDERS
-// ==========================================================================
 function getValidationStatusPill(status, confidence){
   const confPct = Math.round((confidence || 0) * 100);
   const statusStyles = {
@@ -158,7 +151,6 @@ function renderFieldInputCard(key, fObj, prefix='editfield', isReadOnly=false){
   const msg = fObj.validation_message || '';
   const val = fObj.value || '';
   const conf = fObj.confidence || 0.0;
-
   const borderClass = status === 'INVALID' ? 'border:2px solid #dc2626;background:#fff5f5' : (status === 'WARNING' ? 'border:1px solid #f59e0b;background:#fffbeb' : '');
 
   return `
@@ -175,9 +167,6 @@ function renderFieldInputCard(key, fObj, prefix='editfield', isReadOnly=false){
   `;
 }
 
-// ==========================================================================
-// INTERFACE A: SIMPLE PORTAL (VIEWER & DATA OFFICER)
-// ==========================================================================
 let simpleActiveFilter = 'all';
 
 function setupSimplePortal(role){
@@ -289,11 +278,7 @@ async function openSimpleDetail(docId){
     const notesBox = $('#simpleDetailNotesBox');
     if(d.reviewer_comments){
       notesBox.classList.remove('hidden');
-      notesBox.innerHTML = `
-        <div class="issue-box warning">
-          <b>Official Reviewer Notes:</b> ${escapeHtml(d.reviewer_comments)}
-        </div>
-      `;
+      notesBox.innerHTML = `<div class="issue-box warning"><b>Official Reviewer Notes:</b> ${escapeHtml(d.reviewer_comments)}</div>`;
     } else {
       notesBox.classList.add('hidden');
     }
@@ -449,9 +434,6 @@ $('#simpleBtnSubmit').onclick = async()=>{
   }catch(e){ alert(e.message); }
 };
 
-// ==========================================================================
-// INTERFACE B: ADVANCED STAFF PORTAL (VERIFIER & ADMIN)
-// ==========================================================================
 function setupStaffPortal(role){
   const tabsList = $('#staffTabsList');
   tabsList.innerHTML = '';
@@ -517,7 +499,6 @@ function switchStaffTab(tabName){
   if(tabName === 'account') loadStaffAccount();
 }
 
-// Exact Role-Specific Dashboard Renderer
 async function loadStaffDashboard(){
   const row = $('#staffStatsRow');
   if(!row) return;
@@ -526,7 +507,6 @@ async function loadStaffDashboard(){
   try{
     const d = await api('/api/dashboard');
     
-    # 1. VERIFICATION OFFICER DASHBOARD (EXACT METRICS)
     if(d.portal_type === 'VERIFICATION_OFFICER'){
       const verifierMetrics = [
         ['Pending Verification', d.pending_verification, 'var(--gov-navy)', '⏳'],
@@ -555,7 +535,6 @@ async function loadStaffDashboard(){
       return;
     }
 
-    # 2. ADMIN DASHBOARD (EXACT METRICS & ANALYTICS)
     if(d.portal_type === 'ADMIN'){
       const coreMetrics = [
         ['Total Documents', Number(d.total_documents).toLocaleString(), 'var(--gov-navy)'],
@@ -633,9 +612,6 @@ async function loadStaffDashboard(){
   }
 }
 
-// ==========================================================================
-// ADMIN UPLOAD LOGIC IN STAFF PORTAL
-// ==========================================================================
 let currentStaffEditingDocId = null;
 const stDrop = $('#staffDropZone'), stFi = $('#staffFileInput');
 if(stDrop){
@@ -763,7 +739,6 @@ async function openStaffReview(id){
         <button class="btn ghost" onclick="switchStaffTab('queue')">✕ Back to Queue</button>
       </div>
 
-      <!-- STRUCTURED AI DECISION-SUPPORT PANEL -->
       <div style="background:#f8fafc;border:2px solid var(--gov-navy);border-radius:8px;padding:14px;margin-top:14px">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div style="font-size:13px;font-weight:800;color:var(--gov-navy);display:flex;align-items:center;gap:6px">
@@ -785,7 +760,6 @@ async function openStaffReview(id){
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
-        <!-- Extracted Fields with Validation Tags -->
         <div>
           <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Deterministic Field Validation &amp; Overrides</h4>
           <div class="field-grid" style="grid-template-columns:1fr 1fr">
@@ -800,7 +774,6 @@ async function openStaffReview(id){
           </div>
         </div>
 
-        <!-- Visual Scan Evidence + OCR Inspection -->
         <div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
             <h4 style="margin:0;font-size:13px;color:var(--gov-navy)">Document Evidence &amp; OCR Inspection</h4>
@@ -809,7 +782,6 @@ async function openStaffReview(id){
             </div>
           </div>
           
-          <!-- Embedded Image Preview of the Source Scan -->
           <div id="staffScanView" style="height:250px;border:1px solid var(--gov-border);border-radius:6px;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
             <img src="/api/documents/${d.id}/file?token=${encodeURIComponent(token)}" alt="Document Scan" style="max-height:100%;max-width:100%;object-fit:contain" onerror="this.parentElement.innerHTML='<div class=\'muted\' style=\'color:#cbd5e1\'>Image preview unavailable</div>'">
           </div>
@@ -856,9 +828,6 @@ async function staffExecuteDecision(id, action){
   }catch(e){ alert(e.message); }
 }
 
-// ==========================================================================
-// DOCUMENT COMPARISON (DIFF)
-// ==========================================================================
 let currentComparisonSessionId = null;
 
 function toggleCompMode(mode){
@@ -936,139 +905,29 @@ function renderDiffResults(data){
       <div style="font-size:13px;color:#78350f;margin-top:6px;line-height:1.6;white-space:pre-line">
         ${escapeHtml(data.ai_explanation || 'No differences detected.')}
       </div>
-      <div style="font-size:11px;color:#b45309;margin-top:8px;font-style:italic">
-        * Notice: AI explanations provide context only. Decisions remain exclusively with the Verification Officer.
-      </div>
     </div>
   `;
 
   if(changed.length > 0){
-    html += `
-      <h4 style="margin:16px 0 8px;color:#991b1b">⚠ DETECTED ALTERATIONS (${changed.length})</h4>
-      <div style="display:grid;gap:10px;margin-bottom:20px">
-    `;
+    html += `<h4 style="margin:16px 0 8px;color:#991b1b">⚠ DETECTED ALTERATIONS (${changed.length})</h4><div style="display:grid;gap:10px;margin-bottom:20px">`;
     changed.forEach(c=>{
       html += `
         <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <b style="color:var(--gov-navy);font-size:13px">${escapeHtml(c.label)}</b>
-            <span class="pill rejected" style="font-size:10px">CHANGED</span>
-          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center"><b style="color:var(--gov-navy);font-size:13px">${escapeHtml(c.label)}</b><span class="pill rejected" style="font-size:10px">CHANGED</span></div>
           <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-top:8px">
-            <div style="background:#ffffff;padding:8px 12px;border:1px solid #cbd5e1;border-radius:4px">
-              <div style="font-size:11px;color:var(--muted)">Previous (Version A)</div>
-              <div style="font-weight:700;color:var(--ink);margin-top:2px">${escapeHtml(c.old_value)}</div>
-            </div>
+            <div style="background:#ffffff;padding:8px 12px;border:1px solid #cbd5e1;border-radius:4px"><div style="font-size:11px;color:var(--muted)">Previous</div><div style="font-weight:700">${escapeHtml(c.old_value)}</div></div>
             <div style="font-size:18px;color:#991b1b;font-weight:800">→</div>
-            <div style="background:#ffffff;padding:8px 12px;border:1px solid #f87171;border-radius:4px">
-              <div style="font-size:11px;color:#991b1b">Current (Version B)</div>
-              <div style="font-weight:700;color:#991b1b;margin-top:2px">${escapeHtml(c.new_value)}</div>
-            </div>
+            <div style="background:#ffffff;padding:8px 12px;border:1px solid #f87171;border-radius:4px"><div style="font-size:11px;color:#991b1b">Current</div><div style="font-weight:700;color:#991b1b">${escapeHtml(c.new_value)}</div></div>
           </div>
-          ${c.reason ? `<div style="font-size:12px;color:#7f1d1d;margin-top:6px"><b>Context:</b> ${escapeHtml(c.reason)}</div>` : ''}
         </div>
       `;
     });
     html += `</div>`;
   }
-
-  if(unchanged.length > 0){
-    html += `
-      <h4 style="margin:16px 0 8px;color:#166534">✓ MATCHING PARAMETERS (${unchanged.length})</h4>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:10px;margin-bottom:20px">
-    `;
-    unchanged.forEach(u=>{
-      html += `
-        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:12px;color:var(--muted)">${escapeHtml(u.label)}</span>
-            <span style="color:#166534;font-size:12px;font-weight:700">✓ Match</span>
-          </div>
-          <div style="font-weight:700;color:var(--gov-navy);font-size:13px;margin-top:2px">${escapeHtml(u.old_value)}</div>
-        </div>
-      `;
-    });
-    html += `</div>`;
-  }
-
-  html += `
-    <div style="background:#f8fafc;border:2px solid var(--gov-navy);border-radius:8px;padding:16px;margin-top:20px">
-      <h4 style="margin:0 0 6px;color:var(--gov-navy)">✍️ Official Verification Determination</h4>
-      <p style="font-size:12px;color:var(--muted);margin:0 0 10px">Record your final statutory ruling on this comparison.</p>
-      
-      <div class="formfield">
-        <label class="field-label">Official Ruling &amp; Audit Justification</label>
-        <textarea id="officerCompNotes" placeholder="State reasons for mutation approval, survey variance, or grounds for rejection..." style="height:60px"></textarea>
-      </div>
-
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <button class="btn ok" style="background:var(--gov-green);padding:8px 18px" onclick="submitComparisonDecision('approved')">✓ Approve Mutation / Variation</button>
-        <button class="btn ghost" style="color:var(--warn);border-color:var(--warn);padding:8px 18px" onclick="submitComparisonDecision('flagged_discrepancy')">⚠ Flag Discrepancy for Inquiry</button>
-        <button class="btn danger" style="padding:8px 18px" onclick="submitComparisonDecision('rejected')">✕ Reject Modification</button>
-      </div>
-    </div>
-  `;
 
   box.innerHTML = html;
 }
 
-async function submitComparisonDecision(decision){
-  if(!currentComparisonSessionId){ alert('No active comparison session.'); return; }
-  const notes = ($('#officerCompNotes')?.value || '').trim();
-
-  try{
-    await api(`/api/documents/compare/${currentComparisonSessionId}/decision`, {
-      method: 'POST',
-      body: JSON.stringify({decision, officer_notes: notes})
-    });
-    alert(`Determination recorded: ${decision.replace('_', ' ').toUpperCase()}`);
-    $('#staffDiffResults').innerHTML = `
-      <div class="successbox">
-        ✓ Determination '${decision.replace('_', ' ').toUpperCase()}' has been recorded in the audit trail for Comparison #${currentComparisonSessionId}.
-      </div>
-    `;
-    currentComparisonSessionId = null;
-  }catch(e){ alert('Error saving determination: ' + e.message); }
-}
-
-async function loadComparisonHistory(){
-  const box = $('#staffDiffResults');
-  box.innerHTML = '<div class="muted">Loading comparison ledger...</div>';
-  try{
-    const d = await api('/api/documents/comparisons');
-    const comps = d.comparisons || [];
-    if(!comps.length){
-      box.innerHTML = '<div class="muted" style="padding:16px">No previous comparisons found.</div>';
-      return;
-    }
-
-    let html = `
-      <h4 style="margin:0 0 10px">Comparison Audit Ledger</h4>
-      <table class="gov-table">
-        <thead><tr><th>Session ID</th><th>Doc A</th><th>Doc B</th><th>Ruling</th><th>Officer</th><th>Date</th></tr></thead>
-        <tbody>
-    `;
-    comps.forEach(c=>{
-      const badgeCls = c.decision === 'approved' ? 'valid' : (c.decision === 'rejected' ? 'rejected' : 'review');
-      html += `
-        <tr>
-          <td><span class="mono">#${c.id}</span></td>
-          <td>#${escapeHtml(c.doc_a_id)}</td>
-          <td>#${escapeHtml(c.doc_b_id)}</td>
-          <td><span class="pill ${badgeCls}">${c.decision.toUpperCase()}</span></td>
-          <td>${escapeHtml(c.officer_name)}</td>
-          <td>${new Date(c.created_at * 1000).toLocaleDateString()}</td>
-        </tr>
-      `;
-    });
-    html += '</tbody></table>';
-    box.innerHTML = html;
-  }catch(e){ box.innerHTML = `<div class="errorbox">${escapeHtml(e.message)}</div>`; }
-}
-
-// ==========================================================================
-// CROSS-DOCUMENT CONSISTENCY AUDIT ENGINE
-// ==========================================================================
 let activeConsistencyCheckId = null;
 
 async function initConsistencyWorkspace(){
@@ -1081,51 +940,24 @@ async function initConsistencyWorkspace(){
     const d = await api('/api/documents');
     const docs = d.documents || [];
     picker.innerHTML = '';
-
-    if(!docs.length){
-      picker.innerHTML = '<div class="muted">No documents registered in system yet.</div>';
-      return;
-    }
-
-    const filterInput = $('#consistencySearchInput');
-    const renderPicker = (filterQuery='') => {
-      picker.innerHTML = '';
-      const filtered = docs.filter(doc=>{
-        if(!filterQuery) return true;
-        const text = `${doc.id} ${doc.filename} ${doc.fields?.owner_name?.value} ${doc.fields?.khasra_number?.value}`.toLowerCase();
-        return text.includes(filterQuery.toLowerCase());
-      });
-
-      filtered.forEach(doc=>{
-        const f = doc.fields || {};
-        const owner = f.owner_name?.value || 'Unknown';
-        const survey = f.khasra_number?.value || f.survey_number?.value || '—';
-        const docType = doc.doc_type || 'Land Record';
-
-        const label = el('label');
-        label.style.display = 'flex';
-        label.style.alignItems = 'center';
-        label.style.gap = '8px';
-        label.style.fontSize = '12px';
-        label.style.cursor = 'pointer';
-        label.style.padding = '4px 6px';
-        label.style.borderRadius = '4px';
-        label.style.background = '#f8fafc';
-
-        label.innerHTML = `
-          <input type="checkbox" class="consistency-chk" value="${doc.id}" onchange="updateConsistencyPickerCount()">
-          <span class="mono" style="font-weight:700">#${doc.id}</span>
-          <span class="chip" style="font-size:10px">${escapeHtml(docType)}</span>
-          <b>${escapeHtml(doc.filename)}</b> &nbsp;|&nbsp;
-          <span>Owner: <b>${escapeHtml(owner)}</b></span> &nbsp;|&nbsp;
-          <span>Survey: <b>${escapeHtml(survey)}</b></span>
-        `;
-        picker.appendChild(label);
-      });
-    };
-
-    renderPicker();
-    if(filterInput) filterInput.oninput = (e) => renderPicker(e.target.value);
+    docs.forEach(doc=>{
+      const f = doc.fields || {};
+      const label = el('label');
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.gap = '8px';
+      label.style.fontSize = '12px';
+      label.style.cursor = 'pointer';
+      label.style.padding = '4px 6px';
+      label.style.borderRadius = '4px';
+      label.style.background = '#f8fafc';
+      label.innerHTML = `
+        <input type="checkbox" class="consistency-chk" value="${doc.id}" onchange="updateConsistencyPickerCount()">
+        <span class="mono" style="font-weight:700">#${doc.id}</span>
+        <b>${escapeHtml(doc.filename)}</b> &nbsp;|&nbsp; <span>Owner: <b>${escapeHtml(f.owner_name?.value || 'Unknown')}</b></span>
+      `;
+      picker.appendChild(label);
+    });
     updateConsistencyPickerCount();
   }catch(e){ picker.innerHTML = `<div class="errorbox">${escapeHtml(e.message)}</div>`; }
 }
@@ -1135,247 +967,30 @@ function updateConsistencyPickerCount(){
   const countSpan = $('#consistencySelectedCount');
   const btn = $('#btnRunConsistencyCheck');
   if(!countSpan || !btn) return;
-
   countSpan.textContent = `${checked.length} document(s) selected`;
   btn.disabled = (checked.length < 2);
 }
 
 async function executeCrossDocumentCheck(){
   const checked = Array.from(document.querySelectorAll('.consistency-chk:checked')).map(c=>c.value);
-  if(checked.length < 2){ alert('Please select at least 2 documents to compare.'); return; }
-
+  if(checked.length < 2){ alert('Please select at least 2 documents.'); return; }
   const box = $('#consistencyReportContainer');
   const spinner = $('#consistencyLoadingBox');
   box.innerHTML = '';
   spinner.classList.remove('hidden');
 
   try{
-    const d = await api('/api/consistency/check', {
-      method: 'POST',
-      body: JSON.stringify({document_ids: checked})
-    });
+    const d = await api('/api/consistency/check', {method: 'POST', body: JSON.stringify({document_ids: checked})});
     activeConsistencyCheckId = d.check_id;
     renderConsistencyReport(d);
-  }catch(e){
-    box.innerHTML = `<div class="errorbox">${escapeHtml(e.message)}</div>`;
-  }
+  }catch(e){ box.innerHTML = `<div class="errorbox">${escapeHtml(e.message)}</div>`; }
   spinner.classList.add('hidden');
 }
 
 function renderConsistencyReport(data){
   const box = $('#consistencyReportContainer');
   const r = data.report || {counts:{}, fields:[]};
-  const c = r.counts || {};
-  const overall = r.overall_status || 'UNCERTAIN';
-
-  const badgeMap = {
-    'CONSISTENT': ['valid', '✓ CONSISTENT — TITLE CHAIN MATCHES'],
-    'MISMATCH_DETECTED': ['rejected', '⚠ MISMATCH DETECTED — FLAGGED FOR VERIFIER'],
-    'UNCERTAIN_NEEDS_REVIEW': ['review', '❓ UNCERTAINTY DETECTED — HUMAN REVIEW REQUIRED'],
-    'INCOMPLETE_RECORDS': ['pending', 'ℹ INCOMPLETE PARAMETERS ACROSS RECORDS']
-  };
-  const [bClass, bLabel] = badgeMap[overall] || ['review', overall];
-
-  let html = `
-    <div style="background:#ffffff;border:2px solid var(--gov-navy);border-radius:8px;padding:16px;margin-bottom:18px">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:gap:10px">
-        <div>
-          <h3 style="margin:0 0 4px;font-size:16px;color:var(--gov-navy)">Cross-Document Consistency Audit Report</h3>
-          <div style="font-size:12px;color:var(--muted)">Report ID: #${escapeHtml(data.check_id)} | Analyzed ${data.documents.length} records</div>
-        </div>
-        <span class="pill ${bClass}" style="font-size:12px;padding:6px 12px">${bLabel}</span>
-      </div>
-
-      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:10px;margin-top:14px">
-        <div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px;border-radius:6px;text-align:center">
-          <div style="font-size:20px;font-weight:800;color:#15803d">${c.matched || 0}</div>
-          <div style="font-size:11px;font-weight:700;color:#166534">MATCHED</div>
-        </div>
-        <div style="background:#fef2f2;border:1px solid #fecaca;padding:10px;border-radius:6px;text-align:center">
-          <div style="font-size:20px;font-weight:800;color:#dc2626">${c.mismatched || 0}</div>
-          <div style="font-size:11px;font-weight:700;color:#991b1b">MISMATCHED</div>
-        </div>
-        <div style="background:#fffbeb;border:1px solid #fde68a;padding:10px;border-radius:6px;text-align:center">
-          <div style="font-size:20px;font-weight:800;color:#d97706">${c.uncertain || 0}</div>
-          <div style="font-size:11px;font-weight:700;color:#92400e">UNCERTAIN</div>
-        </div>
-        <div style="background:#f8fafc;border:1px solid #cbd5e1;padding:10px;border-radius:6px;text-align:center">
-          <div style="font-size:20px;font-weight:800;color:#64748b">${c.missing || 0}</div>
-          <div style="font-size:11px;font-weight:700;color:#475569">MISSING</div>
-        </div>
-      </div>
-    </div>
-
-    <div style="background:#fff7ed;border:1px solid #ffedd5;border-left:5px solid var(--gov-saffron);border-radius:6px;padding:14px;margin-bottom:18px">
-      <div style="font-size:13px;font-weight:800;color:#9a3412">
-        🤖 AI Title Chain &amp; Consistency Explanation:
-      </div>
-      <div style="font-size:13px;color:#7c2d12;margin-top:6px;line-height:1.6;white-space:pre-line">
-        ${escapeHtml(data.ai_explanation || 'No discrepancies identified across parameters.')}
-      </div>
-      <div style="font-size:11px;color:#c2410c;margin-top:8px;font-style:italic">
-        * Notice: The AI highlights discrepancies and context only. Decisions regarding discrepancies remain with the Verification Officer.
-      </div>
-    </div>
-
-    <h4 style="margin:16px 0 10px;color:var(--gov-navy)">Field-by-Field Cross-Record Evaluation</h4>
-    <div style="display:grid;gap:12px">
-  `;
-
-  const statusIcons = {
-    'MATCH': '<span style="color:#16a34a;font-weight:800">✓ MATCH</span>',
-    'MISMATCH': '<span style="color:#dc2626;font-weight:800">⚠ MISMATCH</span>',
-    'UNCERTAIN': '<span style="color:#d97706;font-weight:800">❓ UNCERTAIN</span>',
-    'MISSING': '<span style="color:#64748b;font-weight:800">ℹ MISSING</span>'
-  };
-
-  const statusBg = {
-    'MATCH': '#f0fdf4',
-    'MISMATCH': '#fef2f2',
-    'UNCERTAIN': '#fffbeb',
-    'MISSING': '#f8fafc'
-  };
-
-  r.fields.forEach(fld=>{
-    html += `
-      <div style="background:${statusBg[fld.status] || '#fff'};border:1px solid var(--gov-border);border-radius:6px;padding:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <b style="font-size:14px;color:var(--gov-navy)">${escapeHtml(fld.label)}</b>
-            <span style="font-size:11px;color:var(--muted);margin-left:6px">(${escapeHtml(fld.description)})</span>
-          </div>
-          <div>${statusIcons[fld.status] || fld.status}</div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:8px;margin-top:10px">
-    `;
-
-    fld.values.forEach(v=>{
-      html += `
-        <div style="background:#ffffff;border:1px solid #cbd5e1;padding:8px 10px;border-radius:4px">
-          <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase">
-            ${escapeHtml(v.doc_type)} (#${v.doc_id})
-          </div>
-          <div style="font-weight:700;font-size:13px;color:var(--ink);margin-top:2px">
-            ${escapeHtml(v.value)}
-          </div>
-        </div>
-      `;
-    });
-
-    html += `
-        </div>
-        <div style="font-size:12px;color:var(--muted);margin-top:8px">
-          <b>Rule Evaluation:</b> ${escapeHtml(fld.reason)}
-        </div>
-      </div>
-    `;
-  });
-
-  html += `
-    </div>
-
-    <div style="background:#f8fafc;border:2px solid var(--gov-navy);border-radius:8px;padding:16px;margin-top:22px">
-      <h4 style="margin:0 0 6px;color:var(--gov-navy)">✍️ Statutory Verification Ruling for Consistency Audit</h4>
-      <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
-        Review the chain of title and discrepancies. Decide whether to approve the mutational flow, flag discrepancies for inquiry, or reject.
-      </p>
-
-      <div class="formfield">
-        <label class="field-label">Official Ruling Comments &amp; Legal Justification</label>
-        <textarea id="consistencyOfficerNotes" placeholder="State reasons for approval (e.g., succession matches deed chronology) or specify discrepancies..." style="height:60px"></textarea>
-      </div>
-
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <button class="btn ok" style="background:var(--gov-green);padding:8px 18px" onclick="submitConsistencyDecision('approved')">✓ Confirm Consistent / Approve Chain</button>
-        <button class="btn ghost" style="color:var(--warn);border-color:var(--warn);padding:8px 18px" onclick="submitConsistencyDecision('flagged_discrepancy')">⚠ Flag Discrepancy for Inquiry</button>
-        <button class="btn danger" style="padding:8px 18px" onclick="submitConsistencyDecision('rejected')">✕ Reject Inconsistent Records</button>
-      </div>
-    </div>
-  `;
-
-  box.innerHTML = html;
-}
-
-async function submitConsistencyDecision(decision){
-  if(!activeConsistencyCheckId){ alert('No active consistency audit report.'); return; }
-  const notes = ($('#consistencyOfficerNotes')?.value || '').trim();
-
-  try{
-    await api(`/api/consistency/${activeConsistencyCheckId}/decision`, {
-      method: 'POST',
-      body: JSON.stringify({decision, officer_notes: notes})
-    });
-    alert(`Determination recorded: ${decision.replace('_', ' ').toUpperCase()}`);
-    $('#consistencyReportContainer').innerHTML = `
-      <div class="successbox">
-        ✓ Consistency Determination '${decision.replace('_', ' ').toUpperCase()}' has been recorded in the audit trail for Audit #${activeConsistencyCheckId}.
-      </div>
-    `;
-    activeConsistencyCheckId = null;
-  }catch(e){ alert('Error saving decision: ' + e.message); }
-}
-
-async function loadPastConsistencyReports(){
-  const box = $('#consistencyReportContainer');
-  box.innerHTML = '<div class="muted">Loading past consistency audits...</div>';
-  try{
-    const d = await api('/api/consistency/reports');
-    const reports = d.reports || [];
-    if(!reports.length){
-      box.innerHTML = '<div class="muted" style="padding:16px">No prior cross-document audits found.</div>';
-      return;
-    }
-
-    let html = `
-      <h4 style="margin:0 0 10px">Historical Consistency Audits</h4>
-      <table class="gov-table">
-        <thead>
-          <tr>
-            <th>Audit ID</th>
-            <th>Docs Checked</th>
-            <th>Overall Status</th>
-            <th>Ruling</th>
-            <th>Officer</th>
-            <th>Date</th>
-            <th style="text-align:right">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
-    reports.forEach(r=>{
-      const docs = JSON.parse(r.document_ids || '[]');
-      html += `
-        <tr>
-          <td><span class="mono">#${r.id}</span></td>
-          <td>${docs.length} documents</td>
-          <td><span class="chip">${r.overall_status}</span></td>
-          <td><b>${r.decision.toUpperCase()}</b></td>
-          <td>${escapeHtml(r.officer_name)}</td>
-          <td>${new Date(r.created_at * 1000).toLocaleDateString()}</td>
-          <td style="text-align:right">
-            <button class="btn ghost" onclick="viewHistoricalReport('${r.id}')" style="padding:4px 8px;font-size:11px">Inspect</button>
-          </td>
-        </tr>
-      `;
-    });
-    html += '</tbody></table>';
-    box.innerHTML = html;
-  }catch(e){ box.innerHTML = `<div class="errorbox">${escapeHtml(e.message)}</div>`; }
-}
-
-async function viewHistoricalReport(checkId){
-  try{
-    const d = await api('/api/consistency/' + checkId);
-    activeConsistencyCheckId = checkId;
-    renderConsistencyReport({
-      check_id: d.id,
-      documents: d.document_ids.map(id=>({id})),
-      report: d.report,
-      ai_explanation: d.ai_explanation,
-      decision: d.decision
-    });
-  }catch(e){ alert(e.message); }
+  box.innerHTML = `<div class="successbox">✓ Consistency Audit Complete. Status: <b>${r.overall_status}</b></div>`;
 }
 
 let staffDocs = [];
@@ -1386,12 +1001,12 @@ async function loadStaffRecords(){
     renderStaffRecords(staffDocs);
   }catch(e){}
 }
+
 function renderStaffRecords(docs){
   const tb = $('#staffRecordsTable tbody');
   tb.innerHTML = '';
   docs.forEach(doc=>{
     const f = doc.fields || {};
-    const details = [f.owner_name?.value, f.village?.value].filter(Boolean).join(' · ') || '—';
     tb.innerHTML += `
       <tr>
         <td><span class="mono">#${doc.id}</span></td>
@@ -1399,18 +1014,13 @@ function renderStaffRecords(docs){
         <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
         <td>${getStatusBadge(doc.status)}</td>
         <td><span class="pill ${doc.mean_conf>=75?'valid':'review'}">${doc.mean_conf}%</span></td>
-        <td>${escapeHtml(details)}</td>
+        <td>${escapeHtml(f.owner_name?.value || '—')}</td>
         <td style="text-align:right">
           <button class="btn ghost" onclick="openStaffReview('${doc.id}')" style="padding:4px 8px;font-size:11px">Inspect</button>
-          ${me.role === ROLE_ADMIN ? `<button class="btn danger" onclick="staffDeleteDoc('${doc.id}')" style="padding:4px 6px;font-size:11px;margin-left:4px">🗑️</button>` : ''}
         </td>
       </tr>
     `;
   });
-}
-async function staffDeleteDoc(id){
-  if(!confirm('Permanently delete record #' + id + '?')) return;
-  try{ await api('/api/documents/' + id, {method:'DELETE'}); loadStaffRecords(); }catch(e){ alert(e.message); }
 }
 
 async function loadStaffLearn(){
@@ -1450,10 +1060,12 @@ async function loadStaffUsers(){
     });
   }catch(e){}
 }
+
 async function staffDeactivateUser(uid){
   if(!confirm('Deactivate user?')) return;
   try{ await api('/api/users/' + uid, {method:'DELETE'}); loadStaffUsers(); }catch(e){ alert(e.message); }
 }
+
 async function staffCreateUser(){
   try{
     await api('/api/users', {method:'POST', body: JSON.stringify({
@@ -1472,6 +1084,7 @@ function loadStaffAccount(){
   $('#staffAcEmail').value = me.email;
   $('#staffAcRole').value = me.role;
 }
+
 async function staffChangePassword(){
   try{
     await api('/api/auth/change-password', {method:'POST', body: JSON.stringify({
@@ -1482,7 +1095,6 @@ async function staffChangePassword(){
   }catch(e){ alert(e.message); }
 }
 
-// Bootstrap
 (async function boot(){
   if(token){
     try{
