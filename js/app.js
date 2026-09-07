@@ -713,7 +713,7 @@ async function loadStaffQueue(){
       tr.innerHTML = `
         <td><span class="mono">#${q.id}</span></td>
         <td><b>${escapeHtml(q.filename)}</b></td>
-        <td><span class="chip" style="font-size:10px">${escapeHtml(q.doc_type || 'Land Record')}</span></td>
+        <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
         <td>${escapeHtml(q.uploaded_by)}</td>
         <td><span class="pill ${q.mean_conf>=75?'valid':'review'}">${q.mean_conf}%</span></td>
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
@@ -1138,17 +1138,49 @@ async function loadStaffUsers(){
     const d = await api('/api/users');
     const tb = $('#staffUsersTable tbody'); tb.innerHTML = '';
     (d.users||[]).forEach(u=>{
+      const isSelf = (me && u.id === me.id);
+      const roleSelectHtml = isSelf ? `
+        <span class="chip" style="font-weight:700">${escapeHtml(u.role)}</span>
+      ` : `
+        <select class="staff-role-select" onchange="staffChangeRole('${u.id}', this)" data-previous="${escapeHtml(u.role)}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--gov-border);font-size:12px">
+          <option value="VIEWER" ${u.role==='VIEWER'?'selected':''}>Viewer</option>
+          <option value="DATA_OFFICER" ${u.role==='DATA_OFFICER'?'selected':''}>Data Officer</option>
+          <option value="VERIFICATION_OFFICER" ${u.role==='VERIFICATION_OFFICER'?'selected':''}>Verification Officer</option>
+          <option value="ADMIN" ${u.role==='ADMIN'?'selected':''}>Administrator</option>
+        </select>
+      `;
+
       tb.innerHTML += `
         <tr>
           <td><b>${escapeHtml(u.full_name)}</b></td>
           <td>${escapeHtml(u.email)}</td>
-          <td><b>${escapeHtml(u.role)}</b></td>
+          <td>${roleSelectHtml}</td>
           <td><span class="pill ${u.is_active?'valid':'rejected'}">${u.is_active?'Active':'Disabled'}</span></td>
-          <td>${u.id !== me.id ? `<button class="btn danger" onclick="staffDeactivateUser('${u.id}')" style="padding:2px 6px;font-size:11px">Deactivate</button>` : '—'}</td>
+          <td>${!isSelf ? `<button class="btn danger" onclick="staffDeactivateUser('${u.id}')" style="padding:2px 6px;font-size:11px">Deactivate</button>` : '—'}</td>
         </tr>
       `;
     });
   }catch(e){}
+}
+
+async function staffChangeRole(uid, selectEl){
+  const newRole = selectEl.value;
+  const prevRole = selectEl.dataset.previous || '';
+  if(!confirm(`Are you sure you want to change the role for this user to ${newRole}? This will revoke their active session and require them to sign in again.`)){
+    selectEl.value = prevRole;
+    return;
+  }
+  try{
+    await api('/api/users/' + uid + '/role', {
+      method: 'PUT',
+      body: JSON.stringify({ role: newRole })
+    });
+    alert('User role updated successfully.');
+    loadStaffUsers();
+  }catch(e){
+    alert('Failed to update role: ' + e.message);
+    selectEl.value = prevRole;
+  }
 }
 
 async function staffDeactivateUser(uid){

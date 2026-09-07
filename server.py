@@ -917,6 +917,7 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
 class LoginReq(BaseModel): email: str; password: str
 class SignupReq(BaseModel): full_name: str; email: str; password: str; role: Optional[str] = ROLE_DATA_OFFICER
 class AddUserReq(BaseModel): full_name: str; email: str; password: str; role: str = ROLE_DATA_OFFICER
+class UpdateRoleReq(BaseModel): role: str
 class ChangePassReq(BaseModel): current_password: str; new_password: str
 class ReviewActionReq(BaseModel): action: str; comments: Optional[str] = ""; corrections: Optional[Dict[str, str]] = {}
 class SaveDraftReq(BaseModel): fields: Dict[str, str]
@@ -986,6 +987,41 @@ def add_user(req: AddUserReq, user: dict = Depends(require_roles(ROLE_ADMIN))):
     with get_db() as db:
         db.execute("INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)", (uid, req.full_name, req.email.lower().strip(), h, normalize_role(req.role)))
     return {"status": "ok"}
+
+@app.put("/api/users/{target_uid}/role")
+def update_user_role(target_uid: str, req: UpdateRoleReq, user: dict = Depends(require_roles(ROLE_ADMIN))):
+    if str(target_uid) == str(user["id"]):
+        raise HTTPException(status_code=400, detail="Administrators cannot modify their own role.")
+
+    new_role = normalize_role(req.role)
+    if new_role not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role '{req.role}'. Must be one of {list(VALID_ROLES)}.")
+
+    with get_db() as db:
+        cur = db.execute("SELECT id, full_name, email, role FROM users WHERE id=?", (target_uid,))
+        target_user = cur.fetchone()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Target user not found.")
+
+        old_role = target_user["role"]
+        # Increment version so existing JWT tokens are immediately invalidated
+        db.execute("UPDATE users SET role=?, version=version+1 WHERE id=?", (new_role, target_uid))
+
+    log_audit(
+        user["full_name"],
+        "UPDATE_USER_ROLE",
+        f"Changed role for user '{target_user['email']}' from {old_role} to {new_role}",
+        target_uid
+    )
+
+    return {
+        "status": "ok",
+        "user": {
+            "id": target_uid,
+            "email": target_user["email"],
+            "role": new_role
+        }
+    }
 
 @app.delete("/api/users/{target_uid}")
 def delete_user(target_uid: str, user: dict = Depends(require_roles(ROLE_ADMIN))):
