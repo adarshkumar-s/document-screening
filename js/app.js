@@ -19,7 +19,16 @@ const STATUS_REJECTED = 'REJECTED';
 
 const $ = s => document.querySelector(s);
 const el = (t,c,h) => {const e=document.createElement(t); if(c)e.className=c; if(h!==undefined)e.innerHTML=h; return e;};
-function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;}[c]));}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function authUrl(path){
   if(!token) return path;
@@ -507,6 +516,7 @@ async function loadStaffDashboard(){
   try{
     const d = await api('/api/dashboard');
     
+    // 1. VERIFICATION OFFICER DASHBOARD (EXACT METRICS)
     if(d.portal_type === 'VERIFICATION_OFFICER'){
       const verifierMetrics = [
         ['Pending Verification', d.pending_verification, 'var(--gov-navy)', '⏳'],
@@ -535,6 +545,7 @@ async function loadStaffDashboard(){
       return;
     }
 
+    // 2. ADMIN DASHBOARD (EXACT METRICS & ANALYTICS)
     if(d.portal_type === 'ADMIN'){
       const coreMetrics = [
         ['Total Documents', Number(d.total_documents).toLocaleString(), 'var(--gov-navy)'],
@@ -990,7 +1001,86 @@ async function executeCrossDocumentCheck(){
 function renderConsistencyReport(data){
   const box = $('#consistencyReportContainer');
   const r = data.report || {counts:{}, fields:[]};
-  box.innerHTML = `<div class="successbox">✓ Consistency Audit Complete. Status: <b>${r.overall_status}</b></div>`;
+  const counts = r.counts || {matched:0, mismatched:0, missing:0, uncertain:0, total:0};
+  const fields = r.fields || [];
+
+  const statusBadge = {
+    'CONSISTENT': '<span class="pill valid">CONSISTENT</span>',
+    'MISMATCH_DETECTED': '<span class="pill rejected">MISMATCH DETECTED</span>',
+    'FLAGGED_FOR_REVIEW': '<span class="pill review">FLAGGED FOR REVIEW</span>',
+    'INSUFFICIENT_DATA': '<span class="pill pending">INSUFFICIENT DATA</span>'
+  }[r.overall_status] || `<span class="pill review">${escapeHtml(r.overall_status)}</span>`;
+
+  let html = `
+    <div style="background:#fff;border:1px solid var(--gov-border);border-radius:8px;padding:16px;box-shadow:var(--shadow-sm)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="margin:0;font-size:15px;color:var(--gov-navy)">Multi-Record Chain Consistency Audit</h3>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">Audit ID: <b>#${escapeHtml(data.check_id)}</b> · Documents examined: <b>${(data.documents||[]).length}</b></div>
+        </div>
+        <div>${statusBadge}</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));gap:8px;margin-bottom:16px">
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px;text-align:center">
+          <div style="font-size:18px;font-weight:800;color:#166534">${counts.matched}</div>
+          <div style="font-size:10px;font-weight:700;color:#15803d">MATCHED</div>
+        </div>
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px 12px;text-align:center">
+          <div style="font-size:18px;font-weight:800;color:#991b1b">${counts.mismatched}</div>
+          <div style="font-size:10px;font-weight:700;color:#b91c1c">MISMATCHED</div>
+        </div>
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 12px;text-align:center">
+          <div style="font-size:18px;font-weight:800;color:#92400e">${counts.uncertain}</div>
+          <div style="font-size:10px;font-weight:700;color:#b45309">UNCERTAIN</div>
+        </div>
+        <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 12px;text-align:center">
+          <div style="font-size:18px;font-weight:800;color:#475569">${counts.missing}</div>
+          <div style="font-size:10px;font-weight:700;color:#64748b">MISSING</div>
+        </div>
+        <div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:8px 12px;text-align:center">
+          <div style="font-size:18px;font-weight:800;color:var(--gov-navy)">${counts.total}</div>
+          <div style="font-size:10px;font-weight:700;color:var(--gov-navy)">TOTAL FIELDS</div>
+        </div>
+      </div>
+
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-left:5px solid #d97706;border-radius:6px;padding:14px;margin-bottom:18px">
+        <div style="font-size:13px;font-weight:800;color:#92400e">🤖 AI Chain of Title &amp; Consistency Assessment:</div>
+        <div style="font-size:13px;color:#78350f;margin-top:6px;line-height:1.6;white-space:pre-line">${escapeHtml(data.ai_explanation || 'No discrepancies flagged.')}</div>
+      </div>
+
+      <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Cadastral Field-by-Field Audit Matrix</h4>
+      <div style="display:grid;gap:8px">
+  `;
+
+  fields.forEach(fld=>{
+    const pillClass = {
+      'MATCH': 'background:#dcfce7;color:#15803d;border:1px solid #86efac',
+      'MISMATCH': 'background:#fee2e2;color:#dc2626;border:1px solid #fca5a5',
+      'UNCERTAIN': 'background:#fef3c7;color:#b45309;border:1px solid #fde68a',
+      'MISSING': 'background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1'
+    }[fld.status] || 'background:#f1f5f9;color:#64748b';
+
+    html += `
+      <div style="background:#f8fafc;border:1px solid var(--gov-border);border-radius:6px;padding:10px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div><b>${escapeHtml(fld.label)}</b> <span style="font-size:11px;color:var(--muted)">(${escapeHtml(fld.field)})</span></div>
+          <span style="font-size:11px;font-weight:800;padding:2px 8px;border-radius:4px;${pillClass}">${escapeHtml(fld.status)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${escapeHtml(fld.message)}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${(fld.values || []).map(v=>`
+            <span style="background:#fff;border:1px solid #cbd5e1;padding:4px 8px;border-radius:4px;font-size:11px">
+              <b>#${escapeHtml(v.doc_id)}:</b> <span style="color:var(--gov-navy);font-weight:600">${escapeHtml(v.value || '—')}</span>
+            </span>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  });
+
+  html += `</div></div>`;
+  box.innerHTML = html;
 }
 
 let staffDocs = [];
@@ -1086,13 +1176,16 @@ function loadStaffAccount(){
 }
 
 async function staffChangePassword(){
+  const cp = $('#staffCpCurrent').value;
+  const np = $('#staffCpNew').value;
+  if(!cp || !np){ alert('Please enter both current and new password.'); return; }
   try{
     await api('/api/auth/change-password', {method:'POST', body: JSON.stringify({
-      current_password: $('#staffCpCurrent').value, new_password: $('#staffCpNew').value
+      current_password: cp, new_password: np
     })});
-    alert('Password updated.');
+    alert('Password updated successfully.');
     $('#staffCpCurrent').value=''; $('#staffCpNew').value='';
-  }catch(e){ alert(e.message); }
+  }catch(e){ alert('Failed to update password: ' + e.message); }
 }
 
 (async function boot(){

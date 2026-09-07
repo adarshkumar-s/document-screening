@@ -632,14 +632,286 @@ async def parse_document_content(text: str, detected_lang: str, pages: int = 1) 
         "cleaned_ocr_text": cleaned_ocr
     }
 
-def compute_document_diff(fields_a, fields_b):
-    return {"summary": {"total_checked": 0, "unchanged_count": 0, "changed_count": 0}, "unchanged": [], "changed": []}
+def normalize_field_val(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, dict):
+        val = val.get("value", "")
+    s = str(val).strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"[\.,\-_\/]", "", s)
+    return s
 
-def evaluate_cross_document_consistency(records):
-    return {"overall_status": "CONSISTENT", "counts": {"matched":0, "mismatched":0, "missing":0, "uncertain":0, "total":0}, "fields": []}
+def compute_document_diff(fields_a: Dict[str, Any], fields_b: Dict[str, Any]) -> Dict[str, Any]:
+    unchanged = []
+    changed = []
 
-async def generate_ai_diff_explanation(a, b, c): return "No comments."
-async def generate_ai_consistency_explanation(a, b): return "No comments."
+    target_fields = [
+        ("owner_name", "Owner Name"),
+        ("father_name", "Father/Husband Name"),
+        ("survey_number", "Survey Number"),
+        ("khasra_number", "Khasra Number"),
+        ("khata_number", "Khata Number"),
+        ("plot_number", "Plot Number"),
+        ("area", "Land Area / Extent"),
+        ("village", "Village"),
+        ("tehsil", "Tehsil / Taluk"),
+        ("district", "District"),
+        ("state", "State"),
+        ("land_class", "Land Classification"),
+        ("ownership_type", "Ownership Type"),
+        ("mutation_no", "Mutation Number"),
+        ("registration_no", "Registration Number"),
+        ("khatauni_year", "Khatauni / Fasli Year")
+    ]
+
+    for key, label in target_fields:
+        obj_a = fields_a.get(key, {}) if isinstance(fields_a, dict) else {}
+        obj_b = fields_b.get(key, {}) if isinstance(fields_b, dict) else {}
+
+        val_a = obj_a.get("value", "") if isinstance(obj_a, dict) else str(obj_a or "")
+        val_b = obj_b.get("value", "") if isinstance(obj_b, dict) else str(obj_b or "")
+
+        norm_a = normalize_field_val(val_a)
+        norm_b = normalize_field_val(val_b)
+
+        if not norm_a and not norm_b:
+            continue
+
+        if norm_a == norm_b:
+            unchanged.append({
+                "field": key,
+                "label": label,
+                "value": val_b or val_a,
+                "confidence_a": obj_a.get("confidence", 1.0) if isinstance(obj_a, dict) else 1.0,
+                "confidence_b": obj_b.get("confidence", 1.0) if isinstance(obj_b, dict) else 1.0
+            })
+        else:
+            changed.append({
+                "field": key,
+                "label": label,
+                "old_value": val_a if val_a else "— (Empty)",
+                "new_value": val_b if val_b else "— (Empty)",
+                "confidence_a": obj_a.get("confidence", 0.0) if isinstance(obj_a, dict) else 0.0,
+                "confidence_b": obj_b.get("confidence", 0.0) if isinstance(obj_b, dict) else 0.0
+            })
+
+    return {
+        "summary": {
+            "total_checked": len(unchanged) + len(changed),
+            "unchanged_count": len(unchanged),
+            "changed_count": len(changed)
+        },
+        "unchanged": unchanged,
+        "changed": changed
+    }
+
+def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not records or len(records) < 2:
+        return {
+            "overall_status": "INSUFFICIENT_DATA",
+            "counts": {"matched": 0, "mismatched": 0, "missing": 0, "uncertain": 0, "total": 0},
+            "fields": []
+        }
+
+    keys_to_audit = [
+        ("owner_name", "Landowner Name"),
+        ("survey_number", "Survey Number"),
+        ("khasra_number", "Khasra Number"),
+        ("khata_number", "Khata Number"),
+        ("area", "Area Measurement"),
+        ("village", "Village"),
+        ("tehsil", "Tehsil"),
+        ("district", "District"),
+        ("mutation_no", "Mutation Number"),
+        ("registration_no", "Registration Number")
+    ]
+
+    field_audits = []
+    counts = {"matched": 0, "mismatched": 0, "missing": 0, "uncertain": 0, "total": 0}
+
+    for key, label in keys_to_audit:
+        values_by_doc = []
+        confs_by_doc = []
+        all_missing = True
+
+        for r in records:
+            f = r.get("fields", {})
+            f_obj = f.get(key, {})
+            val = f_obj.get("value", "") if isinstance(f_obj, dict) else str(f_obj or "")
+            conf = float(f_obj.get("confidence", 0.0)) if isinstance(f_obj, dict) else 1.0
+            val_clean = val.strip()
+
+            values_by_doc.append({"doc_id": r.get("id"), "filename": r.get("filename"), "value": val_clean})
+            confs_by_doc.append(conf)
+
+            if val_clean and val_clean != "—":
+                all_missing = False
+
+        counts["total"] += 1
+
+        if all_missing:
+            counts["missing"] += 1
+            field_audits.append({
+                "field": key,
+                "label": label,
+                "status": "MISSING",
+                "values": values_by_doc,
+                "message": "Field is empty across all examined records."
+            })
+            continue
+
+        normalized_present = [
+            normalize_field_val(item["value"])
+            for item in values_by_doc
+            if item["value"] and item["value"] != "—"
+        ]
+
+        if any(c < 0.65 for c in confs_by_doc):
+            counts["uncertain"] += 1
+            field_audits.append({
+                "field": key,
+                "label": label,
+                "status": "UNCERTAIN",
+                "values": values_by_doc,
+                "message": "Low OCR extraction confidence detected across records. Human cross-check advised."
+            })
+        elif len(set(normalized_present)) == 1:
+            if len(normalized_present) == len(records):
+                counts["matched"] += 1
+                field_audits.append({
+                    "field": key,
+                    "label": label,
+                    "status": "MATCH",
+                    "values": values_by_doc,
+                    "message": "Consistent across all inspected records."
+                })
+            else:
+                counts["uncertain"] += 1
+                field_audits.append({
+                    "field": key,
+                    "label": label,
+                    "status": "UNCERTAIN",
+                    "values": values_by_doc,
+                    "message": "Partial presence across records; present entries match."
+                })
+        else:
+            counts["mismatched"] += 1
+            field_audits.append({
+                "field": key,
+                "label": label,
+                "status": "MISMATCH",
+                "values": values_by_doc,
+                "message": "Discrepancy detected across submitted documents. Requires officer verification."
+            })
+
+    if counts["mismatched"] > 0:
+        overall_status = "MISMATCH_DETECTED"
+    elif counts["uncertain"] > 0:
+        overall_status = "FLAGGED_FOR_REVIEW"
+    elif counts["matched"] > 0:
+        overall_status = "CONSISTENT"
+    else:
+        overall_status = "INSUFFICIENT_DATA"
+
+    return {
+        "overall_status": overall_status,
+        "counts": counts,
+        "fields": field_audits
+    }
+
+async def generate_ai_diff_explanation(doc_a: Dict[str, Any], doc_b: Dict[str, Any], diff: Dict[str, Any]) -> str:
+    changed = diff.get("changed", [])
+    if not changed:
+        return "No discrepancies identified between the compared record versions. All standard cadastral fields are identical."
+
+    diff_summary = "\n".join([f"- {c['label']}: '{c['old_value']}' -> '{c['new_value']}'" for c in changed])
+
+    if not ai_client:
+        return (
+            f"Advisory: {len(changed)} alterations detected between Document #{doc_a.get('id')} and Document #{doc_b.get('id')}.\n\n"
+            f"Fields requiring officer inspection:\n{diff_summary}\n\n"
+            "Recommendation: Flag for statutory officer verification before executing mutation or approval."
+        )
+
+    prompt = f"""
+    You are an AI Cadastral Audit Assistant for Land Record Verification Officers (DILRMP).
+    Analyze the following detected differences between two versions of a land document:
+    Document A (#{doc_a.get('id')} - {doc_a.get('filename')}):
+    Document B (#{doc_b.get('id')} - {doc_b.get('filename')}):
+
+    Detected Alterations:
+    {diff_summary}
+
+    Guidelines:
+    1. Explain the practical cadastral meaning of the differences (e.g. partition, transfer, typographical divergence).
+    2. Highlight specific fields requiring statutory officer attention.
+    3. Use neutral, objective audit language (e.g., 'requires verification', 'possible mismatch', 'flag for officer review').
+    4. NEVER accuse parties of fraud, and NEVER state that a document is automatically approved or rejected.
+    5. Be concise, clear, and professional.
+    """
+    try:
+        response = await asyncio.to_thread(
+            ai_client.models.generate_content,
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.2)
+        )
+        return response.text.strip()
+    except Exception:
+        return (
+            f"Automated Advisory: {len(changed)} fields differ between the examined versions.\n"
+            f"Changed Fields: {', '.join(c['label'] for c in changed)}.\n"
+            "Flag for officer review to confirm validity of recorded updates."
+        )
+
+async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], report: Dict[str, Any]) -> str:
+    counts = report.get("counts", {})
+    mismatches = [f for f in report.get("fields", []) if f.get("status") == "MISMATCH"]
+    
+    if not mismatches:
+        return f"Consistency check complete across {len(records)} documents. No conflicting cadastral values were detected."
+
+    mismatch_text = "\n".join([
+        f"- {m['label']}: " + ", ".join([f"Doc #{v['doc_id']}: '{v['value']}'" for v in m.get("values", [])])
+        for m in mismatches
+    ])
+
+    if not ai_client:
+        return (
+            f"Cross-document consistency audit identified {len(mismatches)} discrepancies across {len(records)} documents.\n"
+            f"Discrepant Fields:\n{mismatch_text}\n\n"
+            "Status: Flag for officer verification. Manual reconciliation required."
+        )
+
+    prompt = f"""
+    You are an AI Cadastral Audit Assistant for Land Record Verification Officers (DILRMP).
+    Evaluate this multi-document consistency check across {len(records)} records:
+    Overall Status: {report.get('overall_status')}
+    Summary Counts: {json.dumps(counts)}
+
+    Identified Discrepancies:
+    {mismatch_text}
+
+    Guidelines:
+    1. Provide a concise, structured assessment of conflicting fields.
+    2. Note whether discrepancies suggest an unrecorded mutation, land partition, or typographical variance.
+    3. Use neutral regulatory terminology ('flag for officer review', 'possible mismatch', 'requires verification').
+    4. NEVER allege fraud or forgery, and NEVER make a final binding legal determination.
+    """
+    try:
+        response = await asyncio.to_thread(
+            ai_client.models.generate_content,
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.2)
+        )
+        return response.text.strip()
+    except Exception:
+        return (
+            f"Consistency analysis flagged discrepancies in: {', '.join(m['label'] for m in mismatches)}.\n"
+            "Recommendation: Verification officer must cross-reference root revenue registers before statutory endorsement."
+        )
 
 # FastAPI Routes
 class LoginReq(BaseModel): email: str; password: str
@@ -691,9 +963,14 @@ def logout(user: dict = Depends(get_current_user)):
 @app.post("/api/auth/change-password")
 def change_password(req: ChangePassReq, user: dict = Depends(get_current_user)):
     cur_h = hashlib.sha256(req.current_password.encode()).hexdigest()
-    new_h = hashlib.sha256(req.new_password.encode()).hexdigest()
     with get_db() as db:
+        cur = db.execute("SELECT password_hash FROM users WHERE id=?", (user["id"],))
+        row = cur.fetchone()
+        if not row or row["password_hash"] != cur_h:
+            raise HTTPException(status_code=400, detail="Current password does not match.")
+        new_h = hashlib.sha256(req.new_password.encode()).hexdigest()
         db.execute("UPDATE users SET password_hash=?, version=version+1 WHERE id=?", (new_h, user["id"]))
+    log_audit(user["full_name"], "CHANGE_PASSWORD", "User successfully changed password", None)
     return {"status": "ok"}
 
 @app.get("/api/users")
@@ -823,34 +1100,158 @@ def review_action(doc_id: str, req: ReviewActionReq, user: dict = Depends(requir
         raise HTTPException(status_code=400, detail="Comments required for reject/return")
 
     with get_db() as db:
-        cur = db.execute("SELECT fields FROM documents WHERE id=?", (doc_id,))
+        cur = db.execute("SELECT fields, validation FROM documents WHERE id=?", (doc_id,))
         r = cur.fetchone()
-        fields = json.loads(r["fields"] or "{}") if r else {}
-        if new_st == STATUS_APPROVED and req.corrections:
-            for k, v in req.corrections.items():
-                if k in fields: fields[k]["value"] = v
-        db.execute("UPDATE documents SET status=?, reviewer_comments=?, updated_at=? WHERE id=?", (new_st, req.comments, time.time(), doc_id))
+        if not r: raise HTTPException(status_code=404, detail="Document not found")
+        fields = json.loads(r["fields"] or "{}")
+
+        if req.corrections:
+            for k, new_v in req.corrections.items():
+                if k in FIELD_KEYS or k in fields:
+                    current_entry = fields.get(k, {})
+                    old_v = current_entry.get("value", "") if isinstance(current_entry, dict) else str(current_entry or "")
+                    new_v_str = str(new_v or "").strip()
+                    fields[k] = {
+                        "value": new_v_str,
+                        "confidence": 1.0,
+                        "validation_status": "VALID",
+                        "validation_message": "Statutorily verified and corrected by reviewer."
+                    }
+                    if old_v and old_v != new_v_str:
+                        try:
+                            db.execute(
+                                """
+                                INSERT INTO corrections (field_id, wrong, right_val, count)
+                                VALUES (?, ?, ?, 1)
+                                ON CONFLICT(field_id, wrong, right_val) DO UPDATE SET count = count + 1
+                                """,
+                                (k, old_v, new_v_str)
+                            )
+                        except Exception:
+                            pass
+
+            reval_fields, reval_rep = enrich_and_validate_fields(fields)
+            fields = reval_fields
+
+        db.execute(
+            "UPDATE documents SET status=?, reviewer_comments=?, fields=?, updated_at=? WHERE id=?",
+            (new_st, req.comments or "", json.dumps(fields, ensure_ascii=False), time.time(), doc_id)
+        )
     log_audit(user["full_name"], f"VERIFICATION_{req.action.upper()}", f"Marked as {new_st}", doc_id)
     return {"status": "ok", "new_status": new_st}
 
 @app.post("/api/documents/compare")
-async def run_document_comparison(doc_a_id: Optional[str] = Query(None), doc_b_id: Optional[str] = Query(None), user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
-    with get_db() as db:
-        a = dict(db.execute("SELECT * FROM documents WHERE id=?", (doc_a_id,)).fetchone())
-        b = dict(db.execute("SELECT * FROM documents WHERE id=?", (doc_b_id,)).fetchone())
-    diff = compute_document_diff(json.loads(a["fields"]), json.loads(b["fields"]))
+async def run_document_comparison(
+    doc_a_id: Optional[str] = Query(None),
+    doc_b_id: Optional[str] = Query(None),
+    file_a: Optional[UploadFile] = File(None),
+    file_b: Optional[UploadFile] = File(None),
+    user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
+    doc_a = None
+    doc_b = None
+
+    if doc_a_id and doc_b_id:
+        with get_db() as db:
+            row_a = db.execute("SELECT * FROM documents WHERE id=?", (doc_a_id,)).fetchone()
+            row_b = db.execute("SELECT * FROM documents WHERE id=?", (doc_b_id,)).fetchone()
+            if not row_a or not row_b:
+                raise HTTPException(status_code=404, detail="One or both documents not found for comparison.")
+            doc_a = dict(row_a)
+            doc_b = dict(row_b)
+            fields_a = json.loads(doc_a.get("fields") or "{}")
+            fields_b = json.loads(doc_b.get("fields") or "{}")
+    elif file_a and file_b:
+        data_a = await file_a.read()
+        data_b = await file_b.read()
+        if not data_a or not data_b:
+            raise HTTPException(status_code=422, detail="One or both uploaded files are empty.")
+
+        img_a = clean_ocr_image(Image.open(io.BytesIO(data_a)))
+        img_b = clean_ocr_image(Image.open(io.BytesIO(data_b)))
+
+        txt_a, lang_a = await asyncio.to_thread(run_targeted_ocr, img_a)
+        txt_b, lang_b = await asyncio.to_thread(run_targeted_ocr, img_b)
+
+        parsed_a = await parse_document_content(txt_a, lang_a)
+        parsed_b = await parse_document_content(txt_b, lang_b)
+
+        doc_a = {"id": f"UPLOAD-{uuid.uuid4().hex[:6]}", "filename": file_a.filename or "file_a.png", "fields": parsed_a["fields"]}
+        doc_b = {"id": f"UPLOAD-{uuid.uuid4().hex[:6]}", "filename": file_b.filename or "file_b.png", "fields": parsed_b["fields"]}
+        fields_a = parsed_a["fields"]
+        fields_b = parsed_b["fields"]
+    else:
+        raise HTTPException(status_code=400, detail="Provide doc_a_id and doc_b_id or two files (file_a, file_b).")
+
+    diff = compute_document_diff(fields_a, fields_b)
+    ai_expl = await generate_ai_diff_explanation(doc_a, doc_b, diff)
     comp_id = uuid.uuid4().hex[:12]
-    return {"comparison_id": comp_id, "doc_a": a, "doc_b": b, "diff": diff, "ai_explanation": "Compared successfully."}
+
+    try:
+        with get_db() as db:
+            db.execute(
+                """
+                INSERT INTO comparisons (id, doc_a_id, doc_b_id, officer_name, officer_email, decision, officer_notes, diff_payload, ai_summary, created_at)
+                VALUES (?, ?, ?, ?, ?, 'pending', '', ?, ?, ?)
+                """,
+                (comp_id, str(doc_a.get("id")), str(doc_b.get("id")), user.get("full_name", "Officer"), user.get("email", ""), json.dumps(diff), ai_expl, time.time())
+            )
+    except Exception as e:
+        print(f"[COMPARISON LOG WARNING] {e}")
+
+    log_audit(user["full_name"], "DOC_COMPARISON", f"Compared doc #{doc_a.get('id')} with #{doc_b.get('id')}", str(doc_a.get("id")))
+    return {"comparison_id": comp_id, "doc_a": doc_a, "doc_b": doc_b, "diff": diff, "ai_explanation": ai_expl}
 
 @app.post("/api/consistency/check")
 async def run_consistency_check(req: ConsistencyCheckReq, user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    if len(req.document_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least two document IDs are required for cross-document consistency.")
+
     records = []
     with get_db() as db:
         for did in req.document_ids:
             r = db.execute("SELECT * FROM documents WHERE id=?", (did,)).fetchone()
-            if r: records.append({**dict(r), "fields": json.loads(r["fields"])})
+            if r:
+                records.append({**dict(r), "fields": json.loads(r["fields"] or "{}")})
+
+    if len(records) < 2:
+        raise HTTPException(status_code=404, detail="Could not retrieve the requested documents from database.")
+
     report = evaluate_cross_document_consistency(records)
-    return {"check_id": uuid.uuid4().hex[:12], "documents": records, "report": report, "ai_explanation": "Consistent."}
+    ai_expl = await generate_ai_consistency_explanation(records, report)
+    check_id = uuid.uuid4().hex[:12]
+
+    try:
+        counts = report.get("counts", {})
+        with get_db() as db:
+            db.execute(
+                """
+                INSERT INTO consistency_checks (
+                    id, document_ids, overall_status, matched_count, mismatched_count,
+                    missing_count, uncertain_count, report_payload, ai_explanation,
+                    officer_name, officer_email, decision, officer_notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'flagged_for_verification', '', ?)
+                """,
+                (
+                    check_id,
+                    json.dumps(req.document_ids),
+                    report.get("overall_status", "FLAGGED_FOR_REVIEW"),
+                    counts.get("matched", 0),
+                    counts.get("mismatched", 0),
+                    counts.get("missing", 0),
+                    counts.get("uncertain", 0),
+                    json.dumps(report, ensure_ascii=False),
+                    ai_expl,
+                    user.get("full_name", "Officer"),
+                    user.get("email", ""),
+                    time.time()
+                )
+            )
+    except Exception as e:
+        print(f"[CONSISTENCY LOG WARNING] {e}")
+
+    log_audit(user["full_name"], "CONSISTENCY_CHECK", f"Cross-document consistency performed on {len(records)} records", req.document_ids[0])
+    return {"check_id": check_id, "documents": records, "report": report, "ai_explanation": ai_expl}
 
 @app.get("/api/dashboard")
 def get_dashboard(user: dict = Depends(get_current_user)):
@@ -895,7 +1296,6 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
         if not r: raise HTTPException(status_code=404, detail="Not found")
         return {**dict(r), "fields": json.loads(r["fields"] or "{}"), "ai_decision_support": json.loads(r["ai_decision_support"] or "{}")}
 
-# Mount assets and static folders correctly
 os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
