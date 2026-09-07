@@ -15,7 +15,6 @@
 <div id="authView" class="auth-hero-wrap">
   <div class="gov-utility-bar">
     <div style="display:flex;align-items:center">
-      <!-- EXACT WINGED VECTORFLOW LOGO -->
       <img class="vectorflow-logo vectorflow-logo-utility" src="./vectorflow.png" alt="Vectorflow">
     </div>
     <div class="access-controls">
@@ -23,39 +22,15 @@
       <button class="font-size-btn" onclick="adjustFontSize(0)">A</button>
       <button class="font-size-btn" onclick="adjustFontSize(1)">A+</button>
       <button onclick="toggleContrast()">🌓 High Contrast</button>
-      
-      <select id="authLangSelect" onchange="changeLanguage(this.value)" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">
-        <option value="en">English</option>
-        <option value="hi">हिंदी (Hindi)</option>
-        <option value="mr">मराठी (Marathi)</option>
-        <option value="te">తెలుగు (Telugu)</option>
-        <option value="ta">தமிழ் (Tamil)</option>
-        <option value="gu">ગુજરાતી (Gujarati)</option>
-        <option value="bn">বাংলা (Bengali)</option>
-        <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
-        <option value="kn">ಕನ್ನಡ (Kannada)</option>
-        <option value="or">ଓଡ଼ିଆ (Odia)</option>
-        <option value="ur">اردو (Urdu)</option>
-      </select>
     </div>
   </div>
 
   <div class="auth-box-container">
     <div class="auth-card">
       <div style="text-align:center;margin-bottom:18px">
-        <svg class="emblem-svg" viewBox="0 0 100 120" style="margin:0 auto 10px;height:60px">
-          <path d="M50 5 L60 25 L40 25 Z" fill="#b45309"/>
-          <circle cx="50" cy="40" r="18" fill="#1b4965" stroke="#b45309" stroke-width="2"/>
-          <circle cx="50" cy="40" r="6" fill="#ea580c"/>
-          <rect x="25" y="65" width="50" height="10" rx="3" fill="#b45309"/>
-          <text x="50" y="73" font-size="7" fill="#ffffff" font-weight="bold" text-anchor="middle">सत्यमेव जयते</text>
-          <path d="M20 80 Q50 95 80 80 L75 105 Q50 115 25 105 Z" fill="#0f2b48"/>
-          <circle cx="50" cy="95" r="8" fill="#ffffff"/>
-          <circle cx="50" cy="95" r="2" fill="#1b4965"/>
-        </svg>
         <div style="font-size:12px;color:var(--gov-saffron);font-weight:700;letter-spacing:1px;text-transform:uppercase">Digital India · DILRMP Portal</div>
-        <h2 style="margin:4px 0 6px;color:var(--gov-navy);font-size:19px">Land Records Digitization System</h2>
-        <div style="font-size:13px;color:var(--muted)">Intelligent Land Record Digitization &amp; Validation System</div>
+        <h2 style="margin:4px 0 6px;color:var(--gov-navy);font-size:20px">Land Records Access Portal</h2>
+        <div style="font-size:13px;color:var(--muted)">Unified Indic Digitization, Search &amp; Verification</div>
       </div>
 
       <!-- Login Form -->
@@ -93,6 +68,14 @@
           <label class="field-label">Confirm Password</label>
           <input type="password" id="suPass2" placeholder="Re-enter password">
         </div>
+        <div class="formfield">
+          <label class="field-label">Assigned Role</label>
+          <select id="suRole">
+            <option value="VIEWER">Viewer (Public / Search Only)</option>
+            <option value="DATA_OFFICER">Data Officer (Upload &amp; Extract)</option>
+            <option value="VERIFICATION_OFFICER">Verification Officer (Staff Review)</option>
+          </select>
+        </div>
         <div id="signupError" class="errorbox hidden"></div>
         <button class="btn block saffron" id="signupBtn">Register Account</button>
         <div style="text-align:center;margin-top:14px;font-size:12px;color:var(--muted)">
@@ -107,11 +90,10 @@
   </div>
 </div>
 
-<!-- MAIN APPLICATION -->
-<div id="appView" class="hidden">
+<!-- TOP GLOBAL UTILITY BAR & HEADER -->
+<div id="appShell" class="hidden">
   <div class="gov-utility-bar">
     <div style="display:flex;align-items:center">
-      <!-- EXACT WINGED VECTORFLOW LOGO IN HEADER -->
       <img class="vectorflow-logo vectorflow-logo-utility" src="./vectorflow.png" alt="Vectorflow">
     </div>
     <div class="access-controls">
@@ -120,463 +102,452 @@
       <button class="font-size-btn" onclick="adjustFontSize(0)">A</button>
       <button class="font-size-btn" onclick="adjustFontSize(1)">A+</button>
       <button onclick="toggleContrast()">🌓 High Contrast</button>
-      
-      <select id="appLangSelect" onchange="changeLanguage(this.value)" style="background:#0f2b48;color:#fbd38d;border:1px solid #fbd38d;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:700;margin-left:6px">
-        <option value="en">English</option>
-        <option value="hi">हिंदी (Hindi)</option>
-        <option value="mr">मराठी (Marathi)</option>
-        <option value="te">తెలుగు (Telugu)</option>
-        <option value="ta">தமிழ் (Tamil)</option>
-        <option value="gu">ગુજરાતી (Gujarati)</option>
-        <option value="bn">বাংলা (Bengali)</option>
-        <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
-        <option value="kn">ಕನ್ನಡ (Kannada)</option>
-        <option value="or">ଓଡ଼ିଆ (Odia)</option>
-        <option value="ur">اردو (Urdu)</option>
-      </select>
     </div>
   </div>
 
   <div class="gov-header">
     <div class="gov-brand-container">
-      <svg class="emblem-svg" viewBox="0 0 100 120">
-        <path d="M50 5 L60 25 L40 25 Z" fill="#fbd38d"/>
-        <circle cx="50" cy="40" r="18" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
-        <circle cx="50" cy="40" r="6" fill="#ea580c"/>
-        <rect x="25" y="65" width="50" height="10" rx="3" fill="#b45309"/>
-        <text x="50" y="73" font-size="7" fill="#0f2b48" font-weight="bold" text-anchor="middle">सत्यमेव जयते</text>
-        <path d="M20 80 Q50 95 80 80 L75 105 Q50 115 25 105 Z" fill="#0f2b48"/>
-        <circle cx="50" cy="95" r="8" fill="#ffffff"/>
-        <circle cx="50" cy="95" r="2" fill="#1b4965"/>
-      </svg>
       <div class="gov-titles">
         <div class="gov-sub-title">Digital India Land Records Modernization Programme (DILRMP)</div>
         <div class="gov-main-title">Digital Land Records Portal</div>
-        <div class="gov-prog-tag">Multilingual Indic OCR · Automated Extraction &amp; Validation</div>
+        <div class="portal-badge-pill" id="portalBadge">Portal</div>
       </div>
     </div>
 
     <div class="gov-user-panel">
       <div class="user-badge">
-        <div class="user-avatar" id="avatar">A</div>
+        <div class="user-avatar" id="avatar">U</div>
         <div>
-          <div style="font-weight:700;font-size:13px;color:#ffffff" id="userName">Admin</div>
-          <div style="font-size:11px;color:#fbd38d" id="userRole">Administrator</div>
+          <div style="font-weight:700;font-size:13px;color:#ffffff" id="userName">User</div>
+          <div style="font-size:11px;color:#fbd38d" id="userRole">Role</div>
         </div>
       </div>
       <button class="btn ghost" style="padding:6px 12px;font-size:12px" id="logoutBtn">Logout</button>
     </div>
   </div>
 
-  <div class="nav-toolbar">
-    <div class="history-arrows">
-      <button class="arrow-nav-btn" id="btnHistoryBack">◀ <b>Back</b></button>
-      <button class="arrow-nav-btn" id="btnHistoryForward"><b>Forward</b> ▶</button>
+  <!-- ========================================================= -->
+  <!-- INTERFACE A: SIMPLE PORTAL (VIEWER & DATA OFFICER)       -->
+  <!-- ========================================================= -->
+  <div id="simplePortal" class="hidden">
+    <div class="simple-nav-bar">
+      <div class="simple-nav-container" id="simpleNavItems"></div>
     </div>
-    <div class="breadcrumb-box" id="breadcrumbTrail">
-      <span class="breadcrumb-item" onclick="switchTab('upload')">🏛️ Home</span>
-      <span class="breadcrumb-separator">❯</span>
-      <span class="breadcrumb-current" id="currentBreadcrumb">Document Upload</span>
-    </div>
-    <div class="quick-record-nav" id="recordCarouselNav" style="visibility:hidden">
-      <button class="arrow-nav-btn" id="btnPrevDoc">◀ Previous Record</button>
-      <span class="record-counter" id="docCounterText">1 / 1</span>
-      <button class="arrow-nav-btn" id="btnNextDoc">Next Record ▶</button>
+
+    <div class="wrap" style="max-width:1040px">
+      <!-- S1: VIEWER HOME / SEARCH -->
+      <div id="s-view-home" class="simple-pane hidden">
+        <div class="simple-hero-card">
+          <h2>Find Registered Land Records</h2>
+          <p>Search verified parcels by Landowner name, Survey/Khasra number, Village, or Record ID.</p>
+          <div class="simple-search-row">
+            <input type="text" id="simpleSearchInput" placeholder="Enter Owner name, Khasra #, Village, or Doc ID...">
+            <button class="btn saffron" onclick="doSimpleSearch()">Search Records</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:20px">
+          <div class="card-header">
+            <h3 class="card-title">📄 Available Land Records</h3>
+            <span class="chip" id="simpleRecordCount">0 records</span>
+          </div>
+          <table class="gov-table" id="simpleDocTable">
+            <thead>
+              <tr>
+                <th>Record ID</th>
+                <th>Landowner</th>
+                <th>Khasra / Survey</th>
+                <th>Village</th>
+                <th>Status</th>
+                <th style="text-align:right">Action</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- S2: DATA OFFICER DASHBOARD -->
+      <div id="s-do-dash" class="simple-pane hidden">
+        <div class="simple-action-banner">
+          <div>
+            <h3 style="margin:0 0 4px;color:var(--gov-navy)">Welcome back, <span id="doWelcomeName">Officer</span></h3>
+            <p style="margin:0;font-size:13px;color:var(--muted)">Digitize new land deeds, save drafts, and submit records for verification.</p>
+          </div>
+          <button class="btn saffron large-action-btn" onclick="openSimpleNewDoc()">➕ New Document Scan</button>
+        </div>
+
+        <div class="simple-quick-stats">
+          <div class="simple-stat-card" onclick="setSimpleFilter('DRAFT')">
+            <div class="stat-icon">📝</div>
+            <div class="stat-val" id="doStatDrafts">0</div>
+            <div class="stat-lbl">Drafts in Progress</div>
+          </div>
+          <div class="simple-stat-card" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">
+            <div class="stat-icon" style="color:var(--err)">↩️</div>
+            <div class="stat-val" id="doStatReturned">0</div>
+            <div class="stat-lbl">Returned / Needs Fix</div>
+          </div>
+          <div class="simple-stat-card" onclick="setSimpleFilter('all')">
+            <div class="stat-icon" style="color:var(--ok)">📤</div>
+            <div class="stat-val" id="doStatSubmissions">0</div>
+            <div class="stat-lbl">Total Submitted</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- S3: NEW DOCUMENT (UPLOAD & EXTRACT) -->
+      <div id="s-do-newdoc" class="simple-pane hidden">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">📤 Upload &amp; Digitize Land Record</h3>
+            <button class="btn ghost" onclick="switchSimpleTab('s-do-dash')">Cancel</button>
+          </div>
+
+          <div class="guided-step-banner">
+            <span class="step-circle">1</span>
+            <div>
+              <b>Select Document File &amp; Classification:</b> Upload a scanned deed, Khatauni, Mutation record, or Tax Receipt.
+            </div>
+          </div>
+
+          <div class="drop-zone" id="simpleDropZone" style="margin:16px 0">
+            <div class="drop-icon">📄</div>
+            <div style="font-size:16px;font-weight:700">Click to Browse or Drag File Here</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px">PDF, JPG, PNG, TIFF</div>
+            <input type="file" id="simpleFileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
+          </div>
+
+          <div style="margin:12px 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <div>
+              <span style="font-size:12px;font-weight:700">Document Type:</span>
+              <select id="simpleDocTypeSelect" style="padding:4px 8px;border-radius:4px;border:1px solid var(--gov-border)">
+                <option value="Land Record">Land Record (Khatauni / ROR / 7/12)</option>
+                <option value="Mutation Record">Mutation Record (Namantaran / Ferfar)</option>
+                <option value="Sale Deed">Sale Deed (Registry / Conveyance)</option>
+                <option value="Tax Receipt">Tax Receipt (Lagan / Revenue Slip)</option>
+              </select>
+            </div>
+            <div>
+              <span style="font-size:12px;font-weight:700">Script Language:</span>
+              <select id="simpleLangSelect" style="max-width:200px">
+                <option value="auto">Auto-Detect Script</option>
+                <option value="hin">Hindi (खतौनी / खसरा)</option>
+                <option value="tel">Telugu (పట్టా / 1-B)</option>
+                <option value="tam">Tamil (பட்டா / சிட்டா)</option>
+                <option value="mar">Marathi (7/12)</option>
+                <option value="eng">English</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="simpleProcessing" class="hidden simple-spinner-box">
+            <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
+            <b>Scanning document and extracting fields with Indic AI...</b>
+          </div>
+
+          <div id="simpleUploadEditor" class="hidden" style="margin-top:20px;border-top:2px solid var(--gov-border-light);padding-top:16px">
+            <div class="guided-step-banner">
+              <span class="step-circle">2</span>
+              <div>
+                <b>Review Extracted Information &amp; Field Validation:</b> Check field statuses, confidence ratings, and warnings before submitting.
+              </div>
+            </div>
+
+            <div class="field-grid" id="simpleFieldsGrid" style="margin:16px 0"></div>
+
+            <div class="simple-editor-actions">
+              <button class="btn ghost large-action-btn" id="simpleBtnSaveDraft">💾 Save as Draft</button>
+              <button class="btn saffron large-action-btn" id="simpleBtnSubmit">🚀 Submit for Verification</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- S4: DATA OFFICER SUBMISSIONS LIST -->
+      <div id="s-do-list" class="simple-pane hidden">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title" id="simpleListTitle">My Submissions</h3>
+            <button class="btn ghost" onclick="loadMyRecordsSimple()">🔄 Refresh</button>
+          </div>
+          <table class="gov-table" id="simpleSubmissionsTable">
+            <thead>
+              <tr>
+                <th>Record ID</th>
+                <th>File</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Reviewer Notes</th>
+                <th>Particulars</th>
+                <th style="text-align:right">Action</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- S5: SIMPLE RECORD DETAIL INSPECTOR -->
+      <div id="s-record-detail" class="simple-pane hidden">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title" id="simpleDetailTitle">Record Details</h3>
+              <div style="font-size:12px;color:var(--muted)" id="simpleDetailSub"></div>
+            </div>
+            <button class="btn ghost" onclick="closeSimpleDetail()">✕ Back</button>
+          </div>
+          <div class="field-grid" id="simpleDetailGrid" style="margin-top:16px"></div>
+          <div id="simpleDetailNotesBox" class="hidden" style="margin-top:16px"></div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="wrap">
-    <div class="tabs">
-      <button class="tab active" data-tab="upload">📤 Upload</button>
-      <button class="tab" data-tab="dashboard">📊 Dashboard</button>
-      <button class="tab" data-tab="documents">🗂️ Records</button>
-      <button class="tab" data-tab="learn" id="tabLearn">🧠 AI Feedback</button>
-      <button class="tab" data-tab="audit" id="tabAudit">🔐 Audit Log</button>
-      <button class="tab" data-tab="users" id="tabUsers">👥 Users</button>
-      <button class="tab" data-tab="account" id="tabAccount">⚙️ Account</button>
+  <!-- ========================================================= -->
+  <!-- INTERFACE B: ADVANCED STAFF PORTAL (VERIFIER & ADMIN)     -->
+  <!-- ========================================================= -->
+  <div id="staffPortal" class="hidden">
+    <div class="nav-toolbar">
+      <div class="history-arrows">
+        <button class="arrow-nav-btn" onclick="history.back()">◀ Back</button>
+        <button class="arrow-nav-btn" onclick="history.forward()">Forward ▶</button>
+      </div>
+      <div class="breadcrumb-box">
+        <span class="breadcrumb-item" onclick="switchStaffTab('dashboard')">🏛️ Staff Console</span>
+        <span class="breadcrumb-separator">❯</span>
+        <span class="breadcrumb-current" id="staffBreadcrumb">Dashboard</span>
+      </div>
     </div>
 
-    <div class="tab-content">
-      <!-- TAB 1: UPLOAD -->
-      <div id="tab-upload">
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">📄 Upload Scanned Land Records</h3>
-            <span class="chip">Supports All 11 Official Indian Regional Languages</span>
-          </div>
+    <div class="wrap">
+      <div class="tabs" id="staffTabsList"></div>
 
-          <!-- DEDICATED OCR DOCUMENT LANGUAGE / SCRIPT SELECTOR -->
-          <div style="background:#f8fafc;border:2px solid #0f2b48;border-radius:8px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-            <div>
-              <div style="font-weight:800;color:#0f2b48;font-size:14px;display:flex;align-items:center;gap:6px">
-                <span>🎯 Document Language for OCR:</span>
-              </div>
-              <div style="font-size:12px;color:#475569;margin-top:2px">Selecting the exact language yields highest accuracy; Auto-Detect works on mixed records.</div>
-            </div>
-            
-            <select id="docTargetLang" style="background:#ffffff;color:#0f2b48;border:2px solid #ea580c;border-radius:6px;font-weight:700;font-size:13px;padding:8px 14px;cursor:pointer;outline:none;min-width:280px">
-              <option value="auto">⚡ Auto-Detect (All 11 Languages)</option>
-              <option value="hin">1. हिंदी (Hindi / Khatauni / Khasra)</option>
-              <option value="tel">2. తెలుగు (Telugu / 1-B / Pahani / Patta)</option>
-              <option value="tam">3. தமிழ் (Tamil / Patta / Chitta)</option>
-              <option value="mar">4. मराठी (Marathi / 7/12 / Ferfar)</option>
-              <option value="guj">5. ગુજરાતી (Gujarati / 7/12 / 8-A)</option>
-              <option value="ben">6. বাংলা (Bengali / Khatian / Porcha)</option>
-              <option value="pan">7. ਪੰਜਾਬੀ (Punjabi / Jamabandi / Fard)</option>
-              <option value="kan">8. ಕನ್ನಡ (Kannada / RTC / Pahani)</option>
-              <option value="ori">9. ଓଡ଼ିଆ (Odia / RoR / Patta)</option>
-              <option value="urd">10. اردو (Urdu / Intiqal / Khasra)</option>
-              <option value="eng">11. English (Registry / Deeds)</option>
-            </select>
-          </div>
-
-          <div class="drop-zone" id="drop">
-            <div class="drop-icon">📁</div>
-            <div style="font-size:15px"><b>Drag and drop scanned record here</b> or click to browse from device</div>
-            <div style="color:var(--muted);font-size:12px;margin-top:6px">Scanned PDF, JPG, PNG, TIFF (Khatauni, Patta, Pahani, 7/12, Khasra, Jamabandi)</div>
-            <input type="file" id="fileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
-          </div>
-
-          <div style="margin-top:16px;border-top:1px dashed var(--gov-border);padding-top:14px">
-            <div style="font-size:12px;font-weight:700;color:var(--gov-navy);margin-bottom:8px">
-              🌟 Try Official Test Samples:
-            </div>
-            <div id="sampleBtns" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-          </div>
-
-          <div id="processing" class="hidden" style="margin-top:16px;padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;color:#166534;font-weight:600">
-            <span class="spinner" style="border-top-color:#166534"></span> Scanning &amp; extracting document fields... Please wait.
-          </div>
+      <div class="tab-content">
+        <!-- STAFF 1: DASHBOARD (ROLE ADAPTIVE) -->
+        <div id="staff-tab-dashboard" class="hidden">
+          <div id="staffStatsRow"></div>
         </div>
 
-        <div id="result" class="hidden">
-          <div class="card">
-            <div class="stepper-header">
-              <div class="step-indicators" id="uploadStepIndicators">
-                <div class="step-pill active" onclick="goToUploadStep(1)">
-                  <span class="step-num">1</span> 📋 Summary
-                </div>
-                <div class="step-pill" onclick="goToUploadStep(2)">
-                  <span class="step-num">2</span> 👤 Ownership
-                </div>
-                <div class="step-pill" onclick="goToUploadStep(3)">
-                  <span class="step-num">3</span> 🏛️ Location
-                </div>
-                <div class="step-pill" onclick="goToUploadStep(4)">
-                  <span class="step-num">4</span> 🔍 OCR &amp; Verification
-                </div>
-              </div>
-
-              <div style="display:flex;gap:6px">
-                <button class="arrow-nav-btn" id="btnUploadStepPrevTop" onclick="prevUploadStep()">◀ Previous</button>
-                <button class="arrow-nav-btn primary" id="btnUploadStepNextTop" onclick="nextUploadStep()">Next ▶</button>
-              </div>
-            </div>
-
-            <!-- STEP 1 -->
-            <div class="section-pane active" id="uploadStep1">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-                <div>
-                  <h3 style="margin:0;font-size:16px;color:var(--gov-navy)" id="resDocTitle">Extraction Summary</h3>
-                  <div style="font-size:12px;color:var(--muted);margin-top:2px" id="resMeta"></div>
-                </div>
-                <div id="verdictBox"></div>
-              </div>
-
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-                <div class="form-section-card">
-                  <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">📌 Record Highlights</h4>
-                  <table class="gov-table">
-                    <tbody id="quickHighlightsBody"></tbody>
-                  </table>
-                </div>
-                <div class="form-section-card">
-                  <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">⚠️ Validation Rules</h4>
-                  <div id="issuesBox"></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- STEP 2 -->
-            <div class="section-pane" id="uploadStep2">
-              <div class="form-section-card">
-                <h4 style="margin:0 0 14px;font-size:14px;color:var(--gov-navy)">👤 Ownership &amp; Land Particulars</h4>
-                <div class="field-grid" id="step2Fields"></div>
-              </div>
-            </div>
-
-            <!-- STEP 3 -->
-            <div class="section-pane" id="uploadStep3">
-              <div class="form-section-card">
-                <h4 style="margin:0 0 14px;font-size:14px;color:var(--gov-navy)">🏛️ Location, Tehsil, District &amp; Mutation Particulars</h4>
-                <div class="field-grid" id="step3Fields"></div>
-              </div>
-            </div>
-
-            <!-- STEP 4 -->
-            <div class="section-pane" id="uploadStep4">
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-                <div class="form-section-card">
-                  <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">🔍 Raw Computer Vision OCR Text</h4>
-                  <div class="raw-ocr-box" id="ocrPreview"></div>
-                </div>
-                <div class="form-section-card" id="verifySubmissionCard">
-                  <h4 style="margin:0 0 6px;font-size:13px;color:var(--gov-navy)">✍️ Human Verification &amp; Approval</h4>
-                  <p style="font-size:12px;color:var(--muted);margin-top:0">Officer corrections train the AI feedback pipeline in real-time.</p>
-                  <div style="margin-top:18px">
-                    <button class="btn saffron block" id="submitVerify">✓ Confirm &amp; Verify Record</button>
-                    <div id="verifyNote" style="margin-top:8px;font-size:12px;font-weight:600"></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="step-nav-footer">
-              <button class="arrow-nav-btn" id="btnUploadStepPrevBottom" onclick="prevUploadStep()">◀ Previous</button>
-              <div style="font-size:12px;color:var(--muted)" id="stepProgressIndicatorText">Step 1 / 4</div>
-              <button class="arrow-nav-btn primary" id="btnUploadStepNextBottom" onclick="nextUploadStep()">Next ▶</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- TAB 2: DASHBOARD -->
-      <div id="tab-dashboard" class="hidden">
-        <div class="stats-grid" id="statsRow"></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-          <div class="card">
-            <h3 class="card-title">Progress by State</h3>
-            <div id="stateChart" style="margin-top:12px"></div>
-          </div>
-          <div class="card">
-            <h3 class="card-title">Progress by District</h3>
-            <div id="districtChart" style="margin-top:12px"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- TAB 3: DOCUMENTS -->
-      <div id="tab-documents" class="hidden">
-        <div class="card" id="docListCard">
-          <div class="card-header">
-            <h3 class="card-title">🗂️ Registered Land Records</h3>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input type="text" id="docSearchInput" placeholder="🔍 Search ID, Owner, Village, Survey..." style="width:240px;padding:6px 10px;font-size:12px">
-              <button class="btn ghost" onclick="loadDocuments()" style="padding:6px 10px;font-size:12px">🔄 Refresh</button>
-            </div>
-          </div>
-
-          <table class="gov-table" id="docTable">
-            <thead>
-              <tr>
-                <th style="width:100px">Record ID</th>
-                <th>Document File</th>
-                <th>OCR Confidence</th>
-                <th>Status</th>
-                <th>Process</th>
-                <th>Key Details</th>
-                <th style="text-align:right">Actions</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-
-          <div class="pagination-container">
-            <div>Total Records: <b id="docTotalCount">0</b> &nbsp;|&nbsp; Page <span id="docCurrentPage">1</span> / <span id="docTotalPages">1</span></div>
-            <div style="display:flex;gap:6px">
-              <button class="arrow-nav-btn" id="btnDocPrevPage" onclick="prevDocPage()">◀ Previous Page</button>
-              <button class="arrow-nav-btn" id="btnDocNextPage" onclick="nextDocPage()">Next Page ▶</button>
-            </div>
-          </div>
-        </div>
-
-        <div id="docDetail" class="hidden card" style="margin-top:16px"></div>
-      </div>
-
-      <!-- TAB 4: LEARN -->
-      <div id="tab-learn" class="hidden">
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🧠 Learned OCR Corrections &amp; AI Feedback Loop</h3>
-            <span class="chip">Self-improving AI Model</span>
-          </div>
-          <p style="color:var(--muted);font-size:13px;margin-top:0">System captures verification officer overrides to fine-tune Indic OCR and field recognition models.</p>
-          <table class="gov-table" id="learnTable">
-            <thead>
-              <tr>
-                <th>Field Name</th>
-                <th>OCR Extracted</th>
-                <th>Verified Value</th>
-                <th>Times Applied</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- TAB 5: AUDIT LOG -->
-      <div id="tab-audit" class="hidden">
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🔐 Security &amp; Audit Trail</h3>
-            <button class="btn ghost" onclick="loadAudit()" style="padding:4px 10px;font-size:12px">🔄 Refresh</button>
-          </div>
-          <p style="color:var(--muted);font-size:13px;margin-top:0">All actions, modifications, and system logins are cryptographically logged for full compliance.</p>
-          <table class="gov-table" id="auditTable">
-            <thead>
-              <tr>
-                <th>Date &amp; Time</th>
-                <th>User</th>
-                <th>Action</th>
-                <th>Detail</th>
-                <th>Record ID</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- TAB 6: USERS -->
-      <div id="tab-users" class="hidden">
-        <div style="display:grid;grid-template-columns:340px 1fr;gap:20px">
+        <!-- STAFF 2: VERIFICATION QUEUE -->
+        <div id="staff-tab-queue" class="hidden">
           <div class="card">
             <div class="card-header">
-              <h3 class="card-title">➕ Add New Officer</h3>
+              <h3 class="card-title">⏳ Verification Queue (Awaiting Statutory Decision)</h3>
+              <button class="btn ghost" onclick="loadStaffQueue()" style="padding:4px 10px;font-size:12px">🔄 Refresh</button>
             </div>
-            <div class="formfield">
-              <label class="field-label">Full Name</label>
-              <input type="text" id="nuName" placeholder="e.g. Rajesh Sharma">
-            </div>
-            <div class="formfield">
-              <label class="field-label">Email Address</label>
-              <input type="email" id="nuEmail" placeholder="officer@landrec.gov.in">
-            </div>
-            <div class="formfield">
-              <label class="field-label">Initial Password</label>
-              <input type="password" id="nuPass" placeholder="Min. 8 characters">
-            </div>
-            <div class="formfield">
-              <label class="field-label">Assigned Role</label>
-              <select id="nuRole">
-                <option value="operator">Data Operator</option>
-                <option value="verifier">Verification Officer</option>
-                <option value="viewer">Viewer</option>
-                <option value="admin">Administrator</option>
-              </select>
-            </div>
-            <div id="nuError" class="errorbox hidden"></div>
-            <button class="btn block saffron" id="addUserBtn">Create User</button>
-          </div>
-
-          <div class="card">
-            <div class="card-header">
-              <h3 class="card-title">👥 Registered Officers</h3>
-            </div>
-            <table class="gov-table" id="userTable">
+            <table class="gov-table" id="staffQueueTable">
               <thead>
                 <tr>
-                  <th>Officer Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th>Actions</th>
+                  <th>Queue ID</th>
+                  <th>File</th>
+                  <th>Type</th>
+                  <th>Submitted By</th>
+                  <th>AI Conf</th>
+                  <th>Landowner</th>
+                  <th>Survey / Khasra</th>
+                  <th style="text-align:right">Action</th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
           </div>
         </div>
-      </div>
 
-      <!-- TAB 7: ACCOUNT -->
-      <div id="tab-account" class="hidden">
-        <div class="card" style="max-width:520px">
-          <div class="card-header">
-            <h3 class="card-title">⚙️ My Profile</h3>
-          </div>
-          <div class="formfield">
-            <label class="field-label">Name</label>
-            <input type="text" id="acName" disabled>
-          </div>
-          <div class="formfield">
-            <label class="field-label">Email</label>
-            <input type="email" id="acEmail" disabled>
-          </div>
-          <div class="formfield">
-            <label class="field-label">Assigned Role</label>
-            <input type="text" id="acRole" disabled>
-          </div>
-
-          <hr style="border:none;border-top:1px solid var(--gov-border);margin:20px 0">
-          <h4 style="margin:0 0 12px;font-size:14px;color:var(--gov-navy)">🔑 Change Password</h4>
-          <div class="formfield">
-            <label class="field-label">Current Password</label>
-            <input type="password" id="cpCurrent">
-          </div>
-          <div class="formfield">
-            <label class="field-label">New Password</label>
-            <input type="password" id="cpNew">
-          </div>
-          <div id="cpMsg" class="hidden"></div>
-          <button class="btn saffron" id="cpBtn">Update Password</button>
+        <!-- STAFF 3: DOCUMENT REVIEW CONSOLE -->
+        <div id="staff-tab-review" class="hidden">
+          <div class="card" id="staffReviewCard"></div>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <div class="floating-nav-pill">
-    <button class="floating-nav-btn" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Scroll to Top">▲</button>
-    <button class="floating-nav-btn" onclick="floatingPrevStep()" title="Back">◀</button>
-    <span style="font-size:11px;opacity:0.7">|</span>
-    <button class="floating-nav-btn" onclick="floatingNextStep()" title="Forward">▶</button>
-    <button class="floating-nav-btn" onclick="window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'})" title="Scroll to Bottom">▼</button>
-  </div>
+        <!-- STAFF 4: CROSS-DOCUMENT CONSISTENCY WORKSPACE -->
+        <div id="staff-tab-consistency" class="hidden">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">🔍 Cross-Document Consistency Audit (Multi-Record Chain of Title)</h3>
+                <p style="font-size:12px;color:var(--muted);margin:2px 0 0">
+                  Cross-verify factual consistency across multiple related records (Land Record + Mutation + Sale Deed + Tax Receipt).
+                </p>
+              </div>
+              <button class="btn ghost" onclick="loadPastConsistencyReports()" style="padding:4px 10px;font-size:12px">📜 Past Audit Reports</button>
+            </div>
 
-  <!-- FOOTER -->
-  <div class="gov-footer">
-    <div class="gov-footer-inner">
-      <div>
-        <!-- EXACT WINGED VECTORFLOW LOGO IN FOOTER -->
-        <div style="margin-bottom:8px">
-          <img class="vectorflow-logo vectorflow-logo-footer" src="./vectorflow.png" alt="Vectorflow">
+            <div style="background:#f8fafc;padding:14px;border:1px solid var(--gov-border);border-radius:6px;margin-bottom:16px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h4 style="margin:0;font-size:13px;color:var(--gov-navy)">Select Related Documents to Cross-Audit:</h4>
+                <input type="text" id="consistencySearchInput" placeholder="Filter records by ID or owner..." style="width:200px;font-size:11px;padding:3px 6px">
+              </div>
+              <div id="consistencyDocPickerList" style="max-height:180px;overflow-y:auto;border:1px solid #cbd5e1;background:#fff;border-radius:4px;padding:8px;display:grid;gap:6px"></div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+                <span style="font-size:12px;color:var(--muted)" id="consistencySelectedCount">Select at least 2 documents</span>
+                <button class="btn saffron" id="btnRunConsistencyCheck" onclick="executeCrossDocumentCheck()" disabled>Run Consistency Audit</button>
+              </div>
+            </div>
+
+            <div id="consistencyLoadingBox" class="hidden simple-spinner-box" style="margin-top:16px">
+              <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
+              <b>Cross-referencing parameters across selected records and evaluating title consistency...</b>
+            </div>
+
+            <div id="consistencyReportContainer" style="margin-top:16px"></div>
+          </div>
         </div>
-        <div style="font-size:11px;color:#94a3b8">Intelligent Land Record Digitization &amp; Multilingual Extraction Engine</div>
-        <div style="font-size:11px;margin-top:6px;color:#cbd5e1">Website Content Owned by Vector Flow</div>
-      </div>
-      <div>
-        <div class="footer-links">
-          <a href="javascript:void(0)" onclick="alert('Helpdesk Toll Free: 1800-111-555\nEmail: support@landrec.gov.in')">📞 Helpdesk</a>
-          <a href="javascript:void(0)" onclick="alert('Guidelines for Indian Government Websites (GIGW 3.0) Compliant')">GIGW 3.0</a>
-          <a href="javascript:void(0)" onclick="alert('System Version: v2.5 (11 Indic Languages Supported)')">v2.5</a>
+
+        <!-- STAFF 5: DOCUMENT COMPARISON CANVAS (DIFF) -->
+        <div id="staff-tab-compare" class="hidden">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">⚖️ Land Record Version Comparison &amp; Audit</h3>
+                <p style="font-size:12px;color:var(--muted);margin:2px 0 0">
+                  Compare two versions to identify ownership transfers, area variances, and survey modifications.
+                </p>
+              </div>
+              <button class="btn ghost" onclick="loadComparisonHistory()" style="padding:4px 10px;font-size:12px">📜 History</button>
+            </div>
+
+            <div style="display:flex;gap:14px;margin-bottom:16px">
+              <label style="font-size:13px;font-weight:700;cursor:pointer">
+                <input type="radio" name="compMode" value="existing" checked onchange="toggleCompMode(this.value)"> Compare Existing Records
+              </label>
+              <label style="font-size:13px;font-weight:700;cursor:pointer">
+                <input type="radio" name="compMode" value="upload" onchange="toggleCompMode(this.value)"> Upload Two New Scans
+              </label>
+            </div>
+
+            <div id="compModeExisting" style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:flex-end">
+              <div class="formfield" style="margin:0">
+                <label class="field-label">Version A (Previous / Old Document ID)</label>
+                <input type="text" id="staffDiffA" placeholder="e.g. 5cc810682c7f">
+              </div>
+              <div class="formfield" style="margin:0">
+                <label class="field-label">Version B (Current / New Document ID)</label>
+                <input type="text" id="staffDiffB" placeholder="e.g. 9b7a42fe11c0">
+              </div>
+              <button class="btn saffron" onclick="runStaffDiff()" style="height:38px">Run Comparison</button>
+            </div>
+
+            <div id="compModeUpload" class="hidden" style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:flex-end">
+              <div class="formfield" style="margin:0">
+                <label class="field-label">Old Document Scan (PDF/Image)</label>
+                <input type="file" id="compFileA" accept=".pdf,.png,.jpg,.jpeg">
+              </div>
+              <div class="formfield" style="margin:0">
+                <label class="field-label">New Document Scan (PDF/Image)</label>
+                <input type="file" id="compFileB" accept=".pdf,.png,.jpg,.jpeg">
+              </div>
+              <button class="btn saffron" onclick="runStaffDiffFiles()" style="height:38px">Scan &amp; Compare</button>
+            </div>
+
+            <div id="compSpinner" class="hidden simple-spinner-box" style="margin-top:16px">
+              <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
+              <b>Processing OCR, mapping structured parameters, and analyzing variances with AI...</b>
+            </div>
+
+            <div id="staffDiffResults" style="margin-top:18px"></div>
+          </div>
         </div>
-        <div style="font-size:11px;margin-top:8px;color:#64748b">Last Updated: September 2026</div>
+
+        <!-- STAFF 6: ALL MASTER RECORDS SEARCH -->
+        <div id="staff-tab-records" class="hidden">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">🗂️ All Master Records</h3>
+              <input type="text" id="staffSearchInput" placeholder="Search ID, Owner, Village, Type..." style="width:260px;padding:6px 10px;font-size:12px">
+            </div>
+            <table class="gov-table" id="staffRecordsTable">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>File</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Conf</th>
+                  <th>Details</th>
+                  <th style="text-align:right">Action</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- STAFF 7: AI / OCR ANALYTICS & FEEDBACK -->
+        <div id="staff-tab-learn" class="hidden">
+          <div class="card">
+            <div class="card-header"><h3 class="card-title">🧠 Learned OCR Corrections &amp; AI Accuracy</h3></div>
+            <p style="font-size:12px;color:var(--muted);margin-top:0">Every human verification correction dynamically refines few-shot prompting context for upcoming document scans.</p>
+            <table class="gov-table" id="staffLearnTable">
+              <thead><tr><th>Field</th><th>OCR Read</th><th>Verified Value</th><th>Times Learned</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- STAFF 8: AUDIT LOG (ADMIN) -->
+        <div id="staff-tab-audit" class="hidden">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">🔐 Cryptographic System Audit Trail</h3>
+              <button class="btn ghost" onclick="loadStaffAudit()" style="padding:4px 10px;font-size:12px">🔄 Refresh</button>
+            </div>
+            <table class="gov-table" id="staffAuditTable">
+              <thead><tr><th>Timestamp</th><th>User</th><th>Action</th><th>Details</th><th>Doc ID</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- STAFF 9: USER MANAGEMENT (ADMIN) -->
+        <div id="staff-tab-users" class="hidden">
+          <div style="display:grid;grid-template-columns:320px 1fr;gap:16px">
+            <div class="card">
+              <div class="card-header"><h3 class="card-title">Create Official User</h3></div>
+              <div class="formfield"><label class="field-label">Name</label><input type="text" id="staffNuName"></div>
+              <div class="formfield"><label class="field-label">Email</label><input type="email" id="staffNuEmail"></div>
+              <div class="formfield"><label class="field-label">Password</label><input type="password" id="staffNuPass"></div>
+              <div class="formfield">
+                <label class="field-label">Role</label>
+                <select id="staffNuRole">
+                  <option value="VIEWER">Viewer</option>
+                  <option value="DATA_OFFICER">Data Officer</option>
+                  <option value="VERIFICATION_OFFICER">Verification Officer</option>
+                  <option value="ADMIN">Administrator</option>
+                </select>
+              </div>
+              <button class="btn block saffron" onclick="staffCreateUser()">Create Account</button>
+            </div>
+            <div class="card">
+              <div class="card-header"><h3 class="card-title">Active Personnel</h3></div>
+              <table class="gov-table" id="staffUsersTable">
+                <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- STAFF 10: SETTINGS & PROFILE -->
+        <div id="staff-tab-account" class="hidden">
+          <div class="card" style="max-width:480px">
+            <div class="card-header"><h3 class="card-title">Account &amp; System Settings</h3></div>
+            <div class="formfield"><label class="field-label">Officer Name</label><input type="text" id="staffAcName" disabled></div>
+            <div class="formfield"><label class="field-label">Official Email</label><input type="email" id="staffAcEmail" disabled></div>
+            <div class="formfield"><label class="field-label">Role</label><input type="text" id="staffAcRole" disabled></div>
+            <hr style="margin:16px 0;border:none;border-top:1px solid #cbd5e1">
+            <h4 style="margin:0 0 10px;font-size:13px">Change Access Password</h4>
+            <div class="formfield"><input type="password" id="staffCpCurrent" placeholder="Current Password"></div>
+            <div class="formfield"><input type="password" id="staffCpNew" placeholder="New Password"></div>
+            <div id="staffCpMsg" class="hidden"></div>
+            <button class="btn saffron" onclick="staffChangePassword()">Update Password</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
-<script>
-function changeLanguage(lang) {
-  const authSelect = document.getElementById('authLangSelect');
-  const appSelect = document.getElementById('appLangSelect');
-  if (authSelect) authSelect.value = lang;
-  if (appSelect) appSelect.value = lang;
-  localStorage.setItem('dilrmp_ui_lang', lang);
-  if (lang === 'ur') {
-    document.documentElement.setAttribute('dir', 'rtl');
-  } else {
-    document.documentElement.setAttribute('dir', 'ltr');
-  }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const saved = localStorage.getItem('dilrmp_ui_lang') || 'en';
-  changeLanguage(saved);
-});
-</script>
-
-<script src="js/app.js?v=11"></script>
+<script src="js/app.js?v=19"></script>
 </body>
 </html>
