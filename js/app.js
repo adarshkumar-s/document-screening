@@ -80,7 +80,11 @@ function routePortal(){
   const isSimple = (role === ROLE_VIEWER || role === ROLE_DATA_OFFICER);
   $('#simplePortal').classList.toggle('hidden', !isSimple);
   $('#staffPortal').classList.toggle('hidden', isSimple);
-  $('#portalBadge').textContent = isSimple ? 'Simple Portal' : 'Advanced Staff Portal';
+  
+  if (role === ROLE_VIEWER) $('#portalBadge').textContent = 'Public Records Portal';
+  else if (role === ROLE_DATA_OFFICER) $('#portalBadge').textContent = 'Data Intake Portal';
+  else if (role === ROLE_VERIFICATION_OFFICER) $('#portalBadge').textContent = 'Verification Officer Console';
+  else $('#portalBadge').textContent = 'System Administration Console';
 
   if(isSimple) setupSimplePortal(role);
   else setupStaffPortal(role);
@@ -184,9 +188,8 @@ function setupSimplePortal(role){
 
   if(role === ROLE_VIEWER){
     navBox.innerHTML = `
-      <button class="simple-nav-btn active" data-spane="s-view-home">🏠 Home</button>
-      <button class="simple-nav-btn" data-spane="s-view-home" onclick="$('#simpleSearchInput').focus()">🔍 Search Records</button>
-      <button class="simple-nav-btn" data-spane="s-view-home" onclick="loadSimpleDocuments()">🗂️ Available Records</button>
+      <button class="simple-nav-btn active" data-spane="s-view-home">🏠 Search Records</button>
+      <button class="simple-nav-btn" data-spane="s-view-home" onclick="loadSimpleDocuments()">🗂️ All Approved Parcels</button>
     `;
     switchSimpleTab('s-view-home');
     loadSimpleDocuments();
@@ -194,7 +197,7 @@ function setupSimplePortal(role){
     $('#doWelcomeName').textContent = me.full_name;
     navBox.innerHTML = `
       <button class="simple-nav-btn active" data-spane="s-do-dash">🏠 Dashboard</button>
-      <button class="simple-nav-btn" data-spane="s-do-newdoc" onclick="openSimpleNewDoc()">➕ New Document</button>
+      <button class="simple-nav-btn" data-spane="s-do-newdoc" onclick="openSimpleNewDoc()">➕ New Document Intake</button>
       <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('all')">📑 My Submissions</button>
       <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('DRAFT')">📝 Drafts</button>
       <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">↩️ Returned Records</button>
@@ -230,14 +233,38 @@ async function loadSimpleDocuments(){
 
 function doSimpleSearch(){
   const q = ($('#simpleSearchInput').value || '').toLowerCase().trim();
+  const vFilter = ($('#viewFilterVillage')?.value || '').toLowerCase().trim();
+  const dFilter = ($('#viewFilterDistrict')?.value || '').toLowerCase().trim();
+  const tFilter = ($('#viewFilterType')?.value || '').trim();
+
   const filtered = simpleDocsCache.filter(doc=>{
-    if(!q) return true;
     const f = doc.fields || {};
-    const text = `${doc.id} ${doc.filename} ${doc.doc_type} ${doc.status} ${f.owner_name?.value} ${f.khasra_number?.value} ${f.village?.value}`.toLowerCase();
-    return text.includes(q);
+    const owner = (f.owner_name?.value || '').toLowerCase();
+    const khasra = (f.khasra_number?.value || f.survey_number?.value || '').toLowerCase();
+    const village = (f.village?.value || '').toLowerCase();
+    const district = (f.district?.value || '').toLowerCase();
+    const docId = String(doc.id).toLowerCase();
+
+    const matchesQ = !q || (owner.includes(q) || khasra.includes(q) || village.includes(q) || district.includes(q) || docId.includes(q));
+    const matchesV = !vFilter || village.includes(vFilter);
+    const matchesD = !dFilter || district.includes(dFilter);
+    const matchesT = !tFilter || doc.doc_type === tFilter;
+
+    return matchesQ && matchesV && matchesD && matchesT;
   });
+
   renderSimpleTable(filtered);
 }
+
+function applyViewerFilters(){ doSimpleSearch(); }
+function resetViewerFilters(){
+  if($('#viewFilterVillage')) $('#viewFilterVillage').value = '';
+  if($('#viewFilterDistrict')) $('#viewFilterDistrict').value = '';
+  if($('#viewFilterType')) $('#viewFilterType').value = '';
+  if($('#simpleSearchInput')) $('#simpleSearchInput').value = '';
+  renderSimpleTable(simpleDocsCache);
+}
+
 if($('#simpleSearchInput')){
   $('#simpleSearchInput').oninput = doSimpleSearch;
 }
@@ -248,7 +275,7 @@ function renderSimpleTable(docs){
   $('#simpleRecordCount').textContent = `${docs.length} records`;
 
   if(!docs.length){
-    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">No registered land records found.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No registered land records found matching current query.</td></tr>';
     return;
   }
 
@@ -257,9 +284,10 @@ function renderSimpleTable(docs){
     const tr = el('tr');
     tr.innerHTML = `
       <td><span class="mono">#${doc.id}</span></td>
-      <td><b>${escapeHtml(f.owner_name?.value || '—')}</b><br><span style="font-size:10px;color:var(--muted)">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
+      <td><b>${escapeHtml(f.owner_name?.value || '—')}</b></td>
       <td>${escapeHtml(f.khasra_number?.value || f.survey_number?.value || '—')}</td>
-      <td>${escapeHtml(f.village?.value || '—')}</td>
+      <td>${escapeHtml(f.village?.value || '—')}, ${escapeHtml(f.district?.value || '—')}</td>
+      <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
       <td>${getStatusBadge(doc.status)}</td>
       <td style="text-align:right">
         <button class="btn ghost" onclick="openSimpleDetail('${doc.id}')" style="padding:4px 10px;font-size:12px">View Details</button>
@@ -285,7 +313,7 @@ async function openSimpleDetail(docId){
     });
 
     const notesBox = $('#simpleDetailNotesBox');
-    if(d.reviewer_comments){
+    if(d.reviewer_comments && me.role !== ROLE_VIEWER){
       notesBox.classList.remove('hidden');
       notesBox.innerHTML = `<div class="issue-box warning"><b>Official Reviewer Notes:</b> ${escapeHtml(d.reviewer_comments)}</div>`;
     } else {
@@ -303,11 +331,11 @@ function closeSimpleDetail(){
 
 async function loadDataOfficerCounts(){
   try{
-    const d = await api('/api/documents/my-records');
-    const docs = d.documents || [];
-    $('#doStatDrafts').textContent = docs.filter(x=>x.status === STATUS_DRAFT).length;
-    $('#doStatReturned').textContent = docs.filter(x=>x.status === STATUS_RETURNED || x.status === STATUS_REJECTED).length;
-    $('#doStatSubmissions').textContent = docs.length;
+    const d = await api('/api/dashboard');
+    $('#doStatDrafts').textContent = d.drafts || 0;
+    $('#doStatReturned').textContent = d.returned || 0;
+    $('#doStatPending').textContent = d.pending_verification || 0;
+    $('#doStatSubmissions').textContent = d.total_submissions || 0;
   }catch(e){}
 }
 
@@ -326,8 +354,11 @@ async function loadMyRecordsSimple(){
       docs = docs.filter(x=>x.status === STATUS_DRAFT);
       $('#simpleListTitle').textContent = 'My Drafts';
     } else if(simpleActiveFilter === STATUS_RETURNED){
-      docs = docs.filter(x=>x.status === STATUS_RETURNED || x.status === STATUS_REJECTED);
-      $('#simpleListTitle').textContent = 'Returned Records (Needs Correction)';
+      docs = docs.filter(x=>x.status === STATUS_RETURNED);
+      $('#simpleListTitle').textContent = 'Returned Records (Requires Officer Fix)';
+    } else if(simpleActiveFilter === STATUS_PENDING_VERIFICATION){
+      docs = docs.filter(x=>x.status === STATUS_PENDING_VERIFICATION);
+      $('#simpleListTitle').textContent = 'Submissions Pending Verification';
     } else {
       $('#simpleListTitle').textContent = 'All My Submissions';
     }
@@ -335,7 +366,7 @@ async function loadMyRecordsSimple(){
     const tb = $('#simpleSubmissionsTable tbody');
     tb.innerHTML = '';
     if(!docs.length){
-      tb.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No records in this folder.</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No records found in this queue.</td></tr>`;
       return;
     }
 
@@ -439,9 +470,13 @@ $('#simpleBtnSubmit').onclick = async()=>{
     await api('/api/documents/' + currentEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
     await api('/api/documents/' + currentEditingDocId + '/submit', {method:'POST'});
     alert('Document successfully submitted for verification.');
-    setSimpleFilter('all');
+    setSimpleFilter('PENDING_VERIFICATION');
   }catch(e){ alert(e.message); }
 };
+
+// ==========================================================================
+// ADVANCED STAFF PORTAL (VERIFICATION OFFICER & ADMIN)
+// ==========================================================================
 
 function setupStaffPortal(role){
   const tabsList = $('#staffTabsList');
@@ -453,25 +488,26 @@ function setupStaffPortal(role){
   let tabs = [];
   if(isVerifier){
     tabs = [
-      ['dashboard', '📊 Dashboard'],
+      ['dashboard', '📊 Verification Console'],
+      ['upload', '➕ Upload & Verify'],
       ['queue', '⏳ Verification Queue'],
-      ['consistency', '🔍 Cross-Doc Consistency'],
+      ['consistency', '🔍 Chain of Title'],
       ['compare', '⚖️ Comparison'],
-      ['records', '🗂️ All Records'],
+      ['records', '🗂️ All Master Records'],
       ['learn', '🧠 AI Analytics'],
       ['account', '⚙️ Settings']
     ];
   } else if(isAdmin){
     tabs = [
-      ['dashboard', '📊 Dashboard'],
-      ['upload', '➕ Upload Document'],
-      ['queue', '⏳ Verification'],
+      ['dashboard', '📊 Executive Overview'],
+      ['upload', '➕ Ingest Document'],
+      ['queue', '⏳ Statutory Queue'],
       ['consistency', '🔍 Cross-Doc Consistency'],
-      ['records', '🗂️ Records'],
-      ['compare', '⚖️ Comparison'],
-      ['learn', '🧠 AI Analytics'],
-      ['users', '👥 Personnel'],
-      ['audit', '🔐 Audit Logs'],
+      ['records', '🗂️ Master Repository'],
+      ['compare', '⚖️ Comparison Audit'],
+      ['learn', '🧠 AI Context Learning'],
+      ['users', '👥 Personnel & RBAC'],
+      ['audit', '🔐 Cryptographic Audit'],
       ['account', '⚙️ Settings']
     ];
   }
@@ -516,19 +552,18 @@ async function loadStaffDashboard(){
   try{
     const d = await api('/api/dashboard');
     
-    // 1. VERIFICATION OFFICER DASHBOARD (EXACT METRICS)
     if(d.portal_type === 'VERIFICATION_OFFICER'){
       const verifierMetrics = [
         ['Pending Verification', d.pending_verification, 'var(--gov-navy)', '⏳'],
-        ['High Priority', d.high_priority, 'var(--err)', '🔥'],
+        ['High Priority / Flagged', d.high_priority, 'var(--err)', '🚩'],
         ['Approved Today', d.approved_today, 'var(--gov-green)', '✓'],
-        ['Returned', d.returned, '#d97706', '↩️']
+        ['Returned to Data Officer', d.returned, '#d97706', '↩️']
       ];
 
       row.innerHTML = `
         <div style="margin-bottom:14px">
-          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">Verification Officer Operational Console</h3>
-          <p style="margin:0;font-size:12px;color:var(--muted)">Pending statutory verification queues and today's approvals.</p>
+          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">Verification Officer Statutory Console</h3>
+          <p style="margin:0;font-size:12px;color:var(--muted)">Review cadastral queues, compare deed lineages, and execute statutory certifications.</p>
         </div>
         <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:14px">
           ${verifierMetrics.map(([lbl, n, c, icon])=>`
@@ -545,13 +580,12 @@ async function loadStaffDashboard(){
       return;
     }
 
-    // 2. ADMIN DASHBOARD (EXACT METRICS & ANALYTICS)
     if(d.portal_type === 'ADMIN'){
       const coreMetrics = [
-        ['Total Documents', Number(d.total_documents).toLocaleString(), 'var(--gov-navy)'],
-        ['Processed', Number(d.processed).toLocaleString(), '#2b6cb0'],
+        ['Total Ingested Documents', Number(d.total_documents).toLocaleString(), 'var(--gov-navy)'],
+        ['Fully Processed', Number(d.processed).toLocaleString(), '#2b6cb0'],
         ['Pending Verification', Number(d.pending_verification).toLocaleString(), 'var(--warn)'],
-        ['Approved', Number(d.approved).toLocaleString(), 'var(--gov-green)']
+        ['Approved & Certified', Number(d.approved).toLocaleString(), 'var(--gov-green)']
       ];
 
       const performanceMetrics = [
@@ -560,18 +594,10 @@ async function loadStaffDashboard(){
         ['Human Correction Rate', d.human_correction_rate, '#7c3aed', '✍️']
       ];
 
-      const langItems = Object.entries(d.documents_by_language || {}).map(([l, cnt])=>
-        `<span class="chip" style="margin:3px;font-size:12px">${l}: <b>${cnt}</b></span>`
-      ).join('') || '<span class="muted">No multilingual documents scanned yet</span>';
-
-      const distItems = Object.entries(d.documents_by_district || {}).map(([dist, cnt])=>
-        `<span class="chip" style="margin:3px;background:#e2e8f0;color:#0f2b48;font-size:12px">${dist}: <b>${cnt}</b></span>`
-      ).join('') || '<span class="muted">No district distributions recorded</span>';
-
       row.innerHTML = `
         <div style="margin-bottom:14px">
-          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">System Administrator Master Overview</h3>
-          <p style="margin:0;font-size:12px;color:var(--muted)">Executive throughput, AI/OCR accuracy indicators, and regional volume.</p>
+          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">Administrator Master Control Console</h3>
+          <p style="margin:0;font-size:12px;color:var(--muted)">Executive throughput, AI/OCR accuracy indicators, and cadastral audit trail.</p>
         </div>
 
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:14px;margin-bottom:14px">
@@ -593,26 +619,6 @@ async function loadStaffDashboard(){
               <div style="font-size:12px;color:var(--muted);font-weight:600;margin-top:4px">${lbl}</div>
             </div>
           `).join('')}
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-          <div class="card" style="margin:0;padding:16px">
-            <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">🌐 Documents by Language</h4>
-            <div style="display:flex;flex-wrap:wrap">${langItems}</div>
-          </div>
-          <div class="card" style="margin:0;padding:16px">
-            <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">🏛️ Documents by District</h4>
-            <div style="display:flex;flex-wrap:wrap">${distItems}</div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top:16px;padding:16px">
-          <h4 style="margin:0 0 8px;font-size:13px;color:var(--gov-navy)">📈 Processing Statistics</h4>
-          <div style="display:flex;gap:24px;flex-wrap:wrap;font-size:13px">
-            <div>Total Ingested: <b>${d.processing_statistics.total}</b></div>
-            <div>Completion Throughput Rate: <b>${d.processing_statistics.processed_rate}</b></div>
-            <div>Active Statutory Verifiers: <b>${d.processing_statistics.active_verifiers}</b></div>
-          </div>
         </div>
       `;
       return;
@@ -690,7 +696,7 @@ if(btnStaffSub){
     try{
       await api('/api/documents/' + currentStaffEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
       await api('/api/documents/' + currentStaffEditingDocId + '/submit', {method:'POST'});
-      alert('Document successfully submitted for verification queue.');
+      alert('Document successfully submitted to verification queue.');
       switchStaffTab('queue');
     }catch(e){ alert(e.message); }
   };
@@ -713,7 +719,7 @@ async function loadStaffQueue(){
       tr.innerHTML = `
         <td><span class="mono">#${q.id}</span></td>
         <td><b>${escapeHtml(q.filename)}</b></td>
-        <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
+        <td><span class="chip" style="font-size:10px">${escapeHtml(q.doc_type || 'Land Record')}</span></td>
         <td>${escapeHtml(q.uploaded_by)}</td>
         <td><span class="pill ${q.mean_conf>=75?'valid':'review'}">${q.mean_conf}%</span></td>
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
@@ -744,7 +750,7 @@ async function openStaffReview(id){
     let html = `
       <div class="card-header">
         <div>
-          <h3 class="card-title">Verification Console: Record #${d.id}</h3>
+          <h3 class="card-title">Statutory Verification Console: Record #${d.id}</h3>
           <div style="font-size:12px;color:var(--muted)">File: ${escapeHtml(d.filename)} | Type: ${escapeHtml(d.doc_type || 'Land Record')} | Submitter: ${escapeHtml(d.uploaded_by)} | Status: ${d.status}</div>
         </div>
         <button class="btn ghost" onclick="switchStaffTab('queue')">✕ Back to Queue</button>
@@ -753,7 +759,7 @@ async function openStaffReview(id){
       <div style="background:#f8fafc;border:2px solid var(--gov-navy);border-radius:8px;padding:14px;margin-top:14px">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div style="font-size:13px;font-weight:800;color:var(--gov-navy);display:flex;align-items:center;gap:6px">
-            <span>🤖 AI Decision Support Advisory Envelope</span>
+            <span>🤖 AI Cadastral Advisory Envelope</span>
           </div>
           <span style="font-size:11px;font-weight:800;padding:3px 8px;border-radius:4px;${recStyle}">
             ${ai.recommendation || 'REVIEW_REQUIRED'}
@@ -772,7 +778,7 @@ async function openStaffReview(id){
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
         <div>
-          <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Deterministic Field Validation &amp; Overrides</h4>
+          <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Deterministic Field Validation &amp; Officer Overrides</h4>
           <div class="field-grid" style="grid-template-columns:1fr 1fr">
     `;
 
@@ -801,10 +807,10 @@ async function openStaffReview(id){
 
           <div style="margin-top:16px;background:#f8fafc;padding:12px;border:1px solid var(--gov-border);border-radius:6px">
             <label class="field-label">Official Review Decision &amp; Statutory Audit Comments</label>
-            <textarea id="staffReviewComments" placeholder="Enter reason if returning or rejecting..." style="height:50px"></textarea>
+            <textarea id="staffReviewComments" placeholder="Enter mandatory justification if returning or rejecting..." style="height:50px"></textarea>
             <div style="display:flex;gap:10px;margin-top:10px">
               <button class="btn ok" style="background:var(--gov-green);flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'approve')">✓ Approve (APPROVED)</button>
-              <button class="btn ghost" style="color:var(--warn);border-color:var(--warn);flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'return')">↩ Return to Officer</button>
+              <button class="btn ghost" style="color:var(--warn);border-color:var(--warn);flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'return')">↩ Return to Data Officer</button>
               <button class="btn danger" style="flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'reject')">✕ Reject Record</button>
             </div>
           </div>
@@ -821,7 +827,7 @@ async function staffExecuteDecision(id, action){
   const comments = $('#staffReviewComments')?.value.trim() || '';
   
   if((action === 'reject' || action === 'return') && !comments){
-    alert('Please enter statutory reviewer comments/reasons before returning or rejecting.');
+    alert('Please enter statutory reviewer comments before returning or rejecting.');
     $('#staffReviewComments').focus();
     return;
   }
@@ -897,10 +903,10 @@ function renderDiffResults(data){
   let html = `
     <div style="display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border:1px solid var(--gov-border);border-radius:8px;padding:12px 16px;margin-bottom:16px">
       <div>
-        <span style="font-weight:700;color:var(--gov-navy)">Session #${escapeHtml(data.comparison_id)}</span>
+        <span style="font-weight:700;color:var(--gov-navy)">Comparison Session #${escapeHtml(data.comparison_id)}</span>
         <div style="font-size:12px;color:var(--muted);margin-top:2px">
-          <b>Doc A (Previous):</b> #${escapeHtml(data.doc_a.id)} (${escapeHtml(data.doc_a.filename)}) &nbsp;|&nbsp;
-          <b>Doc B (Current):</b> #${escapeHtml(data.doc_b.id)} (${escapeHtml(data.doc_b.filename)})
+          <b>Doc A (Predecessor):</b> #${escapeHtml(data.doc_a.id)} (${escapeHtml(data.doc_a.filename)}) &nbsp;|&nbsp;
+          <b>Doc B (Successor):</b> #${escapeHtml(data.doc_b.id)} (${escapeHtml(data.doc_b.filename)})
         </div>
       </div>
       <div>
@@ -920,15 +926,15 @@ function renderDiffResults(data){
   `;
 
   if(changed.length > 0){
-    html += `<h4 style="margin:16px 0 8px;color:#991b1b">⚠ DETECTED ALTERATIONS (${changed.length})</h4><div style="display:grid;gap:10px;margin-bottom:20px">`;
+    html += `<h4 style="margin:16px 0 8px;color:#991b1b">⚠ DETECTED VARIATIONS (${changed.length})</h4><div style="display:grid;gap:10px;margin-bottom:20px">`;
     changed.forEach(c=>{
       html += `
         <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:12px">
           <div style="display:flex;justify-content:space-between;align-items:center"><b style="color:var(--gov-navy);font-size:13px">${escapeHtml(c.label)}</b><span class="pill rejected" style="font-size:10px">CHANGED</span></div>
           <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-top:8px">
-            <div style="background:#ffffff;padding:8px 12px;border:1px solid #cbd5e1;border-radius:4px"><div style="font-size:11px;color:var(--muted)">Previous</div><div style="font-weight:700">${escapeHtml(c.old_value)}</div></div>
+            <div style="background:#ffffff;padding:8px 12px;border:1px solid #cbd5e1;border-radius:4px"><div style="font-size:11px;color:var(--muted)">Previous Version</div><div style="font-weight:700">${escapeHtml(c.old_value)}</div></div>
             <div style="font-size:18px;color:#991b1b;font-weight:800">→</div>
-            <div style="background:#ffffff;padding:8px 12px;border:1px solid #f87171;border-radius:4px"><div style="font-size:11px;color:#991b1b">Current</div><div style="font-weight:700;color:#991b1b">${escapeHtml(c.new_value)}</div></div>
+            <div style="background:#ffffff;padding:8px 12px;border:1px solid #f87171;border-radius:4px"><div style="font-size:11px;color:#991b1b">Current Version</div><div style="font-weight:700;color:#991b1b">${escapeHtml(c.new_value)}</div></div>
           </div>
         </div>
       `;
@@ -1045,7 +1051,7 @@ function renderConsistencyReport(data){
       </div>
 
       <div style="background:#fffbeb;border:1px solid #fde68a;border-left:5px solid #d97706;border-radius:6px;padding:14px;margin-bottom:18px">
-        <div style="font-size:13px;font-weight:800;color:#92400e">🤖 AI Chain of Title &amp; Consistency Assessment:</div>
+        <div style="font-size:13px;font-weight:800;color:#92400e">🤖 AI Chain of Title Assessment:</div>
         <div style="font-size:13px;color:#78350f;margin-top:6px;line-height:1.6;white-space:pre-line">${escapeHtml(data.ai_explanation || 'No discrepancies flagged.')}</div>
       </div>
 

@@ -102,6 +102,11 @@ STATUS_APPROVED = "APPROVED"
 STATUS_RETURNED = "RETURNED_TO_DATA_OFFICER"
 STATUS_REJECTED = "REJECTED"
 
+VALID_STATUSES = {
+    STATUS_DRAFT, STATUS_PROCESSING, STATUS_PENDING_VERIFICATION,
+    STATUS_APPROVED, STATUS_RETURNED, STATUS_REJECTED
+}
+
 SUPPORTED_LANGUAGES = [
     {"code": "eng", "name": "English"},
     {"code": "hin", "name": "Hindi"},
@@ -303,45 +308,6 @@ def init_db():
                         pass
                 print(f"[TABLE INIT WARNING] {e}")
 
-        migrations = [
-            "ALTER TABLE documents ADD COLUMN doc_type TEXT NOT NULL DEFAULT 'Land Record'",
-            "ALTER TABLE documents ADD COLUMN uploaded_by TEXT NOT NULL DEFAULT 'SYSTEM'",
-            "ALTER TABLE documents ADD COLUMN reviewer_comments TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE documents ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
-            "ALTER TABLE documents ADD COLUMN ai_decision_support TEXT NOT NULL DEFAULT '{}'",
-            "ALTER TABLE documents ADD COLUMN cleaned_ocr_text TEXT NOT NULL DEFAULT ''"
-        ]
-        for mig in migrations:
-            try:
-                if db.is_pg:
-                    db.execute("SAVEPOINT mig_sp;")
-                db.execute(mig)
-                if db.is_pg:
-                    db.execute("RELEASE SAVEPOINT mig_sp;")
-            except Exception:
-                if db.is_pg:
-                    try:
-                        db.execute("ROLLBACK TO SAVEPOINT mig_sp;")
-                    except Exception:
-                        pass
-
-        try:
-            if db.is_pg:
-                db.execute("SAVEPOINT update_sp;")
-            db.execute("UPDATE documents SET status='DRAFT' WHERE LOWER(status)='draft'")
-            db.execute("UPDATE documents SET status='PENDING_VERIFICATION' WHERE LOWER(status) IN ('pending_review', 'pending')")
-            db.execute("UPDATE documents SET status='APPROVED' WHERE LOWER(status) IN ('verified', 'valid', 'approved')")
-            db.execute("UPDATE documents SET status='RETURNED_TO_DATA_OFFICER' WHERE LOWER(status) IN ('sent_back', 'returned')")
-            db.execute("UPDATE documents SET status='REJECTED' WHERE LOWER(status)='rejected'")
-            if db.is_pg:
-                db.execute("RELEASE SAVEPOINT update_sp;")
-        except Exception:
-            if db.is_pg:
-                try:
-                    db.execute("ROLLBACK TO SAVEPOINT update_sp;")
-                except Exception:
-                    pass
-
         try:
             if db.is_pg:
                 db.execute("SAVEPOINT admin_sp;")
@@ -447,25 +413,6 @@ FIELD_KEYS = (
     "district", "state", "land_class", "ownership_type",
     "mutation_no", "registration_no", "khatauni_year"
 )
-
-FIELD_LABELS = {
-    "owner_name": ["Record Holder Name", "Landowner Name", "Owner Name", "भूमि स्वामी", "खातेदार"],
-    "father_name": ["Father's Name", "Father Name", "Husband Name", "पिता का नाम"],
-    "survey_number": ["Survey Number", "Survey No", "सर्वे नंबर"],
-    "khasra_number": ["Khasra Number", "Khasra No", "खसरा नंबर"],
-    "khata_number": ["Khata Number", "Khata No", "खाता नंबर"],
-    "plot_number": ["Plot Number", "Plot No", "प्लॉट नंबर"],
-    "area": ["Plot Area", "Land Area", "Area", "क्षेत्रफल", "रकबा"],
-    "village": ["Village Name", "Village", "Gram", "ग्राम"],
-    "tehsil": ["Tehsil", "Taluk", "Mandal", "तहसील"],
-    "district": ["District Name", "District", "जिला"],
-    "state": ["State Name", "State", "राज्य"],
-    "land_class": ["Land Classification", "Land Class", "भूमि का प्रकार"],
-    "ownership_type": ["Ownership Type", "स्वामित्व प्रकार"],
-    "mutation_no": ["Mutation Number", "Mutation No", "नामांतरण संख्या"],
-    "registration_no": ["Registration Number", "Registration No", "पंजीकरण संख्या"],
-    "khatauni_year": ["Khatauni Year", "Fasli Year", "खतौनी वर्ष", "वर्ष"]
-}
 
 def clean_ocr_image(image: Image.Image) -> Image.Image:
     img = ImageOps.exif_transpose(image).convert("L")
@@ -913,7 +860,7 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
             "Recommendation: Verification officer must cross-reference root revenue registers before statutory endorsement."
         )
 
-# FastAPI Routes
+# FastAPI Request Models
 class LoginReq(BaseModel): email: str; password: str
 class SignupReq(BaseModel): full_name: str; email: str; password: str; role: Optional[str] = ROLE_DATA_OFFICER
 class AddUserReq(BaseModel): full_name: str; email: str; password: str; role: str = ROLE_DATA_OFFICER
@@ -1004,7 +951,6 @@ def update_user_role(target_uid: str, req: UpdateRoleReq, user: dict = Depends(r
             raise HTTPException(status_code=404, detail="Target user not found.")
 
         old_role = target_user["role"]
-        # Increment version so existing JWT tokens are immediately invalidated
         db.execute("UPDATE users SET role=?, version=version+1 WHERE id=?", (new_role, target_uid))
 
     log_audit(
@@ -1025,8 +971,11 @@ def update_user_role(target_uid: str, req: UpdateRoleReq, user: dict = Depends(r
 
 @app.delete("/api/users/{target_uid}")
 def delete_user(target_uid: str, user: dict = Depends(require_roles(ROLE_ADMIN))):
+    if str(target_uid) == str(user["id"]):
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own account.")
     with get_db() as db:
         db.execute("UPDATE users SET is_active=0 WHERE id=?", (target_uid,))
+    log_audit(user["full_name"], "DEACTIVATE_USER", f"Deactivated user ID {target_uid}", target_uid)
     return {"status": "ok"}
 
 @app.get("/api/audit")
@@ -1050,8 +999,14 @@ def get_samples():
     os.makedirs(samples_dir, exist_ok=True)
     return {"samples": sorted([f for f in os.listdir(samples_dir) if not f.startswith(".")])}
 
+# UPLOAD & INTAKE: Accessible by DATA_OFFICER, VERIFICATION_OFFICER, and ADMIN
 @app.post("/api/process/sample/{name}")
-async def process_sample(name: str, doc_type: Optional[str] = Query("Land Record"), lang: Optional[str] = Query("auto"), user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_ADMIN))):
+async def process_sample(
+    name: str,
+    doc_type: Optional[str] = Query("Land Record"),
+    lang: Optional[str] = Query("auto"),
+    user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
     sample_path = os.path.join(BASE_DIR, "samples", os.path.basename(name))
     if not os.path.isfile(sample_path): raise HTTPException(status_code=404, detail="Sample not found")
     with open(sample_path, "rb") as f: data = f.read()
@@ -1065,12 +1020,34 @@ async def process_sample(name: str, doc_type: Optional[str] = Query("Land Record
     
     now = time.time()
     with get_db() as db:
-        db.execute("INSERT INTO documents (id, filename, doc_type, mean_conf, verdict, status, languages, pages, fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text, detected_language, original_fields, uploaded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   (doc_id, name, doc_type, parsed["mean_conf"], parsed["validation"]["verdict"], STATUS_DRAFT, json.dumps(parsed["languages"]), 1, json.dumps(parsed["fields"], ensure_ascii=False), json.dumps(parsed["validation"], ensure_ascii=False), json.dumps(parsed["ai_decision_support"], ensure_ascii=False), parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"], json.dumps(parsed["fields"], ensure_ascii=False), user["email"], now, now))
+        db.execute(
+            """
+            INSERT INTO documents (
+                id, filename, doc_type, mean_conf, verdict, status, languages, pages,
+                fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
+                detected_language, original_fields, uploaded_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_id, name, doc_type, parsed["mean_conf"], parsed["validation"]["verdict"],
+                STATUS_DRAFT, json.dumps(parsed["languages"]), 1,
+                json.dumps(parsed["fields"], ensure_ascii=False),
+                json.dumps(parsed["validation"], ensure_ascii=False),
+                json.dumps(parsed["ai_decision_support"], ensure_ascii=False),
+                parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
+                json.dumps(parsed["fields"], ensure_ascii=False), user["email"], now, now
+            )
+        )
+    log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id}", doc_id)
     return {"id": doc_id, "filename": name, "status": STATUS_DRAFT, "fields": parsed["fields"], "validation": parsed["validation"], "ai_decision_support": parsed["ai_decision_support"]}
 
 @app.post("/api/process")
-async def process_upload(file: UploadFile = File(...), doc_type: Optional[str] = Query("Land Record"), lang: Optional[str] = Query("auto"), user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_ADMIN))):
+async def process_upload(
+    file: UploadFile = File(...),
+    doc_type: Optional[str] = Query("Land Record"),
+    lang: Optional[str] = Query("auto"),
+    user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
     content = await file.read()
     if not content: raise HTTPException(status_code=422, detail="Empty file")
     filename = os.path.basename(file.filename or "upload")
@@ -1085,8 +1062,25 @@ async def process_upload(file: UploadFile = File(...), doc_type: Optional[str] =
 
     now = time.time()
     with get_db() as db:
-        db.execute("INSERT INTO documents (id, filename, doc_type, mean_conf, verdict, status, languages, pages, fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text, detected_language, original_fields, uploaded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   (doc_id, filename, doc_type, parsed["mean_conf"], parsed["validation"]["verdict"], STATUS_DRAFT, json.dumps(parsed["languages"]), 1, json.dumps(parsed["fields"], ensure_ascii=False), json.dumps(parsed["validation"], ensure_ascii=False), json.dumps(parsed["ai_decision_support"], ensure_ascii=False), parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"], json.dumps(parsed["fields"], ensure_ascii=False), user["email"], now, now))
+        db.execute(
+            """
+            INSERT INTO documents (
+                id, filename, doc_type, mean_conf, verdict, status, languages, pages,
+                fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
+                detected_language, original_fields, uploaded_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_id, filename, doc_type, parsed["mean_conf"], parsed["validation"]["verdict"],
+                STATUS_DRAFT, json.dumps(parsed["languages"]), 1,
+                json.dumps(parsed["fields"], ensure_ascii=False),
+                json.dumps(parsed["validation"], ensure_ascii=False),
+                json.dumps(parsed["ai_decision_support"], ensure_ascii=False),
+                parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
+                json.dumps(parsed["fields"], ensure_ascii=False), user["email"], now, now
+            )
+        )
+    log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded & processed '{filename}' as #{doc_id}", doc_id)
     return {"id": doc_id, "filename": filename, "status": STATUS_DRAFT, "fields": parsed["fields"], "validation": parsed["validation"], "ai_decision_support": parsed["ai_decision_support"]}
 
 @app.get("/api/documents/{doc_id}/file")
@@ -1097,28 +1091,61 @@ def get_document_file(doc_id: str, user: dict = Depends(get_current_user)):
     raise HTTPException(status_code=404, detail="File not found")
 
 @app.post("/api/documents/{doc_id}/save-draft")
-def save_draft(doc_id: str, req: SaveDraftReq, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_ADMIN))):
+def save_draft(
+    doc_id: str,
+    req: SaveDraftReq,
+    user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
     with get_db() as db:
         cur = db.execute("SELECT fields, status, uploaded_by FROM documents WHERE id=?", (doc_id,))
         r = cur.fetchone()
-        if not r: raise HTTPException(status_code=404, detail="Not found")
+        if not r: raise HTTPException(status_code=404, detail="Document not found")
+        
+        # State machine guardrail: Approved records are immutable to normal draft edits
+        if r["status"] == STATUS_APPROVED:
+            raise HTTPException(status_code=400, detail="Cannot edit an APPROVED record.")
+
+        # Data Officer ownership guardrail
+        if user["role"] == ROLE_DATA_OFFICER and r["uploaded_by"] != user["email"]:
+            raise HTTPException(status_code=403, detail="Access denied: You may only modify your own documents.")
+
         fields = json.loads(r["fields"] or "{}")
         raw_to_reval = {k: {"value": v, "confidence": fields.get(k, {}).get("confidence", 1.0)} for k, v in req.fields.items()}
         reval_fields, reval_rep = enrich_and_validate_fields(raw_to_reval)
-        db.execute("UPDATE documents SET fields=?, validation=?, verdict=?, updated_at=? WHERE id=?", (json.dumps(reval_fields, ensure_ascii=False), json.dumps(reval_rep, ensure_ascii=False), reval_rep["verdict"], time.time(), doc_id))
+        db.execute(
+            "UPDATE documents SET fields=?, validation=?, verdict=?, updated_at=? WHERE id=?",
+            (json.dumps(reval_fields, ensure_ascii=False), json.dumps(reval_rep, ensure_ascii=False), reval_rep["verdict"], time.time(), doc_id)
+        )
     return {"status": "ok", "fields": reval_fields, "validation": reval_rep}
 
 @app.post("/api/documents/{doc_id}/submit")
-def submit_for_verification(doc_id: str, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_ADMIN))):
+def submit_for_verification(
+    doc_id: str,
+    user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
     with get_db() as db:
+        cur = db.execute("SELECT status, uploaded_by FROM documents WHERE id=?", (doc_id,))
+        r = cur.fetchone()
+        if not r: raise HTTPException(status_code=404, detail="Document not found")
+
+        if user["role"] == ROLE_DATA_OFFICER and r["uploaded_by"] != user["email"]:
+            raise HTTPException(status_code=403, detail="Access denied: You can only submit your own documents.")
+
+        if r["status"] not in (STATUS_DRAFT, STATUS_RETURNED):
+            raise HTTPException(status_code=400, detail=f"Cannot submit record with status '{r['status']}'.")
+
         db.execute("UPDATE documents SET status=?, updated_at=? WHERE id=?", (STATUS_PENDING_VERIFICATION, time.time(), doc_id))
-    log_audit(user["full_name"], "STATUS_CHANGE", f"Submitted #{doc_id} for verification", doc_id)
+
+    log_audit(user["full_name"], "SUBMIT_FOR_VERIFICATION", f"Submitted #{doc_id} to verification queue", doc_id)
     return {"status": "ok"}
 
 @app.get("/api/documents/my-records")
-def get_my_records(user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_ADMIN))):
+def get_my_records(user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
     with get_db() as db:
-        cur = db.execute("SELECT * FROM documents WHERE uploaded_by=? ORDER BY created_at DESC", (user["email"],))
+        if user["role"] == ROLE_DATA_OFFICER:
+            cur = db.execute("SELECT * FROM documents WHERE uploaded_by=? ORDER BY created_at DESC", (user["email"],))
+        else:
+            cur = db.execute("SELECT * FROM documents ORDER BY created_at DESC")
         return {"documents": [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in cur.fetchall()]}
 
 @app.get("/api/documents/queue")
@@ -1128,17 +1155,26 @@ def get_verification_queue(user: dict = Depends(require_roles(ROLE_VERIFICATION_
         return {"queue": [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in cur.fetchall()]}
 
 @app.post("/api/documents/{doc_id}/review-action")
-def review_action(doc_id: str, req: ReviewActionReq, user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+def review_action(
+    doc_id: str,
+    req: ReviewActionReq,
+    user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
     action_map = {"approve": STATUS_APPROVED, "reject": STATUS_REJECTED, "return": STATUS_RETURNED, "send_back": STATUS_RETURNED}
     new_st = action_map.get(req.action.strip().lower())
-    if not new_st: raise HTTPException(status_code=400, detail="Invalid action")
+    if not new_st: raise HTTPException(status_code=400, detail="Invalid action.")
+
     if new_st in (STATUS_REJECTED, STATUS_RETURNED) and not (req.comments and req.comments.strip()):
-        raise HTTPException(status_code=400, detail="Comments required for reject/return")
+        raise HTTPException(status_code=400, detail="Comments required when returning or rejecting a document.")
 
     with get_db() as db:
-        cur = db.execute("SELECT fields, validation FROM documents WHERE id=?", (doc_id,))
+        cur = db.execute("SELECT fields, validation, status FROM documents WHERE id=?", (doc_id,))
         r = cur.fetchone()
-        if not r: raise HTTPException(status_code=404, detail="Document not found")
+        if not r: raise HTTPException(status_code=404, detail="Document not found.")
+
+        if r["status"] == STATUS_APPROVED and new_st != STATUS_APPROVED:
+            raise HTTPException(status_code=400, detail="Approved records cannot be reverted via simple review action.")
+
         fields = json.loads(r["fields"] or "{}")
 
         if req.corrections:
@@ -1173,7 +1209,7 @@ def review_action(doc_id: str, req: ReviewActionReq, user: dict = Depends(requir
             "UPDATE documents SET status=?, reviewer_comments=?, fields=?, updated_at=? WHERE id=?",
             (new_st, req.comments or "", json.dumps(fields, ensure_ascii=False), time.time(), doc_id)
         )
-    log_audit(user["full_name"], f"VERIFICATION_{req.action.upper()}", f"Marked as {new_st}", doc_id)
+    log_audit(user["full_name"], f"VERIFICATION_{req.action.upper()}", f"Marked doc #{doc_id} as {new_st}", doc_id)
     return {"status": "ok", "new_status": new_st}
 
 @app.post("/api/documents/compare")
@@ -1239,7 +1275,10 @@ async def run_document_comparison(
     return {"comparison_id": comp_id, "doc_a": doc_a, "doc_b": doc_b, "diff": diff, "ai_explanation": ai_expl}
 
 @app.post("/api/consistency/check")
-async def run_consistency_check(req: ConsistencyCheckReq, user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+async def run_consistency_check(
+    req: ConsistencyCheckReq,
+    user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
     if len(req.document_ids) < 2:
         raise HTTPException(status_code=400, detail="At least two document IDs are required for cross-document consistency.")
 
@@ -1292,9 +1331,31 @@ async def run_consistency_check(req: ConsistencyCheckReq, user: dict = Depends(r
 @app.get("/api/dashboard")
 def get_dashboard(user: dict = Depends(get_current_user)):
     role = user.get("role")
-    if role == ROLE_VIEWER: raise HTTPException(status_code=403, detail="Forbidden")
     with get_db() as db:
         today = datetime.combine(date.today(), datetime.min.time()).timestamp()
+        
+        if role == ROLE_VIEWER:
+            total_approved = db.execute("SELECT COUNT(*) as c FROM documents WHERE status=?", (STATUS_APPROVED,)).fetchone()["c"]
+            districts = db.execute("SELECT COUNT(DISTINCT json_extract(fields, '$.district.value')) as c FROM documents WHERE status=?", (STATUS_APPROVED,)).fetchone()["c"]
+            return {
+                "portal_type": "VIEWER",
+                "total_available_records": total_approved,
+                "districts_covered": max(1, districts or 1),
+                "state": "National / Multi-State Cadastre"
+            }
+
+        if role == ROLE_DATA_OFFICER:
+            my_docs = db.execute("SELECT status, COUNT(*) as c FROM documents WHERE uploaded_by=? GROUP BY status", (user["email"],)).fetchall()
+            counts = {d["status"]: d["c"] for d in my_docs}
+            return {
+                "portal_type": "DATA_OFFICER",
+                "drafts": counts.get(STATUS_DRAFT, 0),
+                "pending_verification": counts.get(STATUS_PENDING_VERIFICATION, 0),
+                "returned": counts.get(STATUS_RETURNED, 0),
+                "approved": counts.get(STATUS_APPROVED, 0),
+                "total_submissions": sum(counts.values())
+            }
+
         if role == ROLE_VERIFICATION_OFFICER:
             return {
                 "portal_type": "VERIFICATION_OFFICER",
@@ -1303,6 +1364,7 @@ def get_dashboard(user: dict = Depends(get_current_user)):
                 "approved_today": db.execute("SELECT COUNT(*) as c FROM documents WHERE status=? AND updated_at >= ?", (STATUS_APPROVED, today)).fetchone()["c"],
                 "returned": db.execute("SELECT COUNT(*) as c FROM documents WHERE status=?", (STATUS_RETURNED,)).fetchone()["c"]
             }
+
         total = db.execute("SELECT COUNT(*) as c FROM documents").fetchone()["c"]
         return {
             "portal_type": "ADMIN",
@@ -1319,18 +1381,83 @@ def get_dashboard(user: dict = Depends(get_current_user)):
         }
 
 @app.get("/api/documents")
-def get_documents(user: dict = Depends(get_current_user)):
+def get_documents(
+    district: Optional[str] = Query(None),
+    village: Optional[str] = Query(None),
+    doc_type: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None),
+    user: dict = Depends(get_current_user)
+):
     role = user.get("role")
     with get_db() as db:
-        cur = db.execute("SELECT * FROM documents ORDER BY created_at DESC")
-        return {"documents": [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in cur.fetchall()]}
+        if role == ROLE_VIEWER:
+            query = "SELECT id, filename, doc_type, status, fields, created_at, updated_at FROM documents WHERE status=?"
+            params = [STATUS_APPROVED]
+        elif role == ROLE_DATA_OFFICER:
+            query = "SELECT * FROM documents WHERE uploaded_by=?"
+            params = [user["email"]]
+        else:
+            query = "SELECT * FROM documents WHERE 1=1"
+            params = []
+
+        if status_filter and role != ROLE_VIEWER:
+            query += " AND status=?"
+            params.append(status_filter)
+
+        if doc_type:
+            query += " AND doc_type=?"
+            params.append(doc_type)
+
+        query += " ORDER BY created_at DESC"
+        cur = db.execute(query, tuple(params))
+        raw_list = cur.fetchall()
+
+        results = []
+        for r in raw_list:
+            item = dict(r)
+            f = json.loads(item.get("fields") or "{}")
+            item["fields"] = f
+            
+            # Sanitization: Viewers do not see internal reviewer notes or raw OCR
+            if role == ROLE_VIEWER:
+                item.pop("reviewer_comments", None)
+                item.pop("ocr_text", None)
+                item.pop("cleaned_ocr_text", None)
+
+            # Optional in-memory filter for deep JSON fields
+            if district and f.get("district", {}).get("value", "").lower() != district.lower():
+                continue
+            if village and f.get("village", {}).get("value", "").lower() != village.lower():
+                continue
+
+            results.append(item)
+
+        return {"documents": results}
 
 @app.get("/api/documents/{doc_id}")
 def get_document(doc_id: str, user: dict = Depends(get_current_user)):
+    role = user.get("role")
     with get_db() as db:
         r = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
-        if not r: raise HTTPException(status_code=404, detail="Not found")
-        return {**dict(r), "fields": json.loads(r["fields"] or "{}"), "ai_decision_support": json.loads(r["ai_decision_support"] or "{}")}
+        if not r: raise HTTPException(status_code=404, detail="Document not found.")
+
+        doc_dict = dict(r)
+        
+        # Access control
+        if role == ROLE_VIEWER and doc_dict["status"] != STATUS_APPROVED:
+            raise HTTPException(status_code=403, detail="Viewer access restricted to approved records.")
+        if role == ROLE_DATA_OFFICER and doc_dict["uploaded_by"] != user["email"]:
+            raise HTTPException(status_code=403, detail="Data Officers can only access their own submissions.")
+
+        doc_dict["fields"] = json.loads(doc_dict.get("fields") or "{}")
+        doc_dict["ai_decision_support"] = json.loads(doc_dict.get("ai_decision_support") or "{}")
+        
+        if role == ROLE_VIEWER:
+            doc_dict.pop("reviewer_comments", None)
+            doc_dict.pop("ocr_text", None)
+            doc_dict.pop("cleaned_ocr_text", None)
+
+        return doc_dict
 
 os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)

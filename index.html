@@ -73,7 +73,7 @@
           <select id="suRole">
             <option value="VIEWER">Viewer (Public / Search Only)</option>
             <option value="DATA_OFFICER">Data Officer (Upload &amp; Extract)</option>
-            <option value="VERIFICATION_OFFICER">Verification Officer (Staff Review)</option>
+            <option value="VERIFICATION_OFFICER">Verification Officer (Staff Review &amp; Intake)</option>
           </select>
         </div>
         <div id="signupError" class="errorbox hidden"></div>
@@ -126,35 +126,55 @@
     </div>
   </div>
 
-  <!-- INTERFACE A: SIMPLE PORTAL -->
+  <!-- INTERFACE A: SIMPLE VIEWER & DATA OFFICER PORTAL -->
   <div id="simplePortal" class="hidden">
     <div class="simple-nav-bar">
       <div class="simple-nav-container" id="simpleNavItems"></div>
     </div>
-    <div class="wrap" style="max-width:1040px">
+    <div class="wrap" style="max-width:1100px">
+      <!-- Viewer Home: Search & Catalog -->
       <div id="s-view-home" class="simple-pane hidden">
         <div class="simple-hero-card">
-          <h2>Find Registered Land Records</h2>
-          <p>Search verified parcels by Landowner name, Survey/Khasra number, Village, or Record ID.</p>
+          <h2>Verified Land Records Repository</h2>
+          <p>Search legally approved cadastral records, Khatauni entries, and registered title deeds.</p>
           <div class="simple-search-row">
-            <input type="text" id="simpleSearchInput" placeholder="Enter Owner name, Khasra #, Village, or Doc ID...">
+            <input type="text" id="simpleSearchInput" placeholder="Enter Landowner name, Khasra/Survey #, Village, or Document ID...">
             <button class="btn saffron" onclick="doSimpleSearch()">Search Records</button>
           </div>
         </div>
-        <div class="card" style="margin-top:20px">
+
+        <div class="card" style="margin-top:16px;padding:14px">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+            <span style="font-size:12px;font-weight:700;color:var(--gov-navy)">Filters:</span>
+            <input type="text" id="viewFilterVillage" placeholder="Village..." style="width:160px;font-size:12px;padding:4px 8px">
+            <input type="text" id="viewFilterDistrict" placeholder="District..." style="width:160px;font-size:12px;padding:4px 8px">
+            <select id="viewFilterType" style="width:180px;font-size:12px;padding:4px 8px">
+              <option value="">All Document Types</option>
+              <option value="Land Record">Land Record (Khatauni / ROR)</option>
+              <option value="Mutation Record">Mutation Record</option>
+              <option value="Sale Deed">Sale Deed</option>
+              <option value="Tax Receipt">Tax Receipt</option>
+            </select>
+            <button class="btn ghost" onclick="applyViewerFilters()" style="padding:4px 10px;font-size:12px">Apply Filters</button>
+            <button class="btn ghost" onclick="resetViewerFilters()" style="padding:4px 10px;font-size:12px">Reset</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
           <div class="card-header">
-            <h3 class="card-title">📄 Available Land Records</h3>
+            <h3 class="card-title">📜 Available Cadastral Records</h3>
             <span class="chip" id="simpleRecordCount">0 records</span>
           </div>
           <table class="gov-table" id="simpleDocTable">
             <thead>
-              <tr><th>Record ID</th><th>Landowner</th><th>Khasra / Survey</th><th>Village</th><th>Status</th><th style="text-align:right">Action</th></tr>
+              <tr><th>Record ID</th><th>Landowner</th><th>Khasra / Survey</th><th>Village &amp; District</th><th>Type</th><th>Status</th><th style="text-align:right">Action</th></tr>
             </thead>
             <tbody></tbody>
           </table>
         </div>
       </div>
 
+      <!-- Data Officer Home Dashboard -->
       <div id="s-do-dash" class="simple-pane hidden">
         <div class="simple-action-banner">
           <div>
@@ -172,16 +192,22 @@
           <div class="simple-stat-card" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">
             <div class="stat-icon" style="color:var(--err)">↩️</div>
             <div class="stat-val" id="doStatReturned">0</div>
-            <div class="stat-lbl">Returned / Needs Fix</div>
+            <div class="stat-lbl">Returned (Requires Correction)</div>
+          </div>
+          <div class="simple-stat-card" onclick="setSimpleFilter('PENDING_VERIFICATION')">
+            <div class="stat-icon" style="color:var(--warn)">⏳</div>
+            <div class="stat-val" id="doStatPending">0</div>
+            <div class="stat-lbl">Pending Verification</div>
           </div>
           <div class="simple-stat-card" onclick="setSimpleFilter('all')">
             <div class="stat-icon" style="color:var(--ok)">📤</div>
             <div class="stat-val" id="doStatSubmissions">0</div>
-            <div class="stat-lbl">Total Submitted</div>
+            <div class="stat-lbl">Total Submissions</div>
           </div>
         </div>
       </div>
 
+      <!-- Data Officer Upload & Intake -->
       <div id="s-do-newdoc" class="simple-pane hidden">
         <div class="card">
           <div class="card-header">
@@ -190,7 +216,7 @@
           </div>
           <div class="guided-step-banner">
             <span class="step-circle">1</span>
-            <div><b>Select Document File &amp; Classification:</b> Upload a scanned deed, Khatauni, Mutation record, or Tax Receipt.</div>
+            <div><b>Select Document File &amp; Classification:</b> Scanned deed, Khatauni, Mutation record, or Tax Receipt.</div>
           </div>
           <div class="drop-zone" id="simpleDropZone" style="margin:16px 0">
             <div class="drop-icon">📄</div>
@@ -227,7 +253,7 @@
           <div id="simpleUploadEditor" class="hidden" style="margin-top:20px;border-top:2px solid var(--gov-border-light);padding-top:16px">
             <div class="guided-step-banner">
               <span class="step-circle">2</span>
-              <div><b>Review Extracted Information &amp; Field Validation:</b> Check field statuses, confidence ratings, and warnings before submitting.</div>
+              <div><b>Review Extracted Information &amp; Field Validation:</b> Confirm entries and validation warnings prior to submission.</div>
             </div>
             <div class="field-grid" id="simpleFieldsGrid" style="margin:16px 0"></div>
             <div class="simple-editor-actions">
@@ -238,6 +264,7 @@
         </div>
       </div>
 
+      <!-- Data Officer Records List -->
       <div id="s-do-list" class="simple-pane hidden">
         <div class="card">
           <div class="card-header">
@@ -253,6 +280,7 @@
         </div>
       </div>
 
+      <!-- Read-Only Record Detail Viewer for Viewer & Data Officer -->
       <div id="s-record-detail" class="simple-pane hidden">
         <div class="card">
           <div class="card-header">
@@ -269,7 +297,7 @@
     </div>
   </div>
 
-  <!-- INTERFACE B: ADVANCED STAFF PORTAL -->
+  <!-- INTERFACE B: ADVANCED STAFF PORTAL (VERIFICATION OFFICER & ADMIN) -->
   <div id="staffPortal" class="hidden">
     <div class="nav-toolbar">
       <div class="history-arrows">
@@ -291,12 +319,13 @@
           <div id="staffStatsRow"></div>
         </div>
 
+        <!-- UPLOAD TAB (ENABLED FOR BOTH VERIFICATION OFFICER AND ADMIN) -->
         <div id="staff-tab-upload" class="hidden">
           <div class="card">
-            <div class="card-header"><h3 class="card-title">📤 Upload &amp; Digitize Land Record</h3></div>
+            <div class="card-header"><h3 class="card-title">📤 Upload &amp; Digitize Land Record (Staff Intake)</h3></div>
             <div class="guided-step-banner">
               <span class="step-circle">1</span>
-              <div><b>Select Document File &amp; Classification:</b> Upload a scanned deed, Khatauni, Mutation record, or Tax Receipt.</div>
+              <div><b>Select Document File &amp; Classification:</b> Scanned deed, Khatauni, Mutation record, or Tax Receipt.</div>
             </div>
             <div class="drop-zone" id="staffDropZone" style="margin:16px 0">
               <div class="drop-icon">📄</div>
@@ -333,12 +362,12 @@
             <div id="staffUploadEditor" class="hidden" style="margin-top:20px;border-top:2px solid var(--gov-border-light);padding-top:16px">
               <div class="guided-step-banner">
                 <span class="step-circle">2</span>
-                <div><b>Review Extracted Information &amp; Field Validation:</b> Check field statuses, confidence ratings, and warnings before submitting.</div>
+                <div><b>Review Extracted Information &amp; Field Validation:</b> Confirm entries and validation warnings prior to submission.</div>
               </div>
               <div class="field-grid" id="staffFieldsGrid" style="margin:16px 0"></div>
               <div class="simple-editor-actions">
                 <button class="btn ghost large-action-btn" id="staffBtnSaveDraft">💾 Save as Draft</button>
-                <button class="btn saffron large-action-btn" id="staffBtnSubmit">🚀 Submit for Verification</button>
+                <button class="btn saffron large-action-btn" id="staffBtnSubmit">🚀 Submit to Queue</button>
               </div>
             </div>
           </div>
@@ -367,15 +396,13 @@
           <div class="card">
             <div class="card-header">
               <div>
-                <h3 class="card-title">🔍 Cross-Document Consistency Audit (Multi-Record Chain of Title)</h3>
+                <h3 class="card-title">🔍 Cross-Document Consistency Audit (Chain of Title)</h3>
                 <p style="font-size:12px;color:var(--muted);margin:2px 0 0">Cross-verify factual consistency across multiple related records.</p>
               </div>
-              <button class="btn ghost" onclick="loadPastConsistencyReports()" style="padding:4px 10px;font-size:12px">📜 Past Audit Reports</button>
             </div>
             <div style="background:#f8fafc;padding:14px;border:1px solid var(--gov-border);border-radius:6px;margin-bottom:16px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                 <h4 style="margin:0;font-size:13px;color:var(--gov-navy)">Select Related Documents to Cross-Audit:</h4>
-                <input type="text" id="consistencySearchInput" placeholder="Filter records by ID or owner..." style="width:200px;font-size:11px;padding:3px 6px">
               </div>
               <div id="consistencyDocPickerList" style="max-height:180px;overflow-y:auto;border:1px solid #cbd5e1;background:#fff;border-radius:4px;padding:8px;display:grid;gap:6px"></div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
@@ -398,7 +425,6 @@
                 <h3 class="card-title">⚖️ Land Record Version Comparison &amp; Audit</h3>
                 <p style="font-size:12px;color:var(--muted);margin:2px 0 0">Compare two versions to identify ownership transfers, area variances, and survey modifications.</p>
               </div>
-              <button class="btn ghost" onclick="loadComparisonHistory()" style="padding:4px 10px;font-size:12px">📜 History</button>
             </div>
             <div style="display:flex;gap:14px;margin-bottom:16px">
               <label style="font-size:13px;font-weight:700;cursor:pointer"><input type="radio" name="compMode" value="existing" checked onchange="toggleCompMode(this.value)"> Compare Existing Records</label>
@@ -478,7 +504,7 @@
               <button class="btn block saffron" onclick="staffCreateUser()">Create Account</button>
             </div>
             <div class="card">
-              <div class="card-header"><h3 class="card-title">Active Personnel</h3></div>
+              <div class="card-header"><h3 class="card-title">Active Personnel &amp; Role Management</h3></div>
               <table class="gov-table" id="staffUsersTable">
                 <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
                 <tbody></tbody>
@@ -506,6 +532,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=23"></script>
+<script src="js/app.js?v=24"></script>
 </body>
 </html>
