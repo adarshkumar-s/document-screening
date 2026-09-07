@@ -19,7 +19,7 @@ const STATUS_REJECTED = 'REJECTED';
 
 const $ = s => document.querySelector(s);
 const el = (t,c,h) => {const e=document.createElement(t); if(c)e.className=c; if(h!==undefined)e.innerHTML=h; return e;};
-function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;}[c]));}
 
 function authUrl(path){
   if(!token) return path;
@@ -473,6 +473,7 @@ function setupStaffPortal(role){
   } else if(isAdmin){
     tabs = [
       ['dashboard', '📊 Dashboard'],
+      ['upload', '➕ Upload Document'],
       ['queue', '⏳ Verification'],
       ['consistency', '🔍 Cross-Doc Consistency'],
       ['records', '🗂️ Records'],
@@ -499,7 +500,7 @@ function switchStaffTab(tabName){
     t.classList.toggle('active', t.dataset.stab === tabName);
   });
 
-  ['dashboard','queue','review','compare','consistency','records','learn','audit','users','account'].forEach(p=>{
+  ['dashboard','upload','queue','review','compare','consistency','records','learn','audit','users','account'].forEach(p=>{
     const elPane = $('#staff-tab-' + p);
     if(elPane) elPane.classList.toggle('hidden', p !== tabName);
   });
@@ -525,7 +526,7 @@ async function loadStaffDashboard(){
   try{
     const d = await api('/api/dashboard');
     
-    // 1. VERIFICATION OFFICER DASHBOARD (EXACT METRICS)
+    # 1. VERIFICATION OFFICER DASHBOARD (EXACT METRICS)
     if(d.portal_type === 'VERIFICATION_OFFICER'){
       const verifierMetrics = [
         ['Pending Verification', d.pending_verification, 'var(--gov-navy)', '⏳'],
@@ -554,7 +555,7 @@ async function loadStaffDashboard(){
       return;
     }
 
-    // 2. ADMIN DASHBOARD (EXACT METRICS & ANALYTICS)
+    # 2. ADMIN DASHBOARD (EXACT METRICS & ANALYTICS)
     if(d.portal_type === 'ADMIN'){
       const coreMetrics = [
         ['Total Documents', Number(d.total_documents).toLocaleString(), 'var(--gov-navy)'],
@@ -630,6 +631,82 @@ async function loadStaffDashboard(){
   }catch(e){
     row.innerHTML = `<div class="errorbox">${escapeHtml(e.message)}</div>`;
   }
+}
+
+// ==========================================================================
+// ADMIN UPLOAD LOGIC IN STAFF PORTAL
+// ==========================================================================
+let currentStaffEditingDocId = null;
+const stDrop = $('#staffDropZone'), stFi = $('#staffFileInput');
+if(stDrop){
+  stDrop.onclick = () => stFi.click();
+  stDrop.ondragover = e => { e.preventDefault(); stDrop.classList.add('drag'); };
+  stDrop.ondragleave = () => stDrop.classList.remove('drag');
+  stDrop.ondrop = e => { e.preventDefault(); stDrop.classList.remove('drag'); if(e.dataTransfer.files.length) handleStaffUpload(e.dataTransfer.files[0]); };
+}
+if(stFi){ stFi.onchange = () => { if(stFi.files.length) handleStaffUpload(stFi.files[0]); }; }
+
+async function handleStaffUpload(file){
+  $('#staffProcessing').classList.remove('hidden');
+  $('#staffUploadEditor').classList.add('hidden');
+  const fd = new FormData();
+  fd.append('file', file);
+  const lang = $('#staffLangSelect')?.value || 'auto';
+  const docType = $('#staffDocTypeSelect')?.value || 'Land Record';
+
+  try{
+    const r = await fetch(authUrl(`/api/process?lang=${encodeURIComponent(lang)}&doc_type=${encodeURIComponent(docType)}`),{
+      method:'POST', headers: token ? {'Authorization':'Bearer '+token} : {}, body: fd
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || 'Upload failed');
+    populateStaffEditor(d);
+  }catch(e){ alert('Upload error: ' + e.message); }
+  $('#staffProcessing').classList.add('hidden');
+}
+
+function populateStaffEditor(doc){
+  currentStaffEditingDocId = doc.id;
+  const grid = $('#staffFieldsGrid');
+  grid.innerHTML = '';
+  const f = doc.fields || {};
+
+  Object.keys(f).forEach(k=>{
+    if(k === 'document_type') return;
+    grid.innerHTML += renderFieldInputCard(k, f[k], 'staffield', false);
+  });
+
+  $('#staffUploadEditor').classList.remove('hidden');
+  $('#staffUploadEditor').scrollIntoView({behavior:'smooth'});
+}
+
+const btnStaffSave = $('#staffBtnSaveDraft');
+if(btnStaffSave){
+  btnStaffSave.onclick = async()=>{
+    if(!currentStaffEditingDocId) return;
+    const fields = {};
+    document.querySelectorAll('input[data-staffield]').forEach(i=>{ fields[i.dataset.staffield] = i.value; });
+    try{
+      const res = await api('/api/documents/' + currentStaffEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
+      alert('Draft saved. Validation status updated.');
+      populateStaffEditor({id: currentStaffEditingDocId, fields: res.fields});
+    }catch(e){ alert(e.message); }
+  };
+}
+
+const btnStaffSub = $('#staffBtnSubmit');
+if(btnStaffSub){
+  btnStaffSub.onclick = async()=>{
+    if(!currentStaffEditingDocId) return;
+    const fields = {};
+    document.querySelectorAll('input[data-staffield]').forEach(i=>{ fields[i.dataset.staffield] = i.value; });
+    try{
+      await api('/api/documents/' + currentStaffEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
+      await api('/api/documents/' + currentStaffEditingDocId + '/submit', {method:'POST'});
+      alert('Document successfully submitted for verification queue.');
+      switchStaffTab('queue');
+    }catch(e){ alert(e.message); }
+  };
 }
 
 async function loadStaffQueue(){

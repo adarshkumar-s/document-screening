@@ -330,6 +330,72 @@
           <div id="staffStatsRow"></div>
         </div>
 
+        <!-- STAFF: UPLOAD DOCUMENT (ADMIN) -->
+        <div id="staff-tab-upload" class="hidden">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">📤 Upload &amp; Digitize Land Record</h3>
+            </div>
+            <div class="guided-step-banner">
+              <span class="step-circle">1</span>
+              <div>
+                <b>Select Document File &amp; Classification:</b> Upload a scanned deed, Khatauni, Mutation record, or Tax Receipt.
+              </div>
+            </div>
+
+            <div class="drop-zone" id="staffDropZone" style="margin:16px 0">
+              <div class="drop-icon">📄</div>
+              <div style="font-size:16px;font-weight:700">Click to Browse or Drag File Here</div>
+              <div style="font-size:12px;color:var(--muted);margin-top:4px">PDF, JPG, PNG, TIFF</div>
+              <input type="file" id="staffFileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
+            </div>
+
+            <div style="margin:12px 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+              <div>
+                <span style="font-size:12px;font-weight:700">Document Type:</span>
+                <select id="staffDocTypeSelect" style="padding:4px 8px;border-radius:4px;border:1px solid var(--gov-border)">
+                  <option value="Land Record">Land Record (Khatauni / ROR / 7/12)</option>
+                  <option value="Mutation Record">Mutation Record (Namantaran / Ferfar)</option>
+                  <option value="Sale Deed">Sale Deed (Registry / Conveyance)</option>
+                  <option value="Tax Receipt">Tax Receipt (Lagan / Revenue Slip)</option>
+                </select>
+              </div>
+              <div>
+                <span style="font-size:12px;font-weight:700">Script Language:</span>
+                <select id="staffLangSelect" style="max-width:200px">
+                  <option value="auto">Auto-Detect Script</option>
+                  <option value="hin">Hindi (खतौनी / खसरा)</option>
+                  <option value="tel">Telugu (పట్టా / 1-B)</option>
+                  <option value="tam">Tamil (பட்டா / சிட்டா)</option>
+                  <option value="mar">Marathi (7/12)</option>
+                  <option value="eng">English</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="staffProcessing" class="hidden simple-spinner-box">
+              <span class="spinner" style="border-top-color:var(--gov-navy)"></span>
+              <b>Scanning document and extracting fields with Indic AI...</b>
+            </div>
+
+            <div id="staffUploadEditor" class="hidden" style="margin-top:20px;border-top:2px solid var(--gov-border-light);padding-top:16px">
+              <div class="guided-step-banner">
+                <span class="step-circle">2</span>
+                <div>
+                  <b>Review Extracted Information &amp; Field Validation:</b> Check field statuses, confidence ratings, and warnings before submitting.
+                </div>
+              </div>
+
+              <div class="field-grid" id="staffFieldsGrid" style="margin:16px 0"></div>
+
+              <div class="simple-editor-actions">
+                <button class="btn ghost large-action-btn" id="staffBtnSaveDraft">💾 Save as Draft</button>
+                <button class="btn saffron large-action-btn" id="staffBtnSubmit">🚀 Submit for Verification</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- STAFF 2: VERIFICATION QUEUE -->
         <div id="staff-tab-queue" class="hidden">
           <div class="card">
@@ -548,6 +614,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=19"></script>
+<script src="js/app.js?v=20"></script>
 </body>
 </html>
