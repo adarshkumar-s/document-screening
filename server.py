@@ -173,7 +173,51 @@ def get_db():
 
 def init_db():
     with get_db() as db:
-        for stmt in [
+        corrections_sql = (
+            """
+            CREATE TABLE IF NOT EXISTS corrections (
+                id SERIAL PRIMARY KEY,
+                field_id TEXT NOT NULL,
+                wrong TEXT NOT NULL,
+                right_val TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(field_id, wrong, right_val)
+            );
+            """ if db.is_pg else """
+            CREATE TABLE IF NOT EXISTS corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                field_id TEXT NOT NULL,
+                wrong TEXT NOT NULL,
+                right_val TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(field_id, wrong, right_val)
+            );
+            """
+        )
+
+        audit_sql = (
+            """
+            CREATE TABLE IF NOT EXISTS audit (
+                id SERIAL PRIMARY KEY,
+                ts REAL NOT NULL,
+                username TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                doc_id TEXT
+            );
+            """ if db.is_pg else """
+            CREATE TABLE IF NOT EXISTS audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                username TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                doc_id TEXT
+            );
+            """
+        )
+
+        statements = [
             """
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -208,26 +252,8 @@ def init_db():
                 updated_at REAL NOT NULL DEFAULT 0
             );
             """,
-            """
-            CREATE TABLE IF NOT EXISTS corrections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                field_id TEXT NOT NULL,
-                wrong TEXT NOT NULL,
-                right_val TEXT NOT NULL,
-                count INTEGER NOT NULL DEFAULT 1,
-                UNIQUE(field_id, wrong, right_val)
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS audit (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts REAL NOT NULL,
-                username TEXT NOT NULL,
-                action TEXT NOT NULL,
-                detail TEXT NOT NULL,
-                doc_id TEXT
-            );
-            """,
+            corrections_sql,
+            audit_sql,
             """
             CREATE TABLE IF NOT EXISTS comparisons (
                 id TEXT PRIMARY KEY,
@@ -260,11 +286,22 @@ def init_db():
                 created_at REAL NOT NULL
             );
             """
-        ]:
+        ]
+
+        for stmt in statements:
             try:
+                if db.is_pg:
+                    db.execute("SAVEPOINT stmt_sp;")
                 db.execute(stmt)
-            except Exception:
-                pass
+                if db.is_pg:
+                    db.execute("RELEASE SAVEPOINT stmt_sp;")
+            except Exception as e:
+                if db.is_pg:
+                    try:
+                        db.execute("ROLLBACK TO SAVEPOINT stmt_sp;")
+                    except Exception:
+                        pass
+                print(f"[TABLE INIT WARNING] {e}")
 
         migrations = [
             "ALTER TABLE documents ADD COLUMN doc_type TEXT NOT NULL DEFAULT 'Land Record'",
@@ -289,27 +326,47 @@ def init_db():
                         pass
 
         try:
+            if db.is_pg:
+                db.execute("SAVEPOINT update_sp;")
             db.execute("UPDATE documents SET status='DRAFT' WHERE LOWER(status)='draft'")
             db.execute("UPDATE documents SET status='PENDING_VERIFICATION' WHERE LOWER(status) IN ('pending_review', 'pending')")
             db.execute("UPDATE documents SET status='APPROVED' WHERE LOWER(status) IN ('verified', 'valid', 'approved')")
             db.execute("UPDATE documents SET status='RETURNED_TO_DATA_OFFICER' WHERE LOWER(status) IN ('sent_back', 'returned')")
             db.execute("UPDATE documents SET status='REJECTED' WHERE LOWER(status)='rejected'")
+            if db.is_pg:
+                db.execute("RELEASE SAVEPOINT update_sp;")
         except Exception:
-            pass
+            if db.is_pg:
+                try:
+                    db.execute("ROLLBACK TO SAVEPOINT update_sp;")
+                except Exception:
+                    pass
 
-        cur = db.execute("SELECT id, role FROM users WHERE LOWER(email)='admin@landrec.gov.in'")
-        row = cur.fetchone()
-        if not row:
-            admin_id = "5cc810682c7f"
-            h = hashlib.sha256("Admin@123".encode()).hexdigest()
-            db.execute(
-                "INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)",
-                (admin_id, "System Administrator", "admin@landrec.gov.in", h, ROLE_ADMIN)
-            )
-            db.execute(
-                "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                (time.time(), "SYSTEM", "INIT", "System initialized with permanent administrator credentials", None)
-            )
+        try:
+            if db.is_pg:
+                db.execute("SAVEPOINT admin_sp;")
+            cur = db.execute("SELECT id, role FROM users WHERE LOWER(email)='admin@landrec.gov.in'")
+            row = cur.fetchone()
+            if not row:
+                admin_id = "5cc810682c7f"
+                h = hashlib.sha256("Admin@123".encode()).hexdigest()
+                db.execute(
+                    "INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)",
+                    (admin_id, "System Administrator", "admin@landrec.gov.in", h, ROLE_ADMIN)
+                )
+                db.execute(
+                    "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
+                    (time.time(), "SYSTEM", "INIT", "System initialized with permanent administrator credentials", None)
+                )
+            if db.is_pg:
+                db.execute("RELEASE SAVEPOINT admin_sp;")
+        except Exception as e:
+            if db.is_pg:
+                try:
+                    db.execute("ROLLBACK TO SAVEPOINT admin_sp;")
+                except Exception:
+                    pass
+            print(f"[INIT ADMIN ERROR] {e}")
 
 init_db()
 
