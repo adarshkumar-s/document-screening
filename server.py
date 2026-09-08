@@ -123,10 +123,6 @@ SUPPORTED_LANGUAGES = [
 
 app = FastAPI(title="DILRMP Land Record Digitization & Validation System")
 
-# Mount AI Admin Assistant Router
-from admin_assistant import router as assistant_router
-app.include_router(assistant_router)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -564,7 +560,7 @@ async def run_ai_decision_support(raw_ocr_text: str, detected_lang: str) -> Tupl
 async def parse_document_content(text: str, detected_lang: str, pages: int = 1) -> Dict[str, Any]:
     raw_fields, decision_support, cleaned_ocr = await run_ai_decision_support(text, detected_lang)
     if not raw_fields:
-        raw_fields = {k: {"value": "", "confidence": 0.0} for kk, v in enumerate(FIELD_KEYS) for k in [v]}
+        raw_fields = {k: {"value": "", "confidence": 0.0} for k in FIELD_KEYS}
         raw_fields["document_type"] = {"value": "Land Record", "confidence": 0.8}
         cleaned_ocr = text
         decision_support = {"summary": "Extracted via fallback mode.", "recommendation": "REVIEW_REQUIRED", "explanation": "Manual check required."}
@@ -1464,6 +1460,10 @@ os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
 app.mount("/css", StaticFiles(directory=os.path.join(BASE_DIR, "css")), name="css")
 app.mount("/js", StaticFiles(directory=os.path.join(BASE_DIR, "js")), name="js")
 app.mount("/assets", StaticFiles(directory=os.path.join(BASE_DIR, "assets")), name="assets")
+
+# Mount AI Admin Assistant at the end so all functions and models are fully defined
+from admin_assistant import router as assistant_router
+app.include_router(assistant_router)
 
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))

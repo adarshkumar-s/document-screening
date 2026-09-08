@@ -9,16 +9,22 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 
-# Re-use DB helpers, auth, and AI client directly from server.py
-from server import get_db, require_roles, ROLE_ADMIN, log_audit, ai_client
+# Safe dynamic database accessor
+def get_db_instance():
+    import server
+    return server.get_db()
 
-# Safe import for Google GenAI SDK
-try:
-    from google import genai
-    from google.genai import types
-    HAS_GENAI = True
-except ImportError:
-    HAS_GENAI = False
+def get_admin_dependency():
+    import server
+    return server.require_roles(server.ROLE_ADMIN)
+
+def log_system_audit(username: str, action: str, detail: str, doc_id: Optional[str] = None):
+    import server
+    server.log_audit(username, action, detail, doc_id)
+
+def get_ai_client():
+    import server
+    return getattr(server, "ai_client", None)
 
 router = APIRouter(prefix="/api/admin/assistant", tags=["AI Admin Assistant"])
 
@@ -32,7 +38,7 @@ USED_ACTION_TOKENS = set()
 def search_records(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     """Search records by ID, filename, owner, survey/khasra number, or village."""
     q = f"%{query.strip().lower()}%"
-    with get_db() as db:
+    with get_db_instance() as db:
         cur = db.execute("SELECT id, filename, doc_type, status, mean_conf, fields, created_at FROM documents ORDER BY created_at DESC")
         rows = cur.fetchall()
 
@@ -62,7 +68,7 @@ def search_records(query: str, limit: int = 10) -> List[Dict[str, Any]]:
 
 def get_record_details(record_id: str) -> Dict[str, Any]:
     """Retrieve full validation, consistency, and OCR details of a record."""
-    with get_db() as db:
+    with get_db_instance() as db:
         row = db.execute("SELECT * FROM documents WHERE id=?", (record_id,)).fetchone()
         if not row:
             return {"error": f"Record '{record_id}' not found."}
@@ -74,7 +80,7 @@ def get_record_details(record_id: str) -> Dict[str, Any]:
 
 def get_system_statistics() -> Dict[str, Any]:
     """Fetch live counts of documents and status breakdowns."""
-    with get_db() as db:
+    with get_db_instance() as db:
         total = db.execute("SELECT COUNT(*) as c FROM documents").fetchone()["c"]
         pending = db.execute("SELECT COUNT(*) as c FROM documents WHERE status='PENDING_VERIFICATION'").fetchone()["c"]
         approved = db.execute("SELECT COUNT(*) as c FROM documents WHERE status='APPROVED'").fetchone()["c"]
@@ -95,7 +101,7 @@ def get_system_statistics() -> Dict[str, Any]:
 
 def get_pending_records(limit: int = 10) -> List[Dict[str, Any]]:
     """Fetch pending records awaiting verification."""
-    with get_db() as db:
+    with get_db_instance() as db:
         cur = db.execute("SELECT id, filename, doc_type, status, mean_conf, fields FROM documents WHERE status='PENDING_VERIFICATION' LIMIT ?", (limit,))
         results = []
         for r in cur.fetchall():
@@ -112,7 +118,7 @@ def get_pending_records(limit: int = 10) -> List[Dict[str, Any]]:
 
 def get_low_confidence_records(threshold: int = 75, limit: int = 10) -> List[Dict[str, Any]]:
     """Fetch records with low confidence scores."""
-    with get_db() as db:
+    with get_db_instance() as db:
         cur = db.execute("SELECT id, filename, status, mean_conf, fields FROM documents WHERE mean_conf < ? LIMIT ?", (threshold, limit))
         results = []
         for r in cur.fetchall():
@@ -129,7 +135,7 @@ def get_low_confidence_records(threshold: int = 75, limit: int = 10) -> List[Dic
 
 def get_recent_activity(limit: int = 15) -> List[Dict[str, Any]]:
     """Fetch recent entries from the audit log."""
-    with get_db() as db:
+    with get_db_instance() as db:
         cur = db.execute("SELECT ts, username, action, detail, doc_id FROM audit ORDER BY id DESC LIMIT ?", (limit,))
         return [
             {
@@ -169,7 +175,7 @@ def verify_and_consume_token(token: str) -> Optional[dict]:
         return None
 
 def prepare_admin_action(action_type: str, target_identifier: str, new_role: Optional[str] = None) -> Dict[str, Any]:
-    with get_db() as db:
+    with get_db_instance() as db:
         if action_type in ["disable_user", "change_user_role"]:
             user = db.execute("SELECT id, full_name, email, role, is_active FROM users WHERE id=? OR LOWER(email)=?", (target_identifier, target_identifier.lower())).fetchone()
             if not user:
@@ -209,21 +215,21 @@ def execute_action_in_db(payload: dict, admin_user: dict) -> Dict[str, Any]:
     target_id = payload["target_id"]
     params = payload.get("parameters", {})
 
-    with get_db() as db:
+    with get_db_instance() as db:
         if action_type == "disable_user":
             db.execute("UPDATE users SET is_active=0 WHERE id=?", (target_id,))
-            log_audit(admin_user["full_name"], "AI_DEACTIVATE_USER", f"Disabled user #{target_id}", target_id)
+            log_system_audit(admin_user.get("full_name", "Admin"), "AI_DEACTIVATE_USER", f"Disabled user #{target_id}", target_id)
             return {"success": True, "message": f"User #{target_id} has been deactivated."}
 
         elif action_type == "change_user_role":
             new_r = params.get("new_role", "VIEWER").upper()
             db.execute("UPDATE users SET role=?, version=version+1 WHERE id=?", (new_r, target_id))
-            log_audit(admin_user["full_name"], "AI_UPDATE_ROLE", f"Changed role of #{target_id} to {new_r}", target_id)
+            log_system_audit(admin_user.get("full_name", "Admin"), "AI_UPDATE_ROLE", f"Changed role of #{target_id} to {new_r}", target_id)
             return {"success": True, "message": f"User #{target_id} role updated to {new_r}."}
 
         elif action_type == "reprocess_document":
             db.execute("UPDATE documents SET status='DRAFT' WHERE id=?", (target_id,))
-            log_audit(admin_user["full_name"], "AI_REPROCESS", f"Reset status of doc #{target_id}", target_id)
+            log_system_audit(admin_user.get("full_name", "Admin"), "AI_REPROCESS", f"Reset status of doc #{target_id}", target_id)
             return {"success": True, "message": f"Document #{target_id} set to DRAFT for reprocessing."}
 
     return {"success": False, "message": "Action could not be executed."}
@@ -243,7 +249,6 @@ Rules:
 """
 
 def run_assistant_turn(prompt: str) -> Dict[str, Any]:
-    # Check if a specific action is requested
     lower_prompt = prompt.lower().strip()
 
     if any(k in lower_prompt for k in ["disable", "deactivate"]):
@@ -256,7 +261,6 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
             "action_card": action_card if action_card.get("confirmation_required") else None
         }
 
-    # Fetch context from real data
     stats = get_system_statistics()
     pending = get_pending_records(limit=5)
     low_ocr = get_low_confidence_records(limit=5)
@@ -280,7 +284,8 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     Matching Search Records: {json.dumps(records_found)}
     """
 
-    if not ai_client:
+    client = get_ai_client()
+    if not client:
         return {
             "response": f"System Metrics: Total={stats['total_documents']}, Pending={stats['pending_verification']}, Approved={stats['approved']}. Found {len(records_found)} relevant records.",
             "records": records_found,
@@ -288,8 +293,9 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         }
 
     try:
+        from google.genai import types
         model_prompt = f"{SYSTEM_INSTRUCTION}\n\nLive System Telemetry:\n{context_summary}\n\nAdministrator Prompt: {prompt}"
-        response = ai_client.models.generate_content(
+        response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=model_prompt,
             config=types.GenerateContentConfig(temperature=0.2)
@@ -301,7 +307,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         }
     except Exception as e:
         return {
-            "response": f"Assistant inquiry processed: {len(records_found)} matching records retrieved. (AI generation note: {str(e)})",
+            "response": f"Inquiry processed with {len(records_found)} matching records. (AI generation note: {str(e)})",
             "records": records_found,
             "action_card": None
         }
@@ -328,10 +334,12 @@ def build_system_briefing() -> str:
 - Operational. Telemetry verified.
 """
 
-    if not ai_client:
+    client = get_ai_client()
+    if not client:
         return fallback_text
 
     try:
+        from google.genai import types
         prompt = f"""
         Generate a formal 5-section SYSTEM BRIEFING using these exact headings:
         # SYSTEM BRIEFING
@@ -350,7 +358,7 @@ def build_system_briefing() -> str:
         - Ground every metric in the data.
         - Do not declare any documents fraudulent or legally invalid.
         """
-        res = ai_client.models.generate_content(
+        res = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.1)
@@ -362,6 +370,10 @@ def build_system_briefing() -> str:
 # -------------------------------------------------------------------
 # Router Endpoints
 # -------------------------------------------------------------------
+def get_auth_user(user: dict = Depends(lambda: None)):
+    import server
+    return server.require_roles(server.ROLE_ADMIN)
+
 class QueryReq(BaseModel):
     query: str
 
@@ -369,18 +381,39 @@ class ActionReq(BaseModel):
     token: str
 
 @router.post("/query")
-def api_query(req: QueryReq, current_user: dict = Depends(require_roles(ROLE_ADMIN))):
+def api_query(req: QueryReq, request: Request):
+    import server
+    user = server.get_current_user(
+        authorization=request.headers.get("Authorization"),
+        token=request.query_params.get("token")
+    )
+    if user.get("role") != server.ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Access denied. Administrator privileges required.")
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     return run_assistant_turn(req.query.strip())
 
 @router.post("/execute-action")
-def api_execute_action(req: ActionReq, current_user: dict = Depends(require_roles(ROLE_ADMIN))):
+def api_execute_action(req: ActionReq, request: Request):
+    import server
+    user = server.get_current_user(
+        authorization=request.headers.get("Authorization"),
+        token=request.query_params.get("token")
+    )
+    if user.get("role") != server.ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Access denied. Administrator privileges required.")
     payload = verify_and_consume_token(req.token)
     if not payload:
         raise HTTPException(status_code=400, detail="Token expired, invalid, or already executed.")
-    return execute_action_in_db(payload, current_user)
+    return execute_action_in_db(payload, user)
 
 @router.post("/briefing")
-def api_briefing(current_user: dict = Depends(require_roles(ROLE_ADMIN))):
+def api_briefing(request: Request):
+    import server
+    user = server.get_current_user(
+        authorization=request.headers.get("Authorization"),
+        token=request.query_params.get("token")
+    )
+    if user.get("role") != server.ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Access denied. Administrator privileges required.")
     return {"briefing": build_system_briefing()}
