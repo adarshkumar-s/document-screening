@@ -6,6 +6,8 @@
   <title id="pageTitle">Digital Land Records Portal | DILRMP</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
   <link rel="stylesheet" href="css/style.css">
+  <!-- AI Admin Assistant Stylesheet -->
+  <link rel="stylesheet" href="css/admin-assistant.css">
 </head>
 <body>
 
@@ -361,7 +363,62 @@
       <div class="tabs" id="staffTabsList"></div>
 
       <div class="tab-content">
+        <!-- DASHBOARD TAB (AI Admin Assistant mounted here) -->
         <div id="staff-tab-dashboard" class="hidden">
+          
+          <!-- ========================================== -->
+          <!-- AI ADMIN ASSISTANT COMPONENT               -->
+          <!-- ========================================== -->
+          <div class="admin-assistant-container" id="adminAssistantWidget">
+            <div class="assistant-header">
+              <div class="assistant-title">
+                <span class="assistant-icon">✨</span>
+                <h3 style="margin:0;font-size:16px;color:var(--gov-navy)">AI Admin Assistant</h3>
+                <span class="badge-read-only">Administrator</span>
+              </div>
+              <div class="assistant-header-actions">
+                <button type="button" class="btn-briefing" id="btnGenerateBriefing" onclick="triggerSystemBriefing()">
+                  📊 Generate System Briefing
+                </button>
+              </div>
+            </div>
+
+            <div class="assistant-chat-log" id="assistantChatLog">
+              <div class="assistant-message system-intro">
+                Welcome, Administrator. Ask about pending records, review activity, or click "Generate System Briefing".
+              </div>
+            </div>
+
+            <div class="assistant-loading-indicator" id="assistantLoading" style="display: none;">
+              <div class="spinner"></div>
+              <span>Consulting system records...</span>
+            </div>
+
+            <div class="assistant-suggestions">
+              <span class="suggestions-label">Suggested:</span>
+              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('What\'s happening today?')">What's happening today?</button>
+              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('Show recent activity')">Show recent activity</button>
+              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('Find pending records')">Find pending records</button>
+              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('What needs my attention?')">What needs my attention?</button>
+              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('Show low-confidence records')">Show low-confidence records</button>
+            </div>
+
+            <form id="assistantForm" onsubmit="handleAssistantSubmit(event)">
+              <div class="assistant-input-group">
+                <input
+                  type="text"
+                  id="assistantInput"
+                  placeholder="Ask about records, statistics, or request an action..."
+                  autocomplete="off"
+                  required
+                />
+                <button type="submit" id="assistantSubmitBtn" class="btn saffron">Send</button>
+              </div>
+            </form>
+          </div>
+          <!-- ========================================== -->
+
+          <!-- Existing Dashboard Stats Grid -->
           <div id="staffStatsRow"></div>
         </div>
 
@@ -578,6 +635,9 @@
   </div>
 </div>
 
+<!-- Scripts -->
 <script src="js/app.js?v=26"></script>
+<!-- AI Admin Assistant Script -->
+<script src="js/admin-assistant.js"></script>
 </body>
 </html>

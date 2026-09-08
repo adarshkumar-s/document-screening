@@ -585,6 +585,12 @@ async function loadStaffDashboard(){
   if(!row) return;
   row.innerHTML = '<div class="muted">Loading dashboard...</div>';
 
+  // Enforce visibility: only display AI Assistant widget for ADMIN role
+  const assistantWidget = $('#adminAssistantWidget');
+  if(assistantWidget && me){
+    assistantWidget.style.display = (me.role === ROLE_ADMIN) ? 'block' : 'none';
+  }
+
   try{
     const d = await api('/api/dashboard');
     
