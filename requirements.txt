@@ -8,3 +8,4 @@ google-generativeai
 pypdfium2
 pytesseract
 psycopg2-binary
+python-multipart
