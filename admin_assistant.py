@@ -296,7 +296,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         from google.genai import types
         model_prompt = f"{SYSTEM_INSTRUCTION}\n\nLive System Telemetry:\n{context_summary}\n\nAdministrator Prompt: {prompt}"
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=model_prompt,
             config=types.GenerateContentConfig(temperature=0.2)
         )
@@ -306,8 +306,9 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
             "action_card": None
         }
     except Exception as e:
+        # Preserve actual records from the database and clearly state AI generation encountered an issue
         return {
-            "response": f"Inquiry processed with {len(records_found)} matching records. (AI generation note: {str(e)})",
+            "response": f"Database search retrieved {len(records_found)} matching record(s). AI explanation unavailable: {str(e)}",
             "records": records_found,
             "action_card": None
         }
@@ -359,7 +360,7 @@ def build_system_briefing() -> str:
         - Do not declare any documents fraudulent or legally invalid.
         """
         res = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.1)
         )
@@ -370,10 +371,6 @@ def build_system_briefing() -> str:
 # -------------------------------------------------------------------
 # Router Endpoints
 # -------------------------------------------------------------------
-def get_auth_user(user: dict = Depends(lambda: None)):
-    import server
-    return server.require_roles(server.ROLE_ADMIN)
-
 class QueryReq(BaseModel):
     query: str
 

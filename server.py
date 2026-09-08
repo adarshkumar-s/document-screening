@@ -532,7 +532,7 @@ async def run_ai_decision_support(raw_ocr_text: str, detected_lang: str) -> Tupl
     try:
         response = await asyncio.to_thread(
             ai_client.models.generate_content,
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -800,7 +800,7 @@ async def generate_ai_diff_explanation(doc_a: Dict[str, Any], doc_b: Dict[str, A
     try:
         response = await asyncio.to_thread(
             ai_client.models.generate_content,
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.2)
         )
@@ -849,7 +849,7 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
     try:
         response = await asyncio.to_thread(
             ai_client.models.generate_content,
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.2)
         )
