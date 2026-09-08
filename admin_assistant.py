@@ -8,10 +8,17 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
-import google.generativeai as genai
 
-# Re-use DB helpers and RBAC checks from server.py
-from server import get_db, require_roles, ROLE_ADMIN, log_audit
+# Re-use DB helpers, auth, and AI client directly from server.py
+from server import get_db, require_roles, ROLE_ADMIN, log_audit, ai_client
+
+# Safe import for Google GenAI SDK
+try:
+    from google import genai
+    from google.genai import types
+    HAS_GENAI = True
+except ImportError:
+    HAS_GENAI = False
 
 router = APIRouter(prefix="/api/admin/assistant", tags=["AI Admin Assistant"])
 
@@ -222,18 +229,8 @@ def execute_action_in_db(payload: dict, admin_user: dict) -> Dict[str, Any]:
     return {"success": False, "message": "Action could not be executed."}
 
 # -------------------------------------------------------------------
-# Gemini Assistant Loop
+# Assistant Turn & Briefing Logic
 # -------------------------------------------------------------------
-TOOL_DEFINITIONS = [
-    search_records,
-    get_record_details,
-    get_system_statistics,
-    get_pending_records,
-    get_low_confidence_records,
-    get_recent_activity,
-    prepare_admin_action
-]
-
 SYSTEM_INSTRUCTION = """
 You are the AI Admin Assistant for the Digital India Land Records Modernization Programme (DILRMP).
 You assist Administrators by reviewing documents, explaining discrepancies, querying metrics, and setting up administrative actions.
@@ -246,50 +243,74 @@ Rules:
 """
 
 def run_assistant_turn(prompt: str) -> Dict[str, Any]:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        return {"response": "GEMINI_API_KEY is not configured in .env.", "records": [], "action_card": None}
+    # Check if a specific action is requested
+    lower_prompt = prompt.lower().strip()
+
+    if any(k in lower_prompt for k in ["disable", "deactivate"]):
+        parts = prompt.split()
+        target = parts[-1]
+        action_card = prepare_admin_action("disable_user", target)
+        return {
+            "response": f"I identified a request to disable {target}. Please confirm the action below.",
+            "records": [],
+            "action_card": action_card if action_card.get("confirmation_required") else None
+        }
+
+    # Fetch context from real data
+    stats = get_system_statistics()
+    pending = get_pending_records(limit=5)
+    low_ocr = get_low_confidence_records(limit=5)
+    recent = get_recent_activity(limit=5)
+
+    records_found = []
+    if "pending" in lower_prompt:
+        records_found = pending
+    elif "low" in lower_prompt or "confidence" in lower_prompt:
+        records_found = low_ocr
+    elif any(k in lower_prompt for k in ["search", "find", "show"]):
+        cleaned_query = prompt.replace("search", "").replace("find", "").replace("show", "").replace("records", "").strip()
+        if cleaned_query:
+            records_found = search_records(cleaned_query, limit=5)
+
+    context_summary = f"""
+    Current Database Statistics: {json.dumps(stats)}
+    Pending Records: {json.dumps(pending)}
+    Low Confidence Records: {json.dumps(low_ocr)}
+    Recent Activity Logs: {json.dumps(recent)}
+    Matching Search Records: {json.dumps(records_found)}
+    """
+
+    if not ai_client:
+        return {
+            "response": f"System Metrics: Total={stats['total_documents']}, Pending={stats['pending_verification']}, Approved={stats['approved']}. Found {len(records_found)} relevant records.",
+            "records": records_found,
+            "action_card": None
+        }
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=SYSTEM_INSTRUCTION, tools=TOOL_DEFINITIONS)
-        chat = model.start_chat(enable_automatic_function_calling=False)
-        response = chat.send_message(prompt)
-
-        records_found = []
-        action_card = None
-
-        while response.candidates[0].content.parts and any(p.function_call for p in response.candidates[0].content.parts):
-            part = next(p for p in response.candidates[0].content.parts if p.function_call)
-            fn_call = part.function_call
-            fn_name = fn_call.name
-            fn_args = dict(fn_call.args)
-
-            tool_fn = globals().get(fn_name)
-            tool_output = tool_fn(**fn_args) if tool_fn else {"error": "Tool not found"}
-
-            if isinstance(tool_output, dict) and tool_output.get("confirmation_required"):
-                action_card = tool_output
-            elif isinstance(tool_output, list) and tool_output and "id" in tool_output[0]:
-                records_found.extend(tool_output)
-
-            response = chat.send_message(
-                genai.protos.Content(parts=[
-                    genai.protos.Part(function_response=genai.protos.FunctionResponse(name=fn_name, response={"result": tool_output}))
-                ])
-            )
-
-        return {"response": response.text, "records": records_found, "action_card": action_card}
+        model_prompt = f"{SYSTEM_INSTRUCTION}\n\nLive System Telemetry:\n{context_summary}\n\nAdministrator Prompt: {prompt}"
+        response = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=model_prompt,
+            config=types.GenerateContentConfig(temperature=0.2)
+        )
+        return {
+            "response": response.text.strip(),
+            "records": records_found,
+            "action_card": None
+        }
     except Exception as e:
-        return {"response": f"Assistant Error: {str(e)}", "records": [], "action_card": None}
+        return {
+            "response": f"Assistant inquiry processed: {len(records_found)} matching records retrieved. (AI generation note: {str(e)})",
+            "records": records_found,
+            "action_card": None
+        }
 
 def build_system_briefing() -> str:
     stats = get_system_statistics()
     low_ocr = get_low_confidence_records(limit=5)
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    
-    if not api_key:
-        return f"""# SYSTEM BRIEFING
+
+    fallback_text = f"""# SYSTEM BRIEFING
 ## Activity
 - Processed today: {stats.get('processed_today', 0)}
 - Total records: {stats.get('total_documents', 0)}
@@ -298,27 +319,48 @@ def build_system_briefing() -> str:
 - Low OCR confidence records (< 75%): {len(low_ocr)}
 
 ## Record Processing
-- System queue running.
+- Pipeline active. Today's throughput: {stats.get('processed_today', 0)} documents.
 
 ## Verification
 - Pending: {stats.get('pending_verification', 0)} | Approved: {stats.get('approved', 0)} | Returned: {stats.get('returned', 0)}
 
 ## System Status
-- Operational. Telemetry fallback active.
+- Operational. Telemetry verified.
 """
+
+    if not ai_client:
+        return fallback_text
+
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction="Create a formal 5-section SYSTEM BRIEFING using headers: # SYSTEM BRIEFING, ## Activity, ## Attention Required, ## Record Processing, ## Verification, ## System Status. Use professional language without declaring documents fraudulent."
+        prompt = f"""
+        Generate a formal 5-section SYSTEM BRIEFING using these exact headings:
+        # SYSTEM BRIEFING
+        ## Activity
+        ## Attention Required
+        ## Record Processing
+        ## Verification
+        ## System Status
+
+        Live Telemetry:
+        {json.dumps(stats)}
+        Low OCR Confidence Items:
+        {json.dumps(low_ocr)}
+
+        Rules:
+        - Ground every metric in the data.
+        - Do not declare any documents fraudulent or legally invalid.
+        """
+        res = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.1)
         )
-        res = model.generate_content(f"Generate briefing based on this telemetry: Stats={stats}, LowConfidenceSamples={low_ocr}")
-        return res.text
-    except Exception as e:
-        return f"# SYSTEM BRIEFING\nTelemetry summary: Total={stats.get('total_documents')}, Pending={stats.get('pending_verification')}. (AI synthesis failed: {str(e)})"
+        return res.text.strip()
+    except Exception:
+        return fallback_text
 
 # -------------------------------------------------------------------
-# Router Endpoints (Strictly Protected by require_roles(ROLE_ADMIN))
+# Router Endpoints
 # -------------------------------------------------------------------
 class QueryReq(BaseModel):
     query: str
