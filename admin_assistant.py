@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Request
 from pydantic import BaseModel
 
 # Safe dynamic database accessor
