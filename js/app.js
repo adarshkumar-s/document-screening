@@ -81,10 +81,10 @@ function routePortal(){
   $('#simplePortal').classList.toggle('hidden', !isSimple);
   $('#staffPortal').classList.toggle('hidden', isSimple);
   
-  if (role === ROLE_VIEWER) $('#portalBadge').textContent = 'Public Records Portal';
-  else if (role === ROLE_DATA_OFFICER) $('#portalBadge').textContent = 'Data Intake Portal';
-  else if (role === ROLE_VERIFICATION_OFFICER) $('#portalBadge').textContent = 'Verification Officer Console';
-  else $('#portalBadge').textContent = 'System Administration Console';
+  if (role === ROLE_VIEWER) $('#portalBadge').textContent = 'Viewer Portal';
+  else if (role === ROLE_DATA_OFFICER) $('#portalBadge').textContent = 'Data Officer Portal';
+  else if (role === ROLE_VERIFICATION_OFFICER) $('#portalBadge').textContent = 'Verification Officer Portal';
+  else $('#portalBadge').textContent = 'Admin Portal';
 
   if(isSimple) setupSimplePortal(role);
   else setupStaffPortal(role);
@@ -189,7 +189,7 @@ function setupSimplePortal(role){
   if(role === ROLE_VIEWER){
     navBox.innerHTML = `
       <button class="simple-nav-btn active" data-spane="s-view-home">🏠 Search Records</button>
-      <button class="simple-nav-btn" data-spane="s-view-home" onclick="loadSimpleDocuments()">🗂️ All Approved Parcels</button>
+      <button class="simple-nav-btn" data-spane="s-view-home" onclick="loadSimpleDocuments()">🗂️ All Approved Records</button>
     `;
     switchSimpleTab('s-view-home');
     loadSimpleDocuments();
@@ -197,10 +197,10 @@ function setupSimplePortal(role){
     $('#doWelcomeName').textContent = me.full_name;
     navBox.innerHTML = `
       <button class="simple-nav-btn active" data-spane="s-do-dash">🏠 Dashboard</button>
-      <button class="simple-nav-btn" data-spane="s-do-newdoc" onclick="openSimpleNewDoc()">➕ Ingest New Record</button>
-      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('all')">📑 Submissions Registry</button>
-      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('DRAFT')">📝 Active Drafts</button>
-      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">↩️ Returned Discrepancies</button>
+      <button class="simple-nav-btn" data-spane="s-do-newdoc" onclick="openSimpleNewDoc()">➕ Upload Document</button>
+      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('all')">📑 My Submissions</button>
+      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('DRAFT')">📝 My Drafts</button>
+      <button class="simple-nav-btn" data-spane="s-do-list" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')">↩️ Returned Records</button>
     `;
     switchSimpleTab('s-do-dash');
     loadDataOfficerCounts();
@@ -275,7 +275,7 @@ function renderSimpleTable(docs){
   $('#simpleRecordCount').textContent = `${docs.length} records`;
 
   if(!docs.length){
-    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No registered land records found matching current query.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No records found.</td></tr>';
     return;
   }
 
@@ -300,7 +300,7 @@ function renderSimpleTable(docs){
 async function openSimpleDetail(docId){
   try{
     const d = await api('/api/documents/' + docId);
-    $('#simpleDetailTitle').textContent = `${d.doc_type || 'Cadastral Record'} #${d.id}`;
+    $('#simpleDetailTitle').textContent = `${d.doc_type || 'Land Record'} #${d.id}`;
     $('#simpleDetailSub').textContent = `File: ${d.filename} | Status: ${d.status} | Submitter: ${d.uploaded_by || '—'}`;
 
     const grid = $('#simpleDetailGrid');
@@ -317,7 +317,7 @@ async function openSimpleDetail(docId){
       notesBox.classList.remove('hidden');
       notesBox.innerHTML = `
         <div class="issue-box error">
-          <div style="font-weight:800;margin-bottom:2px">Official Statutory Reviewer Directions:</div>
+          <div style="font-weight:800;margin-bottom:2px">Verification Officer Comments:</div>
           <div>${escapeHtml(d.reviewer_comments)}</div>
         </div>
       `;
@@ -346,12 +346,12 @@ async function loadDataOfficerCounts(){
     if(d.returned > 0){
       noticeBox.innerHTML = `
         <div class="issue-box error" style="display:flex;justify-content:space-between;align-items:center">
-          <div><b>Action Required:</b> You have <b>${d.returned}</b> record(s) returned by the statutory reviewer requiring field modifications.</div>
-          <button class="btn danger" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')" style="padding:4px 10px;font-size:11px">Inspect Returned</button>
+          <div>You have <b>${d.returned}</b> record(s) returned by the verification officer requiring corrections.</div>
+          <button class="btn danger" onclick="setSimpleFilter('RETURNED_TO_DATA_OFFICER')" style="padding:4px 10px;font-size:11px">View Returned</button>
         </div>
       `;
     } else {
-      noticeBox.innerHTML = `<div class="successbox" style="margin:0">✓ All returned items resolved. No outstanding verification discrepancies.</div>`;
+      noticeBox.innerHTML = `<div class="successbox" style="margin:0">✓ No returned records. All submissions are up to date.</div>`;
     }
   }catch(e){}
 }
@@ -369,24 +369,24 @@ async function loadMyRecordsSimple(){
 
     if(simpleActiveFilter === STATUS_DRAFT){
       docs = docs.filter(x=>x.status === STATUS_DRAFT);
-      $('#simpleListTitle').textContent = 'My Active Drafts';
+      $('#simpleListTitle').textContent = 'My Drafts';
     } else if(simpleActiveFilter === STATUS_RETURNED){
       docs = docs.filter(x=>x.status === STATUS_RETURNED);
-      $('#simpleListTitle').textContent = 'Returned Records (Requires Officer Correction)';
+      $('#simpleListTitle').textContent = 'Returned Records';
     } else if(simpleActiveFilter === STATUS_PENDING_VERIFICATION){
       docs = docs.filter(x=>x.status === STATUS_PENDING_VERIFICATION);
-      $('#simpleListTitle').textContent = 'Submissions Pending Verification';
+      $('#simpleListTitle').textContent = 'Pending Verification';
     } else if(simpleActiveFilter === STATUS_APPROVED){
       docs = docs.filter(x=>x.status === STATUS_APPROVED);
-      $('#simpleListTitle').textContent = 'Certified Approved Records';
+      $('#simpleListTitle').textContent = 'Approved Records';
     } else {
-      $('#simpleListTitle').textContent = 'Cadastral Submissions Registry';
+      $('#simpleListTitle').textContent = 'My Submissions';
     }
 
     const tb = $('#simpleSubmissionsTable tbody');
     tb.innerHTML = '';
     if(!docs.length){
-      tb.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">No records found matching current queue criteria.</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">No records found in this list.</td></tr>`;
       return;
     }
 
@@ -468,7 +468,7 @@ function populateSimpleEditor(doc){
   banner.innerHTML = `
     <div style="background:#f8fafc;border:1px solid var(--gov-border);border-radius:6px;padding:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <div style="font-size:12px;font-weight:800;color:var(--gov-navy)">
-        Digitized Record: #${doc.id} · <span style="color:var(--muted)">Mean Confidence: ${doc.mean_conf || 90}%</span>
+        Document: #${doc.id} · <span style="color:var(--muted)">Average Confidence: ${doc.mean_conf || 90}%</span>
       </div>
       <div style="display:flex;gap:6px">
         <span class="chip" style="background:#dcfce7;color:#166534">✓ ${v.summary.valid || 0} Valid</span>
@@ -493,7 +493,7 @@ $('#simpleBtnSaveDraft').onclick = async()=>{
   document.querySelectorAll('input[data-simplefield]').forEach(i=>{ fields[i.dataset.simplefield] = i.value; });
   try{
     const res = await api('/api/documents/' + currentEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
-    alert('Draft updated successfully. Field validations refreshed.');
+    alert('Draft saved.');
     populateSimpleEditor({id: currentEditingDocId, fields: res.fields, validation: res.validation});
   }catch(e){ alert(e.message); }
 };
@@ -505,13 +505,13 @@ $('#simpleBtnSubmit').onclick = async()=>{
   try{
     await api('/api/documents/' + currentEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
     await api('/api/documents/' + currentEditingDocId + '/submit', {method:'POST'});
-    alert('Document successfully submitted to the statutory verification queue.');
+    alert('Document submitted for verification.');
     setSimpleFilter('PENDING_VERIFICATION');
   }catch(e){ alert(e.message); }
 };
 
 // ==========================================================================
-// ADVANCED STAFF PORTAL (VERIFICATION OFFICER & ADMIN)
+// STAFF PORTAL (VERIFICATION OFFICER & ADMIN)
 // ==========================================================================
 
 function setupStaffPortal(role){
@@ -524,26 +524,26 @@ function setupStaffPortal(role){
   let tabs = [];
   if(isVerifier){
     tabs = [
-      ['dashboard', '📊 Verification Console'],
+      ['dashboard', '📊 Dashboard'],
       ['upload', '➕ Upload & Verify'],
       ['queue', '⏳ Verification Queue'],
-      ['consistency', '🔍 Chain of Title'],
+      ['consistency', '🔍 Consistency Check'],
       ['compare', '⚖️ Comparison'],
-      ['records', '🗂️ All Master Records'],
-      ['learn', '🧠 AI Analytics'],
+      ['records', '🗂️ All Records'],
+      ['learn', '🧠 AI Corrections'],
       ['account', '⚙️ Settings']
     ];
   } else if(isAdmin){
     tabs = [
-      ['dashboard', '📊 Executive Overview'],
-      ['upload', '➕ Ingest Document'],
-      ['queue', '⏳ Statutory Queue'],
-      ['consistency', '🔍 Cross-Doc Consistency'],
-      ['records', '🗂️ Master Repository'],
-      ['compare', '⚖️ Comparison Audit'],
-      ['learn', '🧠 AI Context Learning'],
-      ['users', '👥 Personnel & RBAC'],
-      ['audit', '🔐 Cryptographic Audit'],
+      ['dashboard', '📊 Dashboard'],
+      ['upload', '➕ Upload Document'],
+      ['queue', '⏳ Verification Queue'],
+      ['consistency', '🔍 Consistency Check'],
+      ['records', '🗂️ All Records'],
+      ['compare', '⚖️ Comparison'],
+      ['learn', '🧠 AI Corrections'],
+      ['users', '👥 Users'],
+      ['audit', '🔐 Audit Trail'],
       ['account', '⚙️ Settings']
     ];
   }
@@ -583,7 +583,7 @@ function switchStaffTab(tabName){
 async function loadStaffDashboard(){
   const row = $('#staffStatsRow');
   if(!row) return;
-  row.innerHTML = '<div class="muted">Loading official dashboard metrics...</div>';
+  row.innerHTML = '<div class="muted">Loading dashboard...</div>';
 
   try{
     const d = await api('/api/dashboard');
@@ -598,8 +598,8 @@ async function loadStaffDashboard(){
 
       row.innerHTML = `
         <div style="margin-bottom:14px">
-          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">Verification Officer Statutory Console</h3>
-          <p style="margin:0;font-size:12px;color:var(--muted)">Review cadastral queues, compare deed lineages, and execute statutory certifications.</p>
+          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">Verification Officer Dashboard</h3>
+          <p style="margin:0;font-size:12px;color:var(--muted)">Review pending records, compare document versions, and approve verified files.</p>
         </div>
         <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:14px">
           ${verifierMetrics.map(([lbl, n, c, icon])=>`
@@ -618,22 +618,22 @@ async function loadStaffDashboard(){
 
     if(d.portal_type === 'ADMIN'){
       const coreMetrics = [
-        ['Total Ingested Documents', Number(d.total_documents).toLocaleString(), 'var(--gov-navy)'],
-        ['Fully Processed', Number(d.processed).toLocaleString(), '#2b6cb0'],
+        ['Total Documents', Number(d.total_documents).toLocaleString(), 'var(--gov-navy)'],
+        ['Processed Documents', Number(d.processed).toLocaleString(), '#2b6cb0'],
         ['Pending Verification', Number(d.pending_verification).toLocaleString(), 'var(--warn)'],
-        ['Approved & Certified', Number(d.approved).toLocaleString(), 'var(--gov-green)']
+        ['Approved Records', Number(d.approved).toLocaleString(), 'var(--gov-green)']
       ];
 
       const performanceMetrics = [
         ['OCR Average Confidence', d.ocr_average_confidence, 'var(--gov-green)', '🎯'],
-        ['AI Flag Rate', d.ai_flag_rate, 'var(--err)', '🚩'],
-        ['Human Correction Rate', d.human_correction_rate, '#7c3aed', '✍️']
+        ['AI Flagged Records', d.ai_flag_rate, 'var(--err)', '🚩'],
+        ['Human Corrections', d.human_correction_rate, '#7c3aed', '✍️']
       ];
 
       row.innerHTML = `
         <div style="margin-bottom:14px">
-          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">Administrator Master Control Console</h3>
-          <p style="margin:0;font-size:12px;color:var(--muted)">Executive throughput, AI/OCR accuracy indicators, and cadastral audit trail.</p>
+          <h3 style="margin:0 0 2px;color:var(--gov-navy);font-size:17px">Administrator Overview</h3>
+          <p style="margin:0;font-size:12px;color:var(--muted)">Processing statistics, OCR &amp; AI statistics, and system activity.</p>
         </div>
 
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:14px;margin-bottom:14px">
@@ -717,7 +717,7 @@ if(btnStaffSave){
     document.querySelectorAll('input[data-staffield]').forEach(i=>{ fields[i.dataset.staffield] = i.value; });
     try{
       const res = await api('/api/documents/' + currentStaffEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
-      alert('Draft saved. Validation status updated.');
+      alert('Draft saved.');
       populateStaffEditor({id: currentStaffEditingDocId, fields: res.fields});
     }catch(e){ alert(e.message); }
   };
@@ -732,7 +732,7 @@ if(btnStaffSub){
     try{
       await api('/api/documents/' + currentStaffEditingDocId + '/save-draft', {method:'POST', body: JSON.stringify({fields})});
       await api('/api/documents/' + currentStaffEditingDocId + '/submit', {method:'POST'});
-      alert('Document successfully submitted to verification queue.');
+      alert('Document submitted to verification queue.');
       switchStaffTab('queue');
     }catch(e){ alert(e.message); }
   };
@@ -761,7 +761,7 @@ async function loadStaffQueue(){
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
         <td>${escapeHtml(f.khasra_number?.value || f.survey_number?.value || '—')}</td>
         <td style="text-align:right">
-          <button class="btn saffron" onclick="openStaffReview('${q.id}')" style="padding:4px 10px;font-size:12px">Review &amp; Decide</button>
+          <button class="btn saffron" onclick="openStaffReview('${q.id}')" style="padding:4px 10px;font-size:12px">Review</button>
         </td>
       `;
       tb.appendChild(tr);
@@ -786,7 +786,7 @@ async function openStaffReview(id){
     let html = `
       <div class="card-header">
         <div>
-          <h3 class="card-title">Statutory Verification Console: Record #${d.id}</h3>
+          <h3 class="card-title">Review Document: #${d.id}</h3>
           <div style="font-size:12px;color:var(--muted)">File: ${escapeHtml(d.filename)} | Type: ${escapeHtml(d.doc_type || 'Land Record')} | Submitter: ${escapeHtml(d.uploaded_by)} | Status: ${d.status}</div>
         </div>
         <button class="btn ghost" onclick="switchStaffTab('queue')">✕ Back to Queue</button>
@@ -795,7 +795,7 @@ async function openStaffReview(id){
       <div style="background:#f8fafc;border:2px solid var(--gov-navy);border-radius:8px;padding:14px;margin-top:14px">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div style="font-size:13px;font-weight:800;color:var(--gov-navy);display:flex;align-items:center;gap:6px">
-            <span>🤖 AI Cadastral Advisory Envelope</span>
+            <span>🤖 AI Decision Support &amp; Notes</span>
           </div>
           <span style="font-size:11px;font-weight:800;padding:3px 8px;border-radius:4px;${recStyle}">
             ${ai.recommendation || 'REVIEW_REQUIRED'}
@@ -804,7 +804,7 @@ async function openStaffReview(id){
         <div style="font-size:12px;color:var(--ink);margin-top:6px;line-height:1.5">
           <b>Summary:</b> ${escapeHtml(ai.summary || 'Summary unavailable.')}
         </div>
-        ${ai.explanation ? `<div style="font-size:12px;color:#78350f;margin-top:4px"><b>Auditor Advisory:</b> ${escapeHtml(ai.explanation)}</div>` : ''}
+        ${ai.explanation ? `<div style="font-size:12px;color:#78350f;margin-top:4px"><b>Notes:</b> ${escapeHtml(ai.explanation)}</div>` : ''}
         ${(ai.flags && ai.flags.length) ? `
           <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
             ${ai.flags.map(flag => `<span class="chip" style="background:#fee2e2;color:#991b1b;font-size:11px">⚠ ${escapeHtml(flag)}</span>`).join('')}
@@ -814,7 +814,7 @@ async function openStaffReview(id){
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
         <div>
-          <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Deterministic Field Validation &amp; Officer Overrides</h4>
+          <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Field Validation &amp; Officer Edits</h4>
           <div class="field-grid" style="grid-template-columns:1fr 1fr">
     `;
 
@@ -829,25 +829,25 @@ async function openStaffReview(id){
 
         <div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <h4 style="margin:0;font-size:13px;color:var(--gov-navy)">Document Evidence &amp; OCR Inspection</h4>
+            <h4 style="margin:0;font-size:13px;color:var(--gov-navy)">Document Scan &amp; OCR Text</h4>
             <div style="font-size:11px">
-              <button class="btn ghost" style="padding:2px 6px;font-size:11px" onclick="$('#staffScanView').classList.toggle('hidden');$('#staffRawText').classList.toggle('hidden');">Toggle Scan / OCR Text</button>
+              <button class="btn ghost" style="padding:2px 6px;font-size:11px" onclick="$('#staffScanView').classList.toggle('hidden');$('#staffRawText').classList.toggle('hidden');">Toggle Scan / Text</button>
             </div>
           </div>
           
           <div id="staffScanView" style="height:250px;border:1px solid var(--gov-border);border-radius:6px;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
-            <img src="/api/documents/${d.id}/file?token=${encodeURIComponent(token)}" alt="Document Scan" style="max-height:100%;max-width:100%;object-fit:contain" onerror="this.parentElement.innerHTML='<div class=\'muted\' style=\'color:#cbd5e1\'>Image preview unavailable</div>'">
+            <img src="/api/documents/${d.id}/file?token=${encodeURIComponent(token)}" alt="Document Scan" style="max-height:100%;max-width:100%;object-fit:contain" onerror="this.parentElement.innerHTML='<div class=\'muted\' style=\'color:#cbd5e1\'>Preview unavailable</div>'">
           </div>
 
-          <div id="staffRawText" class="raw-ocr-box hidden" style="height:250px">${escapeHtml(d.ocr_text || 'No raw OCR stored')}</div>
+          <div id="staffRawText" class="raw-ocr-box hidden" style="height:250px">${escapeHtml(d.ocr_text || 'No raw OCR text')}</div>
 
           <div style="margin-top:16px;background:#f8fafc;padding:12px;border:1px solid var(--gov-border);border-radius:6px">
-            <label class="field-label">Official Review Decision &amp; Statutory Audit Comments</label>
-            <textarea id="staffReviewComments" placeholder="Enter mandatory justification if returning or rejecting..." style="height:50px"></textarea>
+            <label class="field-label">Review Decision &amp; Comments</label>
+            <textarea id="staffReviewComments" placeholder="Enter comments if returning or rejecting..." style="height:50px"></textarea>
             <div style="display:flex;gap:10px;margin-top:10px">
-              <button class="btn ok" style="background:var(--gov-green);flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'approve')">✓ Approve (APPROVED)</button>
+              <button class="btn ok" style="background:var(--gov-green);flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'approve')">✓ Approve</button>
               <button class="btn ghost" style="color:var(--warn);border-color:var(--warn);flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'return')">↩ Return to Data Officer</button>
-              <button class="btn danger" style="flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'reject')">✕ Reject Record</button>
+              <button class="btn danger" style="flex:1;justify-content:center" onclick="staffExecuteDecision('${d.id}', 'reject')">✕ Reject</button>
             </div>
           </div>
         </div>
@@ -863,7 +863,7 @@ async function staffExecuteDecision(id, action){
   const comments = $('#staffReviewComments')?.value.trim() || '';
   
   if((action === 'reject' || action === 'return') && !comments){
-    alert('Please enter statutory reviewer comments before returning or rejecting.');
+    alert('Please enter comments before returning or rejecting.');
     $('#staffReviewComments').focus();
     return;
   }
@@ -876,7 +876,7 @@ async function staffExecuteDecision(id, action){
       method: 'POST',
       body: JSON.stringify({action, comments, corrections})
     });
-    alert(`Statutory action recorded: ${res.new_status}`);
+    alert(`Action recorded: ${res.new_status}`);
     switchStaffTab('queue');
   }catch(e){ alert(e.message); }
 }
@@ -891,7 +891,7 @@ function toggleCompMode(mode){
 async function runStaffDiff(){
   const a = $('#staffDiffA').value.trim();
   const b = $('#staffDiffB').value.trim();
-  if(!a || !b){ alert('Please provide both Version A and Version B Document IDs.'); return; }
+  if(!a || !b){ alert('Please provide both Document A and Document B IDs.'); return; }
   await executeComparisonCall(`/api/documents/compare?doc_a_id=${encodeURIComponent(a)}&doc_b_id=${encodeURIComponent(b)}`, {method:'POST'});
 }
 
@@ -939,10 +939,10 @@ function renderDiffResults(data){
   let html = `
     <div style="display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border:1px solid var(--gov-border);border-radius:8px;padding:12px 16px;margin-bottom:16px">
       <div>
-        <span style="font-weight:700;color:var(--gov-navy)">Comparison Session #${escapeHtml(data.comparison_id)}</span>
+        <span style="font-weight:700;color:var(--gov-navy)">Comparison #${escapeHtml(data.comparison_id)}</span>
         <div style="font-size:12px;color:var(--muted);margin-top:2px">
-          <b>Doc A (Predecessor):</b> #${escapeHtml(data.doc_a.id)} (${escapeHtml(data.doc_a.filename)}) &nbsp;|&nbsp;
-          <b>Doc B (Successor):</b> #${escapeHtml(data.doc_b.id)} (${escapeHtml(data.doc_b.filename)})
+          <b>Document A:</b> #${escapeHtml(data.doc_a.id)} (${escapeHtml(data.doc_a.filename)}) &nbsp;|&nbsp;
+          <b>Document B:</b> #${escapeHtml(data.doc_b.id)} (${escapeHtml(data.doc_b.filename)})
         </div>
       </div>
       <div>
@@ -953,7 +953,7 @@ function renderDiffResults(data){
 
     <div style="background:#fffbeb;border:1px solid #fde68a;border-left:5px solid #d97706;border-radius:6px;padding:14px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:800;color:#92400e">
-        🤖 AI Discrepancy &amp; Cadastral Context Analysis:
+        🤖 AI Differences Explanation:
       </div>
       <div style="font-size:13px;color:#78350f;margin-top:6px;line-height:1.6;white-space:pre-line">
         ${escapeHtml(data.ai_explanation || 'No differences detected.')}
@@ -962,15 +962,15 @@ function renderDiffResults(data){
   `;
 
   if(changed.length > 0){
-    html += `<h4 style="margin:16px 0 8px;color:#991b1b">⚠ DETECTED VARIATIONS (${changed.length})</h4><div style="display:grid;gap:10px;margin-bottom:20px">`;
+    html += `<h4 style="margin:16px 0 8px;color:#991b1b">⚠ Changed Fields (${changed.length})</h4><div style="display:grid;gap:10px;margin-bottom:20px">`;
     changed.forEach(c=>{
       html += `
         <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:12px">
           <div style="display:flex;justify-content:space-between;align-items:center"><b style="color:var(--gov-navy);font-size:13px">${escapeHtml(c.label)}</b><span class="pill rejected" style="font-size:10px">CHANGED</span></div>
           <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-top:8px">
-            <div style="background:#ffffff;padding:8px 12px;border:1px solid #cbd5e1;border-radius:4px"><div style="font-size:11px;color:var(--muted)">Previous Version</div><div style="font-weight:700">${escapeHtml(c.old_value)}</div></div>
+            <div style="background:#ffffff;padding:8px 12px;border:1px solid #cbd5e1;border-radius:4px"><div style="font-size:11px;color:var(--muted)">Document A</div><div style="font-weight:700">${escapeHtml(c.old_value)}</div></div>
             <div style="font-size:18px;color:#991b1b;font-weight:800">→</div>
-            <div style="background:#ffffff;padding:8px 12px;border:1px solid #f87171;border-radius:4px"><div style="font-size:11px;color:#991b1b">Current Version</div><div style="font-weight:700;color:#991b1b">${escapeHtml(c.new_value)}</div></div>
+            <div style="background:#ffffff;padding:8px 12px;border:1px solid #f87171;border-radius:4px"><div style="font-size:11px;color:#991b1b">Document B</div><div style="font-weight:700;color:#991b1b">${escapeHtml(c.new_value)}</div></div>
           </div>
         </div>
       `;
@@ -1057,8 +1057,8 @@ function renderConsistencyReport(data){
     <div style="background:#fff;border:1px solid var(--gov-border);border-radius:8px;padding:16px;box-shadow:var(--shadow-sm)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
         <div>
-          <h3 style="margin:0;font-size:15px;color:var(--gov-navy)">Multi-Record Chain Consistency Audit</h3>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px">Audit ID: <b>#${escapeHtml(data.check_id)}</b> · Documents examined: <b>${(data.documents||[]).length}</b></div>
+          <h3 style="margin:0;font-size:15px;color:var(--gov-navy)">Consistency Check Results</h3>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">Check ID: <b>#${escapeHtml(data.check_id)}</b> · Documents checked: <b>${(data.documents||[]).length}</b></div>
         </div>
         <div>${statusBadge}</div>
       </div>
@@ -1087,11 +1087,11 @@ function renderConsistencyReport(data){
       </div>
 
       <div style="background:#fffbeb;border:1px solid #fde68a;border-left:5px solid #d97706;border-radius:6px;padding:14px;margin-bottom:18px">
-        <div style="font-size:13px;font-weight:800;color:#92400e">🤖 AI Chain of Title Assessment:</div>
-        <div style="font-size:13px;color:#78350f;margin-top:6px;line-height:1.6;white-space:pre-line">${escapeHtml(data.ai_explanation || 'No discrepancies flagged.')}</div>
+        <div style="font-size:13px;font-weight:800;color:#92400e">🤖 AI Consistency Explanation:</div>
+        <div style="font-size:13px;color:#78350f;margin-top:6px;line-height:1.6;white-space:pre-line">${escapeHtml(data.ai_explanation || 'No differences detected.')}</div>
       </div>
 
-      <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Cadastral Field-by-Field Audit Matrix</h4>
+      <h4 style="margin:0 0 10px;font-size:13px;color:var(--gov-navy)">Field Consistency Comparison</h4>
       <div style="display:grid;gap:8px">
   `;
 
@@ -1148,7 +1148,7 @@ function renderStaffRecords(docs){
         <td><span class="pill ${doc.mean_conf>=75?'valid':'review'}">${doc.mean_conf}%</span></td>
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
         <td style="text-align:right">
-          <button class="btn ghost" onclick="openStaffReview('${doc.id}')" style="padding:4px 8px;font-size:11px">Inspect</button>
+          <button class="btn ghost" onclick="openStaffReview('${doc.id}')" style="padding:4px 8px;font-size:11px">View</button>
         </td>
       </tr>
     `;
@@ -1208,7 +1208,7 @@ async function loadStaffUsers(){
 async function staffChangeRole(uid, selectEl){
   const newRole = selectEl.value;
   const prevRole = selectEl.dataset.previous || '';
-  if(!confirm(`Are you sure you want to change the role for this user to ${newRole}? This will revoke their active session and require them to sign in again.`)){
+  if(!confirm(`Are you sure you want to change the role for this user to ${newRole}? The user will need to log in again.`)){
     selectEl.value = prevRole;
     return;
   }

@@ -121,7 +121,7 @@ SUPPORTED_LANGUAGES = [
     {"code": "urd", "name": "Urdu"}
 ]
 
-app = FastAPI(title="DILRMP Intelligent Land Record Digitization & Validation System")
+app = FastAPI(title="DILRMP Land Record Digitization & Validation System")
 
 app.add_middleware(
     CORSMiddleware,
@@ -322,7 +322,7 @@ def init_db():
                 )
                 db.execute(
                     "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                    (time.time(), "SYSTEM", "INIT", "System initialized with permanent administrator credentials", None)
+                    (time.time(), "SYSTEM", "INIT", "System initialized with administrator credentials", None)
                 )
             if db.is_pg:
                 db.execute("RELEASE SAVEPOINT admin_sp;")
@@ -525,7 +525,7 @@ async def run_ai_decision_support(raw_ocr_text: str, detected_lang: str) -> Tupl
         return {}, {}, raw_ocr_text
 
     prompt = f"""
-    You are an AI Decision Support Assistant for Government Land Record Verification Officers (DILRMP).
+    You are an AI Decision Support Assistant for Land Record Verification Officers (DILRMP).
     Analyze this OCR text detected in {detected_lang}:
     \"\"\"{raw_ocr_text}\"\"\"
     """
@@ -600,16 +600,16 @@ def compute_document_diff(fields_a: Dict[str, Any], fields_b: Dict[str, Any]) ->
         ("khasra_number", "Khasra Number"),
         ("khata_number", "Khata Number"),
         ("plot_number", "Plot Number"),
-        ("area", "Land Area / Extent"),
+        ("area", "Land Area"),
         ("village", "Village"),
-        ("tehsil", "Tehsil / Taluk"),
+        ("tehsil", "Tehsil"),
         ("district", "District"),
         ("state", "State"),
-        ("land_class", "Land Classification"),
+        ("land_class", "Land Class"),
         ("ownership_type", "Ownership Type"),
         ("mutation_no", "Mutation Number"),
         ("registration_no", "Registration Number"),
-        ("khatauni_year", "Khatauni / Fasli Year")
+        ("khatauni_year", "Khatauni Year")
     ]
 
     for key, label in target_fields:
@@ -666,7 +666,7 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
         ("survey_number", "Survey Number"),
         ("khasra_number", "Khasra Number"),
         ("khata_number", "Khata Number"),
-        ("area", "Area Measurement"),
+        ("area", "Land Area"),
         ("village", "Village"),
         ("tehsil", "Tehsil"),
         ("district", "District"),
@@ -721,7 +721,7 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
                 "label": label,
                 "status": "UNCERTAIN",
                 "values": values_by_doc,
-                "message": "Low OCR extraction confidence detected across records. Human cross-check advised."
+                "message": "Low OCR confidence across records. Officer check advised."
             })
         elif len(set(normalized_present)) == 1:
             if len(normalized_present) == len(records):
@@ -731,7 +731,7 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
                     "label": label,
                     "status": "MATCH",
                     "values": values_by_doc,
-                    "message": "Consistent across all inspected records."
+                    "message": "Values match across all records."
                 })
             else:
                 counts["uncertain"] += 1
@@ -740,7 +740,7 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
                     "label": label,
                     "status": "UNCERTAIN",
                     "values": values_by_doc,
-                    "message": "Partial presence across records; present entries match."
+                    "message": "Present entries match, but field is missing in some records."
                 })
         else:
             counts["mismatched"] += 1
@@ -749,7 +749,7 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
                 "label": label,
                 "status": "MISMATCH",
                 "values": values_by_doc,
-                "message": "Discrepancy detected across submitted documents. Requires officer verification."
+                "message": "Values do not match. Requires officer review."
             })
 
     if counts["mismatched"] > 0:
@@ -770,32 +770,32 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
 async def generate_ai_diff_explanation(doc_a: Dict[str, Any], doc_b: Dict[str, Any], diff: Dict[str, Any]) -> str:
     changed = diff.get("changed", [])
     if not changed:
-        return "No discrepancies identified between the compared record versions. All standard cadastral fields are identical."
+        return "No differences found between the compared document versions. All fields are identical."
 
     diff_summary = "\n".join([f"- {c['label']}: '{c['old_value']}' -> '{c['new_value']}'" for c in changed])
 
     if not ai_client:
         return (
-            f"Advisory: {len(changed)} alterations detected between Document #{doc_a.get('id')} and Document #{doc_b.get('id')}.\n\n"
-            f"Fields requiring officer inspection:\n{diff_summary}\n\n"
-            "Recommendation: Flag for statutory officer verification before executing mutation or approval."
+            f"Comparison Notes: {len(changed)} difference(s) detected between Document #{doc_a.get('id')} and Document #{doc_b.get('id')}.\n\n"
+            f"Fields requiring review:\n{diff_summary}\n\n"
+            "Recommendation: Flag for verification officer review."
         )
 
     prompt = f"""
-    You are an AI Cadastral Audit Assistant for Land Record Verification Officers (DILRMP).
-    Analyze the following detected differences between two versions of a land document:
+    You are an AI assistant helping a Verification Officer verify land records (DILRMP).
+    Analyze these detected differences between two versions of a document:
     Document A (#{doc_a.get('id')} - {doc_a.get('filename')}):
     Document B (#{doc_b.get('id')} - {doc_b.get('filename')}):
 
-    Detected Alterations:
+    Detected Differences:
     {diff_summary}
 
     Guidelines:
-    1. Explain the practical cadastral meaning of the differences (e.g. partition, transfer, typographical divergence).
-    2. Highlight specific fields requiring statutory officer attention.
-    3. Use neutral, objective audit language (e.g., 'requires verification', 'possible mismatch', 'flag for officer review').
-    4. NEVER accuse parties of fraud, and NEVER state that a document is automatically approved or rejected.
-    5. Be concise, clear, and professional.
+    1. Clearly describe the differences in simple terms.
+    2. Highlight fields that require the officer's attention.
+    3. Use calm, neutral wording (e.g., 'requires verification', 'possible mismatch', 'review recommended').
+    4. Never accuse anyone of fraud, and never make a final legal determination.
+    5. Be concise and practical.
     """
     try:
         response = await asyncio.to_thread(
@@ -807,9 +807,9 @@ async def generate_ai_diff_explanation(doc_a: Dict[str, Any], doc_b: Dict[str, A
         return response.text.strip()
     except Exception:
         return (
-            f"Automated Advisory: {len(changed)} fields differ between the examined versions.\n"
+            f"Comparison Notes: {len(changed)} fields differ between versions.\n"
             f"Changed Fields: {', '.join(c['label'] for c in changed)}.\n"
-            "Flag for officer review to confirm validity of recorded updates."
+            "Recommendation: Review flagged fields against original records."
         )
 
 async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], report: Dict[str, Any]) -> str:
@@ -817,7 +817,7 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
     mismatches = [f for f in report.get("fields", []) if f.get("status") == "MISMATCH"]
     
     if not mismatches:
-        return f"Consistency check complete across {len(records)} documents. No conflicting cadastral values were detected."
+        return f"Consistency check complete across {len(records)} documents. No conflicting fields were found."
 
     mismatch_text = "\n".join([
         f"- {m['label']}: " + ", ".join([f"Doc #{v['doc_id']}: '{v['value']}'" for v in m.get("values", [])])
@@ -826,25 +826,25 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
 
     if not ai_client:
         return (
-            f"Cross-document consistency audit identified {len(mismatches)} discrepancies across {len(records)} documents.\n"
-            f"Discrepant Fields:\n{mismatch_text}\n\n"
-            "Status: Flag for officer verification. Manual reconciliation required."
+            f"Consistency check found {len(mismatches)} difference(s) across {len(records)} documents.\n"
+            f"Differing Fields:\n{mismatch_text}\n\n"
+            "Recommendation: Requires officer verification."
         )
 
     prompt = f"""
-    You are an AI Cadastral Audit Assistant for Land Record Verification Officers (DILRMP).
-    Evaluate this multi-document consistency check across {len(records)} records:
+    You are an AI assistant helping a Verification Officer verify land records (DILRMP).
+    Review this consistency check across {len(records)} records:
     Overall Status: {report.get('overall_status')}
     Summary Counts: {json.dumps(counts)}
 
-    Identified Discrepancies:
+    Differences Found:
     {mismatch_text}
 
     Guidelines:
-    1. Provide a concise, structured assessment of conflicting fields.
-    2. Note whether discrepancies suggest an unrecorded mutation, land partition, or typographical variance.
-    3. Use neutral regulatory terminology ('flag for officer review', 'possible mismatch', 'requires verification').
-    4. NEVER allege fraud or forgery, and NEVER make a final binding legal determination.
+    1. Briefly explain the conflicting fields in simple words.
+    2. Note possible reasons such as updates, partition, or data-entry variance.
+    3. Use neutral words like 'review recommended', 'possible mismatch', 'requires verification'.
+    4. Never allege fraud or make a final binding approval or rejection.
     """
     try:
         response = await asyncio.to_thread(
@@ -856,8 +856,8 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
         return response.text.strip()
     except Exception:
         return (
-            f"Consistency analysis flagged discrepancies in: {', '.join(m['label'] for m in mismatches)}.\n"
-            "Recommendation: Verification officer must cross-reference root revenue registers before statutory endorsement."
+            f"Consistency check noted differences in: {', '.join(m['label'] for m in mismatches)}.\n"
+            "Recommendation: Verification officer should cross-check these fields with master registers."
         )
 
 # FastAPI Request Models
@@ -918,7 +918,7 @@ def change_password(req: ChangePassReq, user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=400, detail="Current password does not match.")
         new_h = hashlib.sha256(req.new_password.encode()).hexdigest()
         db.execute("UPDATE users SET password_hash=?, version=version+1 WHERE id=?", (new_h, user["id"]))
-    log_audit(user["full_name"], "CHANGE_PASSWORD", "User successfully changed password", None)
+    log_audit(user["full_name"], "CHANGE_PASSWORD", "User changed password", None)
     return {"status": "ok"}
 
 @app.get("/api/users")
@@ -999,7 +999,6 @@ def get_samples():
     os.makedirs(samples_dir, exist_ok=True)
     return {"samples": sorted([f for f in os.listdir(samples_dir) if not f.startswith(".")])}
 
-# UPLOAD & INTAKE: Accessible by DATA_OFFICER, VERIFICATION_OFFICER, and ADMIN
 @app.post("/api/process/sample/{name}")
 async def process_sample(
     name: str,
@@ -1080,7 +1079,7 @@ async def process_upload(
                 json.dumps(parsed["fields"], ensure_ascii=False), user["email"], now, now
             )
         )
-    log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded & processed '{filename}' as #{doc_id}", doc_id)
+    log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id}", doc_id)
     return {"id": doc_id, "filename": filename, "status": STATUS_DRAFT, "fields": parsed["fields"], "validation": parsed["validation"], "ai_decision_support": parsed["ai_decision_support"]}
 
 @app.get("/api/documents/{doc_id}/file")
@@ -1101,13 +1100,11 @@ def save_draft(
         r = cur.fetchone()
         if not r: raise HTTPException(status_code=404, detail="Document not found")
         
-        # State machine guardrail: Approved records are immutable to normal draft edits
         if r["status"] == STATUS_APPROVED:
-            raise HTTPException(status_code=400, detail="Cannot edit an APPROVED record.")
+            raise HTTPException(status_code=400, detail="Cannot edit an approved record.")
 
-        # Data Officer ownership guardrail
         if user["role"] == ROLE_DATA_OFFICER and r["uploaded_by"] != user["email"]:
-            raise HTTPException(status_code=403, detail="Access denied: You may only modify your own documents.")
+            raise HTTPException(status_code=403, detail="Access denied: You can only edit your own documents.")
 
         fields = json.loads(r["fields"] or "{}")
         raw_to_reval = {k: {"value": v, "confidence": fields.get(k, {}).get("confidence", 1.0)} for k, v in req.fields.items()}
@@ -1165,7 +1162,7 @@ def review_action(
     if not new_st: raise HTTPException(status_code=400, detail="Invalid action.")
 
     if new_st in (STATUS_REJECTED, STATUS_RETURNED) and not (req.comments and req.comments.strip()):
-        raise HTTPException(status_code=400, detail="Comments required when returning or rejecting a document.")
+        raise HTTPException(status_code=400, detail="Comments are required when returning or rejecting a document.")
 
     with get_db() as db:
         cur = db.execute("SELECT fields, validation, status FROM documents WHERE id=?", (doc_id,))
@@ -1173,7 +1170,7 @@ def review_action(
         if not r: raise HTTPException(status_code=404, detail="Document not found.")
 
         if r["status"] == STATUS_APPROVED and new_st != STATUS_APPROVED:
-            raise HTTPException(status_code=400, detail="Approved records cannot be reverted via simple review action.")
+            raise HTTPException(status_code=400, detail="Approved records cannot be reverted.")
 
         fields = json.loads(r["fields"] or "{}")
 
@@ -1187,7 +1184,7 @@ def review_action(
                         "value": new_v_str,
                         "confidence": 1.0,
                         "validation_status": "VALID",
-                        "validation_message": "Statutorily verified and corrected by reviewer."
+                        "validation_message": "Verified by Officer."
                     }
                     if old_v and old_v != new_v_str:
                         try:
@@ -1280,7 +1277,7 @@ async def run_consistency_check(
     user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
     if len(req.document_ids) < 2:
-        raise HTTPException(status_code=400, detail="At least two document IDs are required for cross-document consistency.")
+        raise HTTPException(status_code=400, detail="At least two document IDs are required for a consistency check.")
 
     records = []
     with get_db() as db:
@@ -1325,7 +1322,7 @@ async def run_consistency_check(
     except Exception as e:
         print(f"[CONSISTENCY LOG WARNING] {e}")
 
-    log_audit(user["full_name"], "CONSISTENCY_CHECK", f"Cross-document consistency performed on {len(records)} records", req.document_ids[0])
+    log_audit(user["full_name"], "CONSISTENCY_CHECK", f"Consistency check performed on {len(records)} records", req.document_ids[0])
     return {"check_id": check_id, "documents": records, "report": report, "ai_explanation": ai_expl}
 
 @app.get("/api/dashboard")
@@ -1341,7 +1338,7 @@ def get_dashboard(user: dict = Depends(get_current_user)):
                 "portal_type": "VIEWER",
                 "total_available_records": total_approved,
                 "districts_covered": max(1, districts or 1),
-                "state": "National / Multi-State Cadastre"
+                "state": "National Records"
             }
 
         if role == ROLE_DATA_OFFICER:
@@ -1418,13 +1415,11 @@ def get_documents(
             f = json.loads(item.get("fields") or "{}")
             item["fields"] = f
             
-            # Sanitization: Viewers do not see internal reviewer notes or raw OCR
             if role == ROLE_VIEWER:
                 item.pop("reviewer_comments", None)
                 item.pop("ocr_text", None)
                 item.pop("cleaned_ocr_text", None)
 
-            # Optional in-memory filter for deep JSON fields
             if district and f.get("district", {}).get("value", "").lower() != district.lower():
                 continue
             if village and f.get("village", {}).get("value", "").lower() != village.lower():
@@ -1443,9 +1438,8 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
 
         doc_dict = dict(r)
         
-        # Access control
         if role == ROLE_VIEWER and doc_dict["status"] != STATUS_APPROVED:
-            raise HTTPException(status_code=403, detail="Viewer access restricted to approved records.")
+            raise HTTPException(status_code=403, detail="Viewer access is limited to approved records.")
         if role == ROLE_DATA_OFFICER and doc_dict["uploaded_by"] != user["email"]:
             raise HTTPException(status_code=403, detail="Data Officers can only access their own submissions.")
 
