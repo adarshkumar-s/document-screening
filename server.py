@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 
 # Limit CPU threads
 os.environ["OMP_THREAD_LIMIT"] = "1"
@@ -438,15 +438,110 @@ def detect_primary_script(text: str) -> str:
         return "eng"
     return max(counts, key=counts.get)
 
-def run_targeted_ocr(image: Image.Image, lang_code: str = "auto") -> tuple[str, str]:
-    if not HAS_TESSERACT:
-        return "", "English"
-    try:
-        raw_text = pytesseract.image_to_string(image, lang="hin+eng+tel+tam", config="--oem 1 --psm 3")
-    except Exception:
-        raw_text = pytesseract.image_to_string(image, lang="eng", config="--oem 1 --psm 3")
-    detected = detect_primary_script(raw_text)
-    return raw_text, detected
+def _rotate_image(image: Image.Image, rotation: int) -> Image.Image:
+    rotation = int(rotation or 0) % 360
+    if rotation == 90:
+        return image.rotate(90, expand=True)
+    if rotation == 180:
+        return image.rotate(180, expand=True)
+    if rotation == 270:
+        return image.rotate(270, expand=True)
+    return image
+
+
+def _ocr_languages(preferred: str = "auto") -> List[str]:
+    """Return a small, safe language list for the installed Tesseract setup."""
+    requested = (preferred or "auto").lower().strip()
+    if requested in {"eng", "hin", "tel", "tam", "ben", "mar", "guj", "pan", "kan", "ori", "urd"}:
+        return [requested]
+    # Keep the existing multilingual behaviour as the first choice.
+    return ["hin+eng+tel+tam", "eng"]
+
+
+def run_targeted_ocr(image: Image.Image, lang_code: str = "auto", strategy: Optional[Dict[str, Any]] = None) -> tuple[str, str]:
+    """Backward-compatible OCR helper used by comparison/text-only paths."""
+    result = run_guided_ocr(image, strategy or {"lang": _ocr_languages(lang_code)[0], "psm": 3, "rotation": 0, "enhance": True})
+    return result["text"], result["detected_language"]
+
+
+def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, Any]:
+    """Run Tesseract with AI-selected settings and return genuine word confidence."""
+    img = ImageOps.exif_transpose(image).convert("L")
+    img = _rotate_image(img, strategy.get("rotation", 0))
+
+    if img.width < 1200:
+        scale = 1500.0 / float(max(1, img.width))
+        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
+    elif img.width > 2600:
+        scale = 2200.0 / float(img.width)
+        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
+
+    if strategy.get("enhance", True):
+        img = ImageOps.autocontrast(img, cutoff=0.5)
+        img = ImageEnhance.Contrast(img).enhance(1.15)
+        img = ImageEnhance.Sharpness(img).enhance(1.35)
+    if strategy.get("denoise", False):
+        img = img.filter(ImageFilter.MedianFilter(size=3))
+
+    psm = int(strategy.get("psm", 3) or 3)
+    lang_candidates = strategy.get("lang_candidates") or [strategy.get("lang", "hin+eng+tel+tam"), "eng"]
+
+    data = None
+    selected_lang = "eng"
+    for candidate in lang_candidates:
+        try:
+            if not HAS_TESSERACT:
+                break
+            data = pytesseract.image_to_data(
+                img,
+                lang=candidate,
+                config=f"--oem 3 --psm {psm}",
+                output_type=pytesseract.Output.DICT,
+            )
+            selected_lang = candidate
+            break
+        except Exception:
+            continue
+
+    if data is None:
+        return {"text": "", "confidence": 0.0, "tokens": [], "detected_language": "English"}
+
+    words: List[str] = []
+    confs: List[float] = []
+    tokens: List[Dict[str, Any]] = []
+    for i, raw_word in enumerate(data.get("text", [])):
+        word = str(raw_word or "").strip()
+        try:
+            raw_conf = float(data.get("conf", ["-1"])[i])
+        except Exception:
+            raw_conf = -1.0
+        if not word or raw_conf < 0:
+            continue
+        confidence = round(max(0.0, min(1.0, raw_conf / 100.0)), 3)
+        words.append(word)
+        confs.append(confidence)
+        tokens.append({
+            "text": word,
+            "confidence": confidence,
+            "bbox": [
+                int(data.get("left", [0])[i]),
+                int(data.get("top", [0])[i]),
+                int(data.get("width", [0])[i]),
+                int(data.get("height", [0])[i]),
+            ],
+        })
+
+    text = " ".join(words)
+    avg_conf = float(sum(confs) / len(confs)) if confs else 0.0
+    detected = detect_primary_script(text)
+    return {
+        "text": text,
+        "confidence": round(avg_conf, 3),
+        "tokens": tokens,
+        "detected_language": detected,
+        "tesseract_language": selected_lang,
+        "word_count": len(words),
+    }
 
 def validate_single_field(field_name: str, value: str, confidence: float) -> Tuple[str, str]:
     val = (value or "").strip()
@@ -578,6 +673,438 @@ async def parse_document_content(text: str, detected_lang: str, pages: int = 1) 
         "ocr_text": text,
         "cleaned_ocr_text": cleaned_ocr
     }
+
+# ---------------------------------------------------------------------
+# AI-assisted OCR pipeline
+# ---------------------------------------------------------------------
+OCR_HIGH_CONFIDENCE_THRESHOLD = 0.75
+OCR_LOW_CONFIDENCE_THRESHOLD = 0.45
+AI_CORRECTION_CONFIDENCE_THRESHOLD = 0.85
+MAX_AI_ATTEMPTS = 3
+
+
+def _image_bytes_for_ai(image: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
+def _clean_json(text: str) -> str:
+    text = (text or "").strip()
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0].strip()
+    return text
+
+
+def ai_prescan_document(image_bytes: bytes) -> Dict[str, Any]:
+    """Let Gemini choose OCR strategy; deterministic defaults remain authoritative."""
+    result = {
+        "document_type": "Land Record",
+        "language": "Mixed",
+        "script": "Mixed",
+        "quality": "medium",
+        "layout": "mixed",
+        "rotation": 0,
+        "is_handwritten": False,
+    }
+    if not ai_client or not image_bytes:
+        return result
+
+    prompt = """Inspect this land-record document image and return STRICT JSON ONLY with:
+{
+  "document_type": "Land Record/Sale Deed/Khatauni/Patta/Jamabandi/Other",
+  "language": "English/Hindi/Telugu/Tamil/Bengali/Marathi/Gujarati/Punjabi/Kannada/Odia/Urdu/Mixed",
+  "script": "Latin/Devanagari/Telugu/Tamil/Bengali/Gujarati/Gurmukhi/Kannada/Odia/Urdu/Mixed",
+  "quality": "high/medium/low",
+  "layout": "table/dense_text/mixed",
+  "rotation": 0,
+  "is_handwritten": false
+}
+Rules: rotation must be 0, 90, 180 or 270. Do not guess unreadable content."""
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+        )
+        parsed = json.loads(_clean_json(response.text))
+        if isinstance(parsed, dict):
+            result.update(parsed)
+    except Exception as exc:
+        result["error"] = str(exc)[:300]
+    return result
+
+
+def select_ai_ocr_strategy(prescan: Dict[str, Any], requested_lang: str = "auto") -> Dict[str, Any]:
+    language = str(prescan.get("language", "Mixed")).lower()
+    script = str(prescan.get("script", "Mixed")).lower()
+    layout = str(prescan.get("layout", "mixed")).lower()
+    quality = str(prescan.get("quality", "medium")).lower()
+
+    if requested_lang and requested_lang != "auto":
+        candidates = _ocr_languages(requested_lang)
+    elif "hindi" in language or "devanagari" in script:
+        candidates = ["hin+eng", "eng"]
+    elif "telugu" in language or "telugu" in script:
+        candidates = ["tel+eng", "eng"]
+    elif "tamil" in language or "tamil" in script:
+        candidates = ["tam+eng", "eng"]
+    elif "mixed" in language or "mixed" in script:
+        candidates = ["hin+eng+tel+tam", "eng"]
+    else:
+        candidates = ["eng"]
+
+    return {
+        "lang": candidates[0],
+        "lang_candidates": candidates,
+        "psm": 6 if layout == "table" else (11 if layout == "dense_text" else 3),
+        "rotation": int(prescan.get("rotation", 0) or 0) if str(prescan.get("rotation", 0)).isdigit() else 0,
+        "enhance": quality != "high",
+        "denoise": quality == "low" or bool(prescan.get("is_handwritten", False)),
+    }
+
+
+def evaluate_ai_ocr_quality(ocr_result: Dict[str, Any], extracted_fields: Dict[str, Any]) -> str:
+    text = str(ocr_result.get("text") or "").strip()
+    confidence = float(ocr_result.get("confidence", 0.0) or 0.0)
+    missing = [
+        key for key in ("owner_name", "survey_number", "village", "area")
+        if not (extracted_fields.get(key, {}) or {}).get("value")
+    ]
+    if len(text) < 25 or confidence < 0.30:
+        return "FAILED"
+    if confidence >= OCR_HIGH_CONFIDENCE_THRESHOLD and not missing:
+        return "GOOD"
+    return "UNCERTAIN"
+
+
+def ai_verify_ocr_fields(image_bytes: bytes, ocr_fields: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
+    """Visually verify OCR fields and only auto-correct high-confidence differences."""
+    updated = json.loads(json.dumps(ocr_fields))
+    corrections: List[Dict[str, Any]] = []
+    report = {"verified": [], "uncertain": [], "corrections": []}
+    if not ai_client or not image_bytes:
+        return updated, corrections, report
+
+    candidate = {k: (v.get("value", "") if isinstance(v, dict) else v) for k, v in ocr_fields.items()}
+    prompt = f"""You are assisting a government land-record Verification Officer.
+Visually inspect the attached document and verify these OCR candidate fields:
+{json.dumps(candidate, ensure_ascii=False, indent=2)}
+
+Return STRICT JSON ARRAY ONLY. Each item:
+{{"field":"survey_number","ocr_value":"128","ai_value":"182","decision":"VERIFIED|CORRECT|UNCERTAIN","confidence":0.0,"reason":"..."}}
+Rules:
+- CORRECT only when the image clearly supports the corrected value.
+- UNCERTAIN when text is blurred, obstructed or ambiguous.
+- Never invent a value and never declare fraud.
+- Keep the original OCR value in ocr_value."""
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+        )
+        items = json.loads(_clean_json(response.text))
+        if not isinstance(items, list):
+            return updated, corrections, report
+        for item in items:
+            field = item.get("field")
+            decision = str(item.get("decision", "UNCERTAIN")).upper()
+            if field not in FIELD_KEYS:
+                continue
+            try:
+                confidence = float(item.get("confidence", 0.0))
+            except Exception:
+                confidence = 0.0
+            ocr_value = str(item.get("ocr_value") or (candidate.get(field) or ""))
+            ai_value = str(item.get("ai_value") or "").strip()
+            reason = str(item.get("reason") or "Visual verification result")
+            if decision == "CORRECT" and ai_value and confidence >= AI_CORRECTION_CONFIDENCE_THRESHOLD:
+                old = updated.get(field, {}) if isinstance(updated.get(field), dict) else {"value": updated.get(field, "")}
+                updated[field] = {
+                    "value": ai_value,
+                    "confidence": round(confidence, 3),
+                    "validation_status": "VALID",
+                    "validation_message": "Corrected by AI after visual verification."
+                }
+                corr = {
+                    "field": field,
+                    "original_value": str(old.get("value") or ocr_value),
+                    "corrected_value": ai_value,
+                    "confidence": round(confidence, 3),
+                    "reason": reason,
+                    "method": "AI_VISUAL_VERIFICATION",
+                }
+                corrections.append(corr)
+                report["corrections"].append(corr)
+            elif decision == "VERIFIED":
+                report["verified"].append({"field": field, "confidence": round(confidence, 3), "reason": reason})
+            else:
+                report["uncertain"].append({"field": field, "confidence": round(confidence, 3), "reason": reason})
+    except Exception as exc:
+        report["error"] = str(exc)[:300]
+    return updated, corrections, report
+
+
+def direct_ai_extract(image_bytes: bytes, attempt: int, unresolved_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Three deliberately different extraction attempts; null is preferred over guessing."""
+    if not ai_client or not image_bytes:
+        return {}
+    all_fields = list(FIELD_KEYS)
+    if attempt == 1:
+        focus = "Read the document normally and map visible labels to values."
+    elif attempt == 2:
+        focus = "Use label-anchored extraction. Pay special attention to Hindi/Indic labels, table rows and the value immediately beside or below each label."
+    else:
+        targets = unresolved_fields or ["owner_name", "survey_number", "village", "area"]
+        focus = f"Perform a targeted retry only for these unresolved fields: {json.dumps(targets)}. Inspect nearby table cells, stamps and handwritten marks carefully."
+    schema = {field: None for field in all_fields}
+    schema["document_type"] = None
+    schema["_confidence"] = 0.0
+    prompt = f"""Extract structured data from this official land-record image. {focus}
+Return STRICT JSON only using this exact shape:
+{json.dumps(schema, ensure_ascii=False)}
+Rules:
+- Return null when a value is genuinely unreadable or absent.
+- Never guess, normalize away meaningful digits, or fabricate land numbers.
+- Preserve names and numbers as they appear.
+- _confidence is your confidence in the overall extraction, from 0 to 1."""
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+        )
+        parsed = json.loads(_clean_json(response.text))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def reconcile_ai_attempts(attempts: List[Dict[str, Any]], fields: List[str]) -> Tuple[Dict[str, Any], Dict[str, float], List[str]]:
+    final: Dict[str, Any] = {}
+    confidence: Dict[str, float] = {}
+    unresolved: List[str] = []
+    for field in fields:
+        values = []
+        for attempt in attempts:
+            value = attempt.get(field)
+            if value is not None and str(value).strip() and str(value).strip().lower() != "null":
+                values.append(str(value).strip())
+        if not values:
+            final[field] = ""
+            confidence[field] = 0.0
+            if field in ("owner_name", "survey_number", "village", "area"):
+                unresolved.append(field)
+            continue
+        counts: Dict[str, int] = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+        best, count = max(counts.items(), key=lambda x: x[1])
+        final[field] = best
+        confidence[field] = 0.95 if count >= 3 else (0.85 if count == 2 else 0.70)
+        if count == 1 and field in ("owner_name", "survey_number", "village", "area"):
+            unresolved.append(field)
+    return final, confidence, unresolved
+
+
+async def run_ai_assisted_pipeline(image: Image.Image, requested_lang: str = "auto") -> Dict[str, Any]:
+    """UPLOAD -> AI pre-scan -> guided OCR -> AI verification/correction -> direct AI fallback."""
+    image_bytes = _image_bytes_for_ai(image)
+    prescan = await asyncio.to_thread(ai_prescan_document, image_bytes)
+    strategy = select_ai_ocr_strategy(prescan, requested_lang)
+    ocr_result = await asyncio.to_thread(run_guided_ocr, image, strategy)
+
+    # Use the existing text-to-structure extractor first; it is kept for compatibility
+    # with the current UI and validation model.
+    initial_parsed = await parse_document_content(
+        ocr_result.get("text", ""),
+        ocr_result.get("detected_language", "eng"),
+        pages=1,
+    )
+    initial_fields = initial_parsed.get("fields", {})
+    # Field confidence here reflects the actual Tesseract document confidence;
+    # Gemini visual verification can later raise confidence for a specific correction.
+    for _field_name, _field_obj in initial_fields.items():
+        if isinstance(_field_obj, dict) and _field_obj.get("value"):
+            _field_obj["confidence"] = round(float(ocr_result.get("confidence", 0.0) or 0.0), 3)
+    ocr_quality = evaluate_ai_ocr_quality(ocr_result, initial_fields)
+
+    attempts: List[Dict[str, Any]] = [{
+        "attempt": 1,
+        "method": "AI_GUIDED_TESSERACT",
+        "ocr_confidence": ocr_result.get("confidence", 0.0),
+        "word_count": ocr_result.get("word_count", 0),
+    }]
+    corrections: List[Dict[str, Any]] = []
+    verification_report: Dict[str, Any] = {}
+    final_fields = initial_fields
+    pipeline_mode = "AI_SUPERVISED_OCR"
+    escalation = None
+
+    # AI verifies even good/uncertain OCR. This is where confident OCR errors are fixed.
+    if ocr_quality in ("GOOD", "UNCERTAIN") and ai_client:
+        verified_fields, corrections, verification_report = await asyncio.to_thread(
+            ai_verify_ocr_fields, image_bytes, initial_fields
+        )
+        final_fields = verified_fields
+        for correction in corrections:
+            attempts.append({
+                "attempt": len(attempts) + 1,
+                "method": "AI_VISUAL_VERIFICATION",
+                "field": correction["field"],
+                "original_value": correction["original_value"],
+                "corrected_value": correction["corrected_value"],
+                "confidence": correction["confidence"],
+                "reason": correction["reason"],
+            })
+
+        # If OCR was only uncertain and visual verification could not establish
+        # the mandatory fields, fall back to the three direct-AI attempts.
+        unresolved_after_verify = [
+            key for key in ("owner_name", "survey_number", "village", "area")
+            if not (final_fields.get(key, {}) or {}).get("value")
+        ]
+        if ocr_quality == "UNCERTAIN" and unresolved_after_verify:
+            direct_attempts: List[Dict[str, Any]] = []
+            unresolved = unresolved_after_verify
+            for attempt_no in range(1, MAX_AI_ATTEMPTS + 1):
+                result = await asyncio.to_thread(direct_ai_extract, image_bytes, attempt_no, unresolved)
+                direct_attempts.append(result)
+                attempts.append({
+                    "attempt": len(attempts) + 1,
+                    "method": f"GEMINI_DIRECT_{attempt_no}",
+                    "confidence": result.get("_confidence", 0.0) if isinstance(result, dict) else 0.0,
+                })
+                _, _, unresolved = reconcile_ai_attempts(direct_attempts, ("owner_name", "survey_number", "village", "area"))
+                if not unresolved:
+                    break
+            if direct_attempts:
+                reconciled, field_conf, unresolved_final = reconcile_ai_attempts(direct_attempts, list(FIELD_KEYS))
+                for key in FIELD_KEYS:
+                    if reconciled.get(key):
+                        final_fields[key] = {
+                            "value": reconciled[key],
+                            "confidence": field_conf.get(key, 0.0),
+                            "validation_status": "VALID",
+                            "validation_message": "Resolved by AI direct fallback after uncertain OCR."
+                        }
+                if unresolved_final:
+                    escalation = {
+                        "reason": "OCR remained uncertain and AI could not reliably resolve all mandatory fields after three attempts.",
+                        "unresolved_fields": unresolved_final,
+                        "attempts": len(direct_attempts),
+                        "route": "Verification Officer",
+                    }
+    else:
+        pipeline_mode = "AI_DIRECT_EXTRACTION"
+        direct_attempts: List[Dict[str, Any]] = []
+        unresolved = [
+            key for key in ("owner_name", "survey_number", "village", "area")
+            if not (initial_fields.get(key, {}) or {}).get("value")
+        ] or ["owner_name", "survey_number", "village", "area"]
+
+        for attempt_no in range(1, MAX_AI_ATTEMPTS + 1):
+            result = await asyncio.to_thread(direct_ai_extract, image_bytes, attempt_no, unresolved)
+            direct_attempts.append(result)
+            attempts.append({
+                "attempt": attempt_no,
+                "method": f"GEMINI_DIRECT_{attempt_no}",
+                "confidence": result.get("_confidence", 0.0) if isinstance(result, dict) else 0.0,
+            })
+            _, _, unresolved = reconcile_ai_attempts(direct_attempts, ["owner_name", "survey_number", "village", "area"])
+            if not unresolved:
+                break
+
+        if direct_attempts:
+            reconciled, field_conf, unresolved_final = reconcile_ai_attempts(direct_attempts, list(FIELD_KEYS))
+            final_fields = {
+                key: {
+                    "value": reconciled.get(key, ""),
+                    "confidence": field_conf.get(key, 0.0),
+                    "validation_status": "VALID" if reconciled.get(key) else "MISSING",
+                    "validation_message": "Extracted by AI direct fallback." if reconciled.get(key) else "AI could not establish a reliable value."
+                }
+                for key in FIELD_KEYS
+            }
+            final_fields["document_type"] = {
+                "value": next((a.get("document_type") for a in direct_attempts if a.get("document_type")), "Land Record"),
+                "confidence": max([float(a.get("_confidence", 0.0) or 0.0) for a in direct_attempts] or [0.0]),
+                "validation_status": "VALID",
+                "validation_message": "Document type identified by AI direct fallback."
+            }
+            if unresolved_final:
+                escalation = {
+                    "reason": "AI could not reliably resolve all mandatory land-record fields after three extraction attempts.",
+                    "unresolved_fields": unresolved_final,
+                    "attempts": len(direct_attempts),
+                    "route": "Verification Officer",
+                }
+        else:
+            escalation = {
+                "reason": "AI extraction was unavailable or failed.",
+                "unresolved_fields": ["owner_name", "survey_number", "village", "area"],
+                "attempts": MAX_AI_ATTEMPTS,
+                "route": "Verification Officer",
+            }
+
+    # Re-run the existing deterministic validator on the final values.
+    final_fields, validation = enrich_and_validate_fields(final_fields)
+    unresolved_mandatory = [
+        key for key in ("owner_name", "survey_number", "village", "area")
+        if not (final_fields.get(key, {}) or {}).get("value")
+    ]
+
+    if unresolved_mandatory and not escalation:
+        escalation = {
+            "reason": "Mandatory fields remain unresolved after AI-assisted OCR.",
+            "unresolved_fields": unresolved_mandatory,
+            "attempts": len(attempts),
+            "route": "Verification Officer",
+        }
+
+    return {
+        "mean_conf": int(round(float(ocr_result.get("confidence", 0.0)) * 100)),
+        "languages": ["English", ocr_result.get("detected_language", "eng")],
+        "pages": 1,
+        "detected_language": ocr_result.get("detected_language", "eng"),
+        "doc_type": final_fields.get("document_type", {}).get("value", prescan.get("document_type", "Land Record")),
+        "fields": final_fields,
+        "validation": validation,
+        "ai_decision_support": {
+            **(initial_parsed.get("ai_decision_support") or {}),
+            "pipeline_mode": pipeline_mode,
+            "ai_prescan": prescan,
+            "ocr_quality": ocr_quality,
+            "ocr_confidence": ocr_result.get("confidence", 0.0),
+            "ocr_word_count": ocr_result.get("word_count", 0),
+            "ocr_tokens": ocr_result.get("tokens", []),
+            "ocr_strategy": strategy,
+            "ai_verification": verification_report,
+            "ai_corrections": corrections,
+            "attempts": attempts,
+            "escalation_report": escalation,
+            "recommendation": "REVIEW_REQUIRED" if escalation or validation.get("verdict") != "valid" else "READY_FOR_REVIEW",
+            "explanation": "AI supervises OCR and may correct only high-confidence visual mismatches; unresolved records are routed to a Verification Officer."
+        },
+        "ocr_text": ocr_result.get("text", ""),
+        "cleaned_ocr_text": initial_parsed.get("cleaned_ocr_text", ocr_result.get("text", "")),
+        "original_fields": initial_fields,
+        "pipeline_meta": {
+            "mode": pipeline_mode,
+            "prescan": prescan,
+            "ocr_quality": ocr_quality,
+            "ocr_confidence": ocr_result.get("confidence", 0.0),
+            "strategy": strategy,
+            "corrections": corrections,
+            "attempts": attempts,
+            "escalation_report": escalation,
+        },
+        "escalated": bool(escalation),
+    }
+
 
 def normalize_field_val(val: Any) -> str:
     if val is None:
@@ -1007,17 +1534,25 @@ async def process_sample(
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
     sample_path = os.path.join(BASE_DIR, "samples", os.path.basename(name))
-    if not os.path.isfile(sample_path): raise HTTPException(status_code=404, detail="Sample not found")
-    with open(sample_path, "rb") as f: data = f.read()
+    if not os.path.isfile(sample_path):
+        raise HTTPException(status_code=404, detail="Sample not found")
+    with open(sample_path, "rb") as f:
+        data = f.read()
     doc_id = uuid.uuid4().hex[:12]
-    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}.png")
-    with open(stored_path, "wb") as sf: sf.write(data)
+    ext = os.path.splitext(name)[1].lower() or ".png"
+    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
+    with open(stored_path, "wb") as sf:
+        sf.write(data)
 
-    img = clean_ocr_image(Image.open(io.BytesIO(data)))
-    raw_text, detected_lang = await asyncio.to_thread(run_targeted_ocr, img, lang)
-    parsed = await parse_document_content(raw_text, detected_lang, pages=1)
-    
+    try:
+        raw_img = Image.open(io.BytesIO(data))
+        parsed = await run_ai_assisted_pipeline(raw_img, lang)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not process sample: {exc}")
+
     now = time.time()
+    status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
+    ai_payload = parsed["ai_decision_support"]
     with get_db() as db:
         db.execute(
             """
@@ -1028,17 +1563,32 @@ async def process_sample(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                doc_id, name, doc_type, parsed["mean_conf"], parsed["validation"]["verdict"],
-                STATUS_DRAFT, json.dumps(parsed["languages"]), 1,
+                doc_id, name, doc_type or parsed["doc_type"], parsed["mean_conf"], parsed["validation"]["verdict"],
+                status_value, json.dumps(parsed["languages"]), parsed["pages"],
                 json.dumps(parsed["fields"], ensure_ascii=False),
                 json.dumps(parsed["validation"], ensure_ascii=False),
-                json.dumps(parsed["ai_decision_support"], ensure_ascii=False),
+                json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["fields"], ensure_ascii=False), user["email"], now, now
+                json.dumps(parsed["original_fields"], ensure_ascii=False), user["email"], now, now
             )
         )
+
     log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id}", doc_id)
-    return {"id": doc_id, "filename": name, "status": STATUS_DRAFT, "fields": parsed["fields"], "validation": parsed["validation"], "ai_decision_support": parsed["ai_decision_support"]}
+    for correction in parsed["pipeline_meta"].get("corrections", []):
+        log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
+    if parsed.get("escalated"):
+        log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
+
+    return {
+        "id": doc_id,
+        "filename": name,
+        "status": status_value,
+        "fields": parsed["fields"],
+        "validation": parsed["validation"],
+        "ai_decision_support": ai_payload,
+        "pipeline_meta": parsed["pipeline_meta"],
+    }
+
 
 @app.post("/api/process")
 async def process_upload(
@@ -1048,18 +1598,29 @@ async def process_upload(
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
     content = await file.read()
-    if not content: raise HTTPException(status_code=422, detail="Empty file")
+    if not content:
+        raise HTTPException(status_code=422, detail="Empty file")
     filename = os.path.basename(file.filename or "upload")
     doc_id = uuid.uuid4().hex[:12]
-    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}.png")
-    with open(stored_path, "wb") as sf: sf.write(content)
+    ext = os.path.splitext(filename)[1].lower() or ".png"
+    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
+    with open(stored_path, "wb") as sf:
+        sf.write(content)
 
-    raw_img = Image.open(io.BytesIO(content))
-    proc_img = clean_ocr_image(raw_img)
-    raw_text, detected_lang = await asyncio.to_thread(run_targeted_ocr, proc_img, lang)
-    parsed = await parse_document_content(raw_text, detected_lang, pages=1)
+    try:
+        raw_img = Image.open(io.BytesIO(content))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Unsupported or unreadable image: {exc}")
+
+    try:
+        parsed = await run_ai_assisted_pipeline(raw_img, lang)
+    except Exception as exc:
+        log_audit(user["full_name"], "OCR_PROCESSING_ERROR", str(exc), doc_id)
+        raise HTTPException(status_code=422, detail=f"Document processing failed: {exc}")
 
     now = time.time()
+    status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
+    ai_payload = parsed["ai_decision_support"]
     with get_db() as db:
         db.execute(
             """
@@ -1070,17 +1631,32 @@ async def process_upload(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                doc_id, filename, doc_type, parsed["mean_conf"], parsed["validation"]["verdict"],
-                STATUS_DRAFT, json.dumps(parsed["languages"]), 1,
+                doc_id, filename, doc_type or parsed["doc_type"], parsed["mean_conf"], parsed["validation"]["verdict"],
+                status_value, json.dumps(parsed["languages"]), parsed["pages"],
                 json.dumps(parsed["fields"], ensure_ascii=False),
                 json.dumps(parsed["validation"], ensure_ascii=False),
-                json.dumps(parsed["ai_decision_support"], ensure_ascii=False),
+                json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["fields"], ensure_ascii=False), user["email"], now, now
+                json.dumps(parsed["original_fields"], ensure_ascii=False), user["email"], now, now
             )
         )
+
     log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id}", doc_id)
-    return {"id": doc_id, "filename": filename, "status": STATUS_DRAFT, "fields": parsed["fields"], "validation": parsed["validation"], "ai_decision_support": parsed["ai_decision_support"]}
+    for correction in parsed["pipeline_meta"].get("corrections", []):
+        log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
+    if parsed.get("escalated"):
+        log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
+
+    return {
+        "id": doc_id,
+        "filename": filename,
+        "status": status_value,
+        "fields": parsed["fields"],
+        "validation": parsed["validation"],
+        "ai_decision_support": ai_payload,
+        "pipeline_meta": parsed["pipeline_meta"],
+    }
+
 
 @app.get("/api/documents/{doc_id}/file")
 def get_document_file(doc_id: str, user: dict = Depends(get_current_user)):
