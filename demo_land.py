@@ -79,6 +79,18 @@ def property_detail(property_id:str):
 def scenarios():
     return {"demo_label":"DEMO / SYNTHETIC DATA","scenarios":DEMO_SCENARIOS}
 
+@router.get("/scenario/{scenario_id}")
+def scenario_detail(scenario_id:str):
+    scenario=next((x for x in DEMO_SCENARIOS if x["id"]==scenario_id),None)
+    if not scenario:
+        return {"error":"Scenario not found"}
+    document=DEMO_DOCUMENTS.get(scenario["document_id"])
+    property_data=_parcel(scenario["property_id"]) if scenario["property_id"] else None
+    comparison=None
+    if property_data and document:
+        comparison=compare(scenario["document_id"],scenario["property_id"])
+    return {"scenario":scenario,"document":document,"property":property_data,"comparison":comparison}
+
 @router.get("/documents")
 def documents(): return {"documents":list(DEMO_DOCUMENTS.values())}
 
