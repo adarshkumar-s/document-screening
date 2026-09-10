@@ -375,5 +375,39 @@ async def import_geojson(file: UploadFile=File(...), user: dict=Depends(require_
     log_audit(user["full_name"],"GEOJSON_IMPORT",f"Imported {imported} parcels; rejected {len(rejected)} features")
     return {"imported":imported,"rejected":rejected,"source_license":"User-supplied; verify license before use","authoritative":False}
 
+
+
+class FindingCreate(BaseModel):
+    property_id: str
+    case_id: Optional[str] = None
+    finding_type: str
+    severity: str = "REVIEW"
+    title: str
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+
+class FindingUpdate(BaseModel):
+    status: str
+
+class CaseStatusUpdate(BaseModel):
+    status: str
+
+class TaskCreate(BaseModel):
+    title: str
+    description: str = ""
+    priority: str = "NORMAL"
+    assigned_to: Optional[str] = None
+
+class TaskUpdate(BaseModel):
+    status: str
+    description: Optional[str] = None
+
+
+def _record_timeline(property_id: str, event_type: str, description: str, source: str, created_at: Optional[float] = None) -> None:
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",
+            (uuid.uuid4().hex, property_id, event_type, description, source, created_at or _now()),
+        )
+
 _ensure_tables()
 app.include_router(router)
