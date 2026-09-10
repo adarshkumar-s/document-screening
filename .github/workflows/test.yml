@@ -40,5 +40,8 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:8000/api/demo-land/health
+          curl -fsS http://127.0.0.1:8000/api/demo-land/scenarios
+          curl -fsS http://127.0.0.1:8000/land-intelligence > /tmp/land-intelligence.html
+          grep -q "LAND INTELLIGENCE" /tmp/land-intelligence.html
           kill "$pid"
           wait "$pid" || true
