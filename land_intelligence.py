@@ -130,7 +130,7 @@ def _ensure_tables() -> None:
                 source_id TEXT PRIMARY KEY, source TEXT NOT NULL, license TEXT,
                 crs TEXT, georeferenced INTEGER NOT NULL DEFAULT 0,
                 confidence REAL, imported_at REAL NOT NULL
-            )"",
+            )""",
         ]
         for stmt in statements:
             db.execute(stmt)
