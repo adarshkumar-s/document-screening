@@ -1,30 +1,103 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Land Intelligence — Document + Parcel Verification</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQ3GZsQ8Z6g5G9d8t5d7sK5v5l4g0k=" crossorigin="">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Land Intelligence — independent document and parcel investigation workspace">
+  <title>Land Intelligence — Property Investigation</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/land-intelligence.css">
 </head>
 <body>
-<header class="topbar"><div><div class="eyebrow">INDEPENDENT PROJECT</div><h1>LAND INTELLIGENCE</h1><p>Document + Parcel Verification Platform</p></div><div class="demo-badge">Demo / Synthetic Land Data</div><a class="back" href="/">Existing application ↗</a></header>
+<header class="topbar">
+  <div class="brand">
+    <div class="eyebrow">INDEPENDENT PROPERTY INTELLIGENCE</div>
+    <h1>LAND INTELLIGENCE</h1>
+    <p>Document + Parcel Verification Workspace</p>
+  </div>
+  <div class="top-actions">
+    <span class="demo-badge">DEMO / SYNTHETIC DATA</span>
+    <a class="back" href="/">Document Screening ↗</a>
+  </div>
+</header>
+
 <main>
-<section class="hero"><div><span class="pill">PROPERTY INTELLIGENCE</span><h2>Document → Intelligence → Property → Map → Verification</h2><p>Resolve extracted property identity against controlled parcel data, compare evidence, and keep a human reviewer in the loop.</p></div><button id="demoBtn" class="primary">Open demo property</button></section>
-<section class="metrics" id="metrics"></section>
-<section class="workspace">
-  <aside class="sidebar">
-    <div class="panel"><label for="search">Unified property search</label><div class="search"><input id="search" placeholder="Property, survey, gat, khasra, village"><button id="searchBtn">Search</button></div><div id="results" class="results"></div></div>
-    <div class="panel"><div class="panel-title">Parcels</div><div id="parcelList"></div></div>
-    <div class="panel disclaimer"><strong>Data boundary</strong><p>The current parcel dataset is synthetic/demo data. It is not government data and does not establish cadastral or legal truth.</p></div>
-  </aside>
-  <section class="map-panel"><div id="map"></div><div id="mapNotice" class="map-notice hidden"></div><div class="legend"><span class="swatch selected"></span> Selected <span class="swatch parcel"></span> Parcel <span class="swatch neighbor"></span> Neighbour</div></section>
-</section>
-<section class="detail-grid">
- <article class="panel" id="propertyPanel"><div class="empty">Select a parcel to inspect PROPERTY INTELLIGENCE.</div></article>
- <article class="panel" id="comparePanel"><div class="empty">Document ↔ Parcel comparison will appear here after a linked document is available.</div></article>
-</section>
-<section class="panel workflow"><h3>Verification workflow</h3><div class="steps"><span>DOCUMENT</span><i>→</i><span>EXTRACT</span><i>→</i><span>RESOLVE</span><i>→</i><span>LOCATE</span><i>→</i><span>COMPARE</span><i>→</i><span>HUMAN REVIEW</span></div><p>AI/OCR outputs are evidence with confidence, not absolute truth. The platform does not declare fraud, ownership, or legal validity.</p></section>
+  <section class="hero">
+    <div>
+      <span class="pill">EVIDENCE-FIRST INVESTIGATION</span>
+      <h2>Understand the document. Resolve the property. Inspect the parcel.</h2>
+      <p>Land Intelligence connects OCR evidence, structured property identity, parcel geometry, comparison findings and human verification without treating AI or map data as legal truth.</p>
+    </div>
+    <div class="hero-actions">
+      <button id="demoBtn" class="primary">Run demo investigation</button>
+      <button id="resetBtn" class="secondary">Reset workspace</button>
+    </div>
+  </section>
+
+  <section class="metrics" id="metrics" aria-label="Land Intelligence metrics"></section>
+
+  <section class="scenario-bar panel">
+    <div class="section-heading">
+      <div><div class="eyebrow">DEMO SCENARIOS</div><h3>Investigate a known evidence pattern</h3></div>
+      <span class="muted">All records below are synthetic.</span>
+    </div>
+    <div id="scenarios" class="scenario-list"></div>
+  </section>
+
+  <section class="workspace">
+    <aside class="left-rail">
+      <div class="panel search-panel">
+        <div class="section-heading"><div><div class="eyebrow">PROPERTY SEARCH</div><h3>Find a parcel</h3></div></div>
+        <div class="search">
+          <input id="search" aria-label="Property search" placeholder="Property, parcel, survey, village">
+          <button id="searchBtn" class="secondary">Search</button>
+        </div>
+        <div id="results" class="results" aria-live="polite"></div>
+      </div>
+      <div class="panel">
+        <div class="section-heading"><div><div class="eyebrow">PARCELS</div><h3>Demo dataset</h3></div></div>
+        <div id="parcelList" class="parcel-list"></div>
+      </div>
+      <div class="panel boundary">
+        <strong>Data boundary</strong>
+        <p>Parcel geometry and documents in demo mode are synthetic, project-owned examples. They are not government records and do not establish cadastral or legal truth.</p>
+      </div>
+    </aside>
+
+    <section class="map-panel" aria-label="Interactive parcel map">
+      <div class="map-toolbar">
+        <span id="mapStatus">Map ready</span>
+        <button id="fitBtn" class="map-tool">Fit parcels</button>
+      </div>
+      <div id="map"></div>
+      <div id="mapNotice" class="map-notice hidden"></div>
+      <div class="legend">
+        <span><i class="swatch selected"></i> Selected</span>
+        <span><i class="swatch parcel"></i> Parcel</span>
+        <span><i class="swatch neighbour"></i> Neighbour</span>
+      </div>
+    </section>
+
+    <aside class="right-rail">
+      <article class="panel" id="propertyPanel">
+        <div class="empty"><strong>Property Intelligence</strong><p>Select a parcel or run a demo investigation.</p></div>
+      </article>
+      <article class="panel" id="evidencePanel">
+        <div class="empty"><strong>Evidence & verification</strong><p>Document ↔ parcel comparison, provenance, findings and timeline appear here.</p></div>
+      </article>
+    </aside>
+  </section>
+
+  <section class="workflow panel">
+    <div class="section-heading"><div><div class="eyebrow">END-TO-END FLOW</div><h3>From document to defensible review</h3></div></div>
+    <div class="steps">
+      <span>DOCUMENT</span><b>→</b><span>OCR</span><b>→</b><span>PROPERTY IDENTITY</span><b>→</b><span>PARCEL</span><b>→</b><span>COMPARE</span><b>→</b><span>FINDING</span><b>→</b><span>HUMAN REVIEW</span><b>→</b><span>AUDIT</span>
+    </div>
+    <p>Base-map tiles are an enhancement. If the tile provider is unavailable, parcel metadata, evidence, comparison and verification remain usable.</p>
+  </section>
 </main>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/land-intelligence.js"></script>
-</body></html>
+</body>
+</html>
