@@ -24,9 +24,7 @@ DEMO_DOCUMENTS = {
         "status":"DEMO","ocr_confidence":0.94,"verification_status":"DEMO REVIEW","property_id":"DEMO-PROP-103-A",
         "fields":{"survey_number":"DEMO-103","village":"Demo Village","taluka":"Demo Taluka","district":"Demo District","area":2.31,"sub_division":"A"},
         "provenance":"Synthetic demo document; values are not copied from government records."
-    }
-}
-
+    },
     "DEMO-DOC-AREA-REVIEW": {
         "id":"DEMO-DOC-AREA-REVIEW","filename":"demo-area-review.pdf","doc_type":"Synthetic area-mismatch document",
         "status":"DEMO","ocr_confidence":0.88,"verification_status":"REVIEW REQUIRED","property_id":"DEMO-PROP-104",
