@@ -342,7 +342,12 @@ def case_detail(case_id: str, user: dict=Depends(get_current_user)):
     return result
 
 @router.post("/import-geojson")
-async def import_geojson(file: UploadFile=File(...), user: dict=Depends(require_roles(ROLE_DATA_OFFICER,ROLE_ADMIN))):
+async def import_geojson(
+    file: UploadFile = File(...),
+    source: str = "User-provided dataset",
+    license_name: str = "Unspecified; verify before use",
+    user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_ADMIN)),
+):
     raw=await file.read()
     if len(raw)>5*1024*1024: raise HTTPException(413,"GeoJSON exceeds 5 MB limit")
     try: data=json.loads(raw.decode("utf-8"))
@@ -375,8 +380,14 @@ async def import_geojson(file: UploadFile=File(...), user: dict=Depends(require_
                 ON CONFLICT(property_id) DO UPDATE SET geometry=excluded.geometry,centroid=excluded.centroid,latitude=excluded.latitude,longitude=excluded.longitude,updated_at=excluded.updated_at""",
                 (property_id,parcel_id,props.get("district"),props.get("taluka"),props.get("village"),props.get("survey_number"),props.get("gat_number"),props.get("khasra_number"),props.get("sub_division"),props.get("parent_property_id"),area,props.get("area_unit","ha"),_json(geom),_json({"latitude":lat,"longitude":lon}),lat,lon,props.get("crs","EPSG:4326"),1,props.get("geometry_source","Imported GeoJSON"),float(props.get("geometry_confidence",0.8)),props.get("data_source","User-provided dataset"),float(props.get("source_confidence",0.8)),now,now))
         imported+=1
+    source_id = "SRC-" + uuid.uuid4().hex[:10].upper()
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO dataset_sources(source_id,source,license,crs,georeferenced,confidence,imported_at) VALUES (?,?,?,?,?,?,?)",
+            (source_id, source.strip()[:200] or "User-provided dataset", license_name.strip()[:200], "EPSG:4326", 1, 0.8, _now()),
+        )
     log_audit(user["full_name"],"GEOJSON_IMPORT",f"Imported {imported} parcels; rejected {len(rejected)} features")
-    return {"imported":imported,"rejected":rejected,"source_license":"User-supplied; verify license before use","authoritative":False}
+    return {"imported":imported,"rejected":rejected,"source_id":source_id,"source":source,"license":license_name,"authoritative":False}
 
 
 
