@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install Tesseract engine and all 11 regional language models
+# Open-source OCR engine and language packs used by the existing application.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -24,13 +24,15 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-
 RUN mkdir -p /app/data
 
 ENV OMP_THREAD_LIMIT=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 ENV PORT=10000
+ENV MAP_TILE_URL=https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
+ENV MAP_ATTRIBUTION=© OpenStreetMap contributors
+ENV LAND_AREA_TOLERANCE_HA=0.05
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT} --workers 1"]
+CMD ["sh", "-c", "uvicorn site:app --host 0.0.0.0 --port ${PORT} --workers 1"]
