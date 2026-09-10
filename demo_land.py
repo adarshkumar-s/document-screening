@@ -4,6 +4,14 @@ from land_intelligence import DEMO_GEOJSON, DEMO_PARCELS
 
 router = APIRouter(prefix="/api/demo-land", tags=["Demo Land Intelligence"])
 
+DEMO_SCENARIOS = [
+    {"id":"consistent","label":"A · Consistent","document_id":"DEMO-DOC-SALE","property_id":"DEMO-PROP-103-A","finding":"CONSISTENT"},
+    {"id":"area-review","label":"B · Area mismatch","document_id":"DEMO-DOC-AREA-REVIEW","property_id":"DEMO-PROP-104","finding":"REVIEW REQUIRED"},
+    {"id":"no-match","label":"C · No parcel match","document_id":"DEMO-DOC-NO-MATCH","property_id":None,"finding":"NO MATCH"},
+    {"id":"low-confidence","label":"D · Low confidence","document_id":"DEMO-DOC-LOW-CONFIDENCE","property_id":"DEMO-PROP-105","finding":"REVIEW REQUIRED"},
+    {"id":"subdivision","label":"E · Parent/subdivision review","document_id":"DEMO-DOC-7-12","property_id":"DEMO-PROP-103-A","finding":"REVIEW REQUIRED"}
+]
+
 DEMO_DOCUMENTS = {
     "DEMO-DOC-7-12": {
         "id":"DEMO-DOC-7-12","filename":"demo-7-12.pdf","doc_type":"Synthetic 7/12-style demo document",
@@ -16,6 +24,26 @@ DEMO_DOCUMENTS = {
         "status":"DEMO","ocr_confidence":0.94,"verification_status":"DEMO REVIEW","property_id":"DEMO-PROP-103-A",
         "fields":{"survey_number":"DEMO-103","village":"Demo Village","taluka":"Demo Taluka","district":"Demo District","area":2.31,"sub_division":"A"},
         "provenance":"Synthetic demo document; values are not copied from government records."
+    }
+}
+
+    "DEMO-DOC-AREA-REVIEW": {
+        "id":"DEMO-DOC-AREA-REVIEW","filename":"demo-area-review.pdf","doc_type":"Synthetic area-mismatch document",
+        "status":"DEMO","ocr_confidence":0.88,"verification_status":"REVIEW REQUIRED","property_id":"DEMO-PROP-104",
+        "fields":{"survey_number":"DEMO-104","village":"Demo Village","taluka":"Demo Taluka","district":"Demo District","area":3.55},
+        "provenance":"Synthetic scenario document; values are not copied from government records."
+    },
+    "DEMO-DOC-NO-MATCH": {
+        "id":"DEMO-DOC-NO-MATCH","filename":"demo-no-match.pdf","doc_type":"Synthetic no-match document",
+        "status":"DEMO","ocr_confidence":0.93,"verification_status":"NO PARCEL MATCH","property_id":None,
+        "fields":{"survey_number":"DEMO-999","village":"Demo Village","taluka":"Demo Taluka","district":"Demo District","area":1.10},
+        "provenance":"Synthetic scenario document; no corresponding demo parcel exists."
+    },
+    "DEMO-DOC-LOW-CONFIDENCE": {
+        "id":"DEMO-DOC-LOW-CONFIDENCE","filename":"demo-low-confidence.pdf","doc_type":"Synthetic low-confidence document",
+        "status":"DEMO","ocr_confidence":0.42,"verification_status":"REVIEW REQUIRED","property_id":"DEMO-PROP-105",
+        "fields":{"survey_number":"DEMO-105","village":"Demo Village","taluka":"Demo Taluka","district":"Demo District","area":1.80},
+        "provenance":"Synthetic low-confidence scenario; confidence is intentionally low for demonstration."
     }
 }
 
@@ -48,6 +76,10 @@ def property_detail(property_id:str):
     docs=[d for d in DEMO_DOCUMENTS.values() if d["property_id"]==p["property_id"]]
     neighbours=[n for n in DEMO_PARCELS if n["property_id"]!=p["property_id"] and n["village"]==p["village"]]
     return {**p,"geometry":next((f["geometry"] for f in DEMO_GEOJSON["features"] if f["properties"]["property_id"]==p["property_id"]),None),"crs":"EPSG:4326","georeferenced":True,"data_source":"Synthetic/demo dataset","documents":docs,"neighbors":neighbours,"provenance":[{"field_name":"survey_number","value":p["survey_number"],"source":"Synthetic GIS dataset","confidence":0.99},{"field_name":"area","value":p["area"],"source":"Synthetic GIS dataset","confidence":p["geometry_confidence"]}],"timeline":[{"event_type":"DEMO_DATASET_CREATED","description":"Synthetic parcel created for demonstration.","source":"Project synthetic dataset"}]}
+
+@router.get("/scenarios")
+def scenarios():
+    return {"demo_label":"DEMO / SYNTHETIC DATA","scenarios":DEMO_SCENARIOS}
 
 @router.get("/documents")
 def documents(): return {"documents":list(DEMO_DOCUMENTS.values())}
