@@ -1691,9 +1691,6 @@ async def process_upload(
     filename = os.path.basename(file.filename or "upload")
     doc_id = uuid.uuid4().hex[:12]
     ext = os.path.splitext(filename)[1].lower() or ".png"
-    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
-    with open(stored_path, "wb") as sf:
-        sf.write(content)
 
     allowed_extensions = {".png", ".jpg", ".jpeg", ".pdf"}
     if ext not in allowed_extensions:
@@ -1701,6 +1698,10 @@ async def process_upload(
     max_upload_bytes = 15 * 1024 * 1024
     if len(content) > max_upload_bytes:
         raise HTTPException(status_code=413, detail="Document exceeds the 15 MB upload limit.")
+
+    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
+    with open(stored_path, "wb") as sf:
+        sf.write(content)
 
     try:
         parsed_candidate = run_ocr_pipeline(content, filename, lang)
