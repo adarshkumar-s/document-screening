@@ -119,6 +119,18 @@ def _ensure_tables() -> None:
                 id TEXT PRIMARY KEY, property_id TEXT NOT NULL, event_type TEXT NOT NULL,
                 description TEXT NOT NULL, source TEXT NOT NULL, created_at REAL NOT NULL
             )""",
+            """CREATE TABLE IF NOT EXISTS verification_findings (
+                finding_id TEXT PRIMARY KEY, property_id TEXT NOT NULL, case_id TEXT,
+                finding_type TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'REVIEW',
+                status TEXT NOT NULL DEFAULT 'OPEN', title TEXT NOT NULL,
+                evidence TEXT NOT NULL DEFAULT '{}', created_by TEXT, created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS dataset_sources (
+                source_id TEXT PRIMARY KEY, source TEXT NOT NULL, license TEXT,
+                crs TEXT, georeferenced INTEGER NOT NULL DEFAULT 0,
+                confidence REAL, imported_at REAL NOT NULL
+            )"",
         ]
         for stmt in statements:
             db.execute(stmt)
