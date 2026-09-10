@@ -409,5 +409,58 @@ def _record_timeline(property_id: str, event_type: str, description: str, source
             (uuid.uuid4().hex, property_id, event_type, description, source, created_at or _now()),
         )
 
+
+
+@router.get("/search")
+def unified_property_search(q: str = "", limit: int = 25, user: dict = Depends(get_current_user)):
+    q = (q or "").strip()
+    if not q:
+        return {"results": []}
+    limit = max(1, min(limit, 50))
+    needle = f"%{q}%"
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT property_id, parcel_id, survey_number, gat_number, khasra_number,
+                      village, taluka, district, area, area_unit
+               FROM properties
+               WHERE property_id LIKE ? OR parcel_id LIKE ? OR survey_number LIKE ?
+                  OR gat_number LIKE ? OR khasra_number LIKE ? OR village LIKE ?
+                  OR taluka LIKE ? OR district LIKE ?
+               ORDER BY parcel_id LIMIT ?""",
+            (needle, needle, needle, needle, needle, needle, needle, needle, limit),
+        ).fetchall()
+    return {"results": [dict(r) for r in rows], "query": q}
+
+@router.get("/map-config")
+def map_config():
+    return {
+        "tile_url": os.getenv("MAP_TILE_URL", "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"),
+        "attribution": os.getenv("MAP_ATTRIBUTION", "© OpenStreetMap contributors"),
+        "min_zoom": int(os.getenv("MAP_MIN_ZOOM", "3")),
+        "max_zoom": int(os.getenv("MAP_MAX_ZOOM", "19")),
+        "provider": "configurable",
+        "offline_core": True,
+    }
+
+@router.get("/investigate/{property_id}")
+def investigate_property(property_id: str, user: dict = Depends(get_current_user)):
+    detail = property_detail(property_id, user)
+    with get_db() as db:
+        findings = db.execute("SELECT * FROM verification_findings WHERE property_id=? ORDER BY updated_at DESC", (detail["property_id"],)).fetchall()
+        cases = db.execute("SELECT case_id,status,assigned_officer,created_at,updated_at FROM verification_cases WHERE property_id=? ORDER BY updated_at DESC", (detail["property_id"],)).fetchall()
+    return {**detail, "findings": [dict(x) for x in findings], "cases": [dict(x) for x in cases]}
+
+@router.get("/timeline/{property_id}")
+def property_timeline(property_id: str, user: dict = Depends(get_current_user)):
+    with get_db() as db:
+        rows = db.execute("SELECT event_type,description,source,created_at FROM property_timeline WHERE property_id=? ORDER BY created_at ASC", (property_id,)).fetchall()
+    return {"property_id": property_id, "timeline": [dict(x) for x in rows]}
+
+@router.get("/provenance/{property_id}")
+def property_provenance(property_id: str, user: dict = Depends(get_current_user)):
+    with get_db() as db:
+        rows = db.execute("SELECT field_name,value,source,confidence,created_at FROM provenance WHERE property_id=? ORDER BY created_at DESC", (property_id,)).fetchall()
+    return {"property_id": property_id, "provenance": [dict(x) for x in rows]}
+
 _ensure_tables()
 app.include_router(router)
