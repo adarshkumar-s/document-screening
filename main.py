@@ -19,9 +19,9 @@ async def add_land_intelligence_link(request: Request, call_next):
     if request.url.path != "/" or "text/html" not in response.headers.get("content-type", ""):
         return response
     body = b"".join([chunk async for chunk in response.body_iterator])
-    link = (b'<a href="/land-intelligence" style="position:fixed;right:18px;bottom:18px;z-index:99999;'
-            b'background:#1f4f8a;color:#fff;padding:11px 15px;border-radius:9px;text-decoration:none;'
-            b'font:700 13px system-ui;box-shadow:0 5px 18px rgba(0,0,0,.18)">Land Intelligence ↗</a>')
+    link = ('<a href="/land-intelligence" style="position:fixed;right:18px;bottom:18px;z-index:99999;'
+            'background:#1f4f8a;color:#fff;padding:11px 15px;border-radius:9px;text-decoration:none;'
+            'font:700 13px system-ui;box-shadow:0 5px 18px rgba(0,0,0,.18)">Land Intelligence &rarr;</a>').encode("ascii")
     if b"/land-intelligence" not in body and b"</body>" in body:
         body = body.replace(b"</body>", link + b"</body>", 1)
     headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
