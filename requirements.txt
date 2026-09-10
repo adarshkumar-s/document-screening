@@ -10,3 +10,5 @@ pytesseract
 psycopg2-binary
 python-multipart
 shapely
+pytest
+httpx
