@@ -35,4 +35,4 @@ ENV LAND_AREA_TOLERANCE_HA=0.05
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "uvicorn site:app --host 0.0.0.0 --port ${PORT} --workers 1"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
