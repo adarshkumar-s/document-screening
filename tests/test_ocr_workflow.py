@@ -1,9 +1,11 @@
 import io
 import json
+import os
 
 from fastapi.testclient import TestClient
 from PIL import Image
 
+os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "Admin@123")
 import server
 
 
@@ -36,7 +38,7 @@ def test_api_persists_and_retrieves_each_scan_without_stale_owner(monkeypatch, t
     headers = login(client)
     owners = iter(["Asha Verma", "Bharat Singh"])
 
-    def fake_pipeline(_content, filename):
+    def fake_pipeline(_content, filename, *args):
         owner = next(owners)
         return server.extract_fields_from_ocr(f"Owner Name: {owner}\nVillage: Testville", filename)
 
