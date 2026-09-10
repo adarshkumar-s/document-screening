@@ -74,6 +74,8 @@ UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 SQLITE_PATH = os.getenv("DB_PATH", os.path.join(DATA_DIR, "land_records.db"))
+# Backward-compatible alias used by the existing test suite and local tooling.
+DB_PATH = SQLITE_PATH
 
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip() or secrets.token_urlsafe(48)
 
@@ -152,7 +154,7 @@ class DBConnection:
                 self.conn = None
 
         if not self.is_pg:
-            self.conn = sqlite3.connect(SQLITE_PATH, timeout=10.0, check_same_thread=False)
+            self.conn = sqlite3.connect(DB_PATH, timeout=10.0, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA synchronous=NORMAL;")
