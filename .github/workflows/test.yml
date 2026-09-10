@@ -15,5 +15,28 @@ jobs:
           python-version: '3.12'
       - name: Install test dependencies
         run: pip install -r requirements.txt
+      - name: Compile every Python file
+        run: |
+          find . -name '*.py' -not -path './.git/*' -print0 | xargs -0 -n1 python -m py_compile
+      - name: Verify actual ASGI import
+        run: python -c "from main import app; print(app)"
       - name: Run tests
         run: pytest -q
+      - name: Verify production-style startup
+        run: |
+          set -e
+          uvicorn main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:8000/api/demo-land/health > /tmp/health.json; then
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat /tmp/uvicorn.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/api/demo-land/health
+          kill "$pid"
+          wait "$pid" || true
