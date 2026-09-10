@@ -23,7 +23,8 @@ The existing FastAPI application remains the source of truth for authentication,
 - `land_intelligence.py` — property/parcel schema, resolution, provenance, comparison, verification cases and safe GeoJSON import.
 - `demo_land.py` — credential-free synthetic demo API; it contains no real land records.
 - `land-intelligence.html` / `.css` / `.js` — original GIS investigation workspace.
-- `site.py` — production ASGI entrypoint that preserves the original application and registers the new routes.
+- `main.py` — production ASGI entrypoint. It imports the existing `server.app` and registers Land Intelligence routes without replacing the original application.
+- `site.py` — retained compatibility module; deployments use `main:app`.
 - `tests/test_land_intelligence.py` — automated tests for the synthetic GIS/demo workflow.
 
 ## Property model
@@ -124,7 +125,7 @@ python -m venv .venv
 # Windows: .venv\\Scripts\\activate
 # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn site:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 For OCR, install Tesseract locally. Docker already installs the existing Tesseract language packs.
@@ -136,7 +137,11 @@ docker build -t land-intelligence .
 docker run --rm -p 10000:10000 land-intelligence
 ```
 
-The container runs `site:app`, so the existing application and Land Intelligence routes are served together.
+The container runs `main:app`, the verified ASGI entrypoint. `main.py` imports the existing `server.app` and registers the Land Intelligence routes.
+
+## Authentication bootstrap
+
+No production administrator password is stored in source. For a new deployment, set `ADMIN_INITIAL_PASSWORD` to a strong private value before the first startup. Set `JWT_SECRET` to a strong persistent secret for stable sessions across restarts. Existing runtime databases are intentionally not committed to Git.
 
 ## Testing
 
