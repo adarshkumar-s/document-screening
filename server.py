@@ -9,6 +9,8 @@ import base64
 import uuid
 import re
 import asyncio
+import inspect
+import secrets
 from datetime import datetime, date
 from typing import Optional, Dict, Any, List, Tuple
 from dotenv import load_dotenv
@@ -73,7 +75,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 SQLITE_PATH = os.getenv("DB_PATH", os.path.join(DATA_DIR, "land_records.db"))
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dilrmp-hackathon-secure-secret-2026")
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip() or secrets.token_urlsafe(48)
 
 ROLE_VIEWER = "VIEWER"
 ROLE_DATA_OFFICER = "DATA_OFFICER"
@@ -313,16 +315,17 @@ def init_db():
                 db.execute("SAVEPOINT admin_sp;")
             cur = db.execute("SELECT id, role FROM users WHERE LOWER(email)='admin@landrec.gov.in'")
             row = cur.fetchone()
-            if not row:
-                admin_id = "5cc810682c7f"
-                h = hashlib.sha256("Admin@123".encode()).hexdigest()
+            initial_admin_password = os.getenv("ADMIN_INITIAL_PASSWORD", "").strip()
+            if not row and initial_admin_password:
+                admin_id = uuid.uuid4().hex[:12]
+                h = hashlib.sha256(initial_admin_password.encode()).hexdigest()
                 db.execute(
                     "INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)",
                     (admin_id, "System Administrator", "admin@landrec.gov.in", h, ROLE_ADMIN)
                 )
                 db.execute(
                     "INSERT INTO audit (ts, username, action, detail, doc_id) VALUES (?, ?, ?, ?, ?)",
-                    (time.time(), "SYSTEM", "INIT", "System initialized with administrator credentials", None)
+                    (time.time(), "SYSTEM", "INIT", "Initial administrator account provisioned from deployment configuration", None)
                 )
             if db.is_pg:
                 db.execute("RELEASE SAVEPOINT admin_sp;")
@@ -1387,6 +1390,53 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
             "Recommendation: Verification officer should cross-check these fields with master registers."
         )
 
+# Backward-compatible deterministic extraction and pipeline hook.
+# The AI-assisted pipeline remains the production implementation; this wrapper keeps
+# the document workflow testable and lets callers replace the OCR stage safely.
+def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
+    text = text or ""
+    patterns = {
+        "owner_name": r"(?:owner\s*name|landowner|owner)\s*[:\-]\s*([^\n]+)",
+        "father_name": r"(?:father(?:'s)?\s*name|father|husband)\s*[:\-]\s*([^\n]+)",
+        "village": r"village\s*[:\-]\s*([^\n]+)",
+        "tehsil": r"(?:tehsil|taluka)\s*[:\-]\s*([^\n]+)",
+        "district": r"district\s*[:\-]\s*([^\n]+)",
+        "state": r"state\s*[:\-]\s*([^\n]+)",
+        "survey_number": r"(?:survey(?:\s*no\.?|\s*number)|gat(?:\s*no\.?|\s*number))\s*[:\-]\s*([^\n]+)",
+        "khasra_number": r"khasra\s*(?:no\.?|number)?\s*[:\-]\s*([^\n]+)",
+        "khata_number": r"khata\s*(?:no\.?|number)?\s*[:\-]\s*([^\n]+)",
+        "plot_number": r"plot\s*(?:no\.?|number)?\s*[:\-]\s*([^\n]+)",
+        "area": r"area\s*[:\-]\s*([^\n]+)",
+        "document_date": r"(?:date|document\s*date)\s*[:\-]\s*([^\n]+)",
+    }
+    fields = {k: {"value": "", "confidence": 0.0} for k in FIELD_KEYS}
+    fields["document_type"] = {"value": "Land Record", "confidence": 0.8}
+    for key, pattern in patterns.items():
+        m = re.search(pattern, text, flags=re.IGNORECASE)
+        if m:
+            value = re.sub(r"\s+", " ", m.group(1).strip()).strip(" .,")
+            if key in fields:
+                fields[key] = {"value": value, "confidence": 0.95}
+            else:
+                fields[key] = {"value": value, "confidence": 0.95}
+    enriched, validation = enrich_and_validate_fields(fields)
+    return {"fields": enriched, "validation": validation, "ocr_text": text, "filename": os.path.basename(filename or "upload")}
+
+async def run_ocr_pipeline(content: bytes, filename: str, lang: str = "auto") -> Dict[str, Any]:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext == ".pdf":
+        if not HAS_PDFIUM:
+            raise ValueError("PDF processing is unavailable because the PDF engine is not installed")
+        pdf = pdfium.PdfDocument(content)
+        if len(pdf) == 0:
+            raise ValueError("PDF contains no pages")
+        page = pdf[0]
+        bitmap = page.render(scale=2.0)
+        image = bitmap.to_pil()
+        return await run_ai_assisted_pipeline(image, lang)
+    image = Image.open(io.BytesIO(content))
+    return await run_ai_assisted_pipeline(image, lang)
+
 # FastAPI Request Models
 class LoginReq(BaseModel): email: str; password: str
 class SignupReq(BaseModel): full_name: str; email: str; password: str; role: Optional[str] = ROLE_DATA_OFFICER
@@ -1545,8 +1595,8 @@ async def process_sample(
         sf.write(data)
 
     try:
-        raw_img = Image.open(io.BytesIO(data))
-        parsed = await run_ai_assisted_pipeline(raw_img, lang)
+        parsed_candidate = run_ocr_pipeline(data, name, lang)
+        parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not process sample: {exc}")
 
@@ -1607,15 +1657,18 @@ async def process_upload(
     with open(stored_path, "wb") as sf:
         sf.write(content)
 
-    try:
-        raw_img = Image.open(io.BytesIO(content))
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Unsupported or unreadable image: {exc}")
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".pdf"}
+    if ext not in allowed_extensions:
+        raise HTTPException(status_code=415, detail="Unsupported file type. Use PNG, JPEG, or PDF.")
+    max_upload_bytes = 15 * 1024 * 1024
+    if len(content) > max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Document exceeds the 15 MB upload limit.")
 
     try:
-        parsed = await run_ai_assisted_pipeline(raw_img, lang)
+        parsed_candidate = run_ocr_pipeline(content, filename, lang)
+        parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
     except Exception as exc:
-        log_audit(user["full_name"], "OCR_PROCESSING_ERROR", str(exc), doc_id)
+        log_audit(user["full_name"], "OCR_PROCESSING_ERROR", "Document processing failed", doc_id)
         raise HTTPException(status_code=422, detail=f"Document processing failed: {exc}")
 
     now = time.time()
@@ -1660,9 +1713,18 @@ async def process_upload(
 
 @app.get("/api/documents/{doc_id}/file")
 def get_document_file(doc_id: str, user: dict = Depends(get_current_user)):
+    with get_db() as db:
+        row = db.execute("SELECT uploaded_by, status FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if user["role"] == ROLE_VIEWER and row["status"] != STATUS_APPROVED:
+            raise HTTPException(status_code=403, detail="Viewer access is limited to approved records.")
+        if user["role"] == ROLE_DATA_OFFICER and row["uploaded_by"] != user["email"]:
+            raise HTTPException(status_code=403, detail="Data Officers can only access their own submissions.")
     for ext in [".png", ".pdf", ".jpg", ".jpeg"]:
         p = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
-        if os.path.isfile(p): return FileResponse(p)
+        if os.path.isfile(p):
+            return FileResponse(p)
     raise HTTPException(status_code=404, detail="File not found")
 
 @app.post("/api/documents/{doc_id}/save-draft")
