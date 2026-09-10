@@ -236,7 +236,10 @@ def property_detail(property_id: str, user: dict=Depends(get_current_user)):
                 if ng and (geom.touches(ng) or geom.distance(ng)<0.0001): neighbors.append(_property(nr,False))
         prov=db.execute("SELECT field_name,value,source,confidence,created_at FROM provenance WHERE property_id=? ORDER BY created_at DESC",(p["property_id"],)).fetchall()
         timeline=db.execute("SELECT event_type,description,source,created_at FROM property_timeline WHERE property_id=? ORDER BY created_at ASC",(p["property_id"],)).fetchall()
-    p["documents":[dict(d) for d in docs]]; p["neighbors"]=neighbors; p["provenance":[dict(x) for x in prov]; p["timeline":[dict(x) for x in timeline]
+    p["documents"] = [dict(d) for d in docs]
+    p["neighbors"] = neighbors
+    p["provenance"] = [dict(x) for x in prov]
+    p["timeline"] = [dict(x) for x in timeline]
     return p
 
 @router.get("/resolve/document/{doc_id}")
@@ -303,7 +306,6 @@ def list_cases(status: Optional[str]=None, user: dict=Depends(get_current_user))
 
 @router.post("/cases")
 def create_case(req: CaseCreate, user: dict=Depends(require_roles(ROLE_DATA_OFFICER,ROLE_VERIFICATION_OFFICER,ROLE_ADMIN))):
-    if req.status if hasattr(req,'status') else False: pass
     if req.property_id:
         with get_db() as db:
             if not db.execute("SELECT 1 FROM properties WHERE property_id=? OR parcel_id=?",(req.property_id,req.property_id)).fetchone(): raise HTTPException(404,"Property not found")
@@ -321,7 +323,7 @@ def case_detail(case_id: str, user: dict=Depends(get_current_user)):
         if not row: raise HTTPException(404,"Case not found")
         tasks=db.execute("SELECT * FROM verification_tasks WHERE case_id=? ORDER BY created_at",(case_id,)).fetchall()
         audits=db.execute("SELECT * FROM audit WHERE detail LIKE ? ORDER BY id DESC",(f"%{case_id}%",)).fetchall()
-    result=dict(row); result["findings"]=json.loads(result["findings"] or "[]"); result["warnings"]=json.loads(result["warnings"] or "[]"); result["comparison_results"]=json.loads(result["comparison_results"] or "[]"); result["tasks"]=[dict(x) for x in tasks]; result["audit"]=[dict(x) for x in audits]
+    result=dict(row); result["findings"]=json.loads(result["findings"] or "[]"); result["warnings"]=json.loads(result["warnings"] or "[]"); result["comparison_results"]=json.loads(result["comparison_results"] or "[]"); result["tasks"]= [dict(x) for x in tasks]; result["audit"]= [dict(x) for x in audits]
     return result
 
 @router.post("/import-geojson")
