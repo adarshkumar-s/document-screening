@@ -47,3 +47,19 @@ def test_missing_demo_property_returns_error_payload():
     r = client.get('/api/demo-land/properties/DOES-NOT-EXIST')
     assert r.status_code == 200
     assert r.json()['error'] == 'Property not found'
+
+
+def test_demo_scenarios_cover_core_investigation_paths():
+    r = client.get('/api/demo-land/scenarios')
+    assert r.status_code == 200
+    ids = {x['id'] for x in r.json()['scenarios']}
+    assert {'consistent', 'area-review', 'no-match', 'low-confidence', 'subdivision'} <= ids
+
+
+def test_demo_no_match_does_not_fabricate_coordinates():
+    r = client.get('/api/demo-land/scenario/no-match')
+    assert r.status_code == 200
+    data = r.json()
+    assert data['property'] is None
+    assert data['document']['fields']['survey_number'] == 'DEMO-999'
+
