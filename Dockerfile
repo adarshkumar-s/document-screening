@@ -30,7 +30,7 @@ ENV OMP_THREAD_LIMIT=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 ENV PORT=10000
 ENV MAP_TILE_URL=https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
-ENV MAP_ATTRIBUTION=© OpenStreetMap contributors
+ENV MAP_ATTRIBUTION="© OpenStreetMap contributors"
 ENV LAND_AREA_TOLERANCE_HA=0.05
 
 EXPOSE 10000
