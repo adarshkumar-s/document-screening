@@ -508,5 +508,56 @@ def update_finding(finding_id: str, req: FindingUpdate, user: dict = Depends(req
     log_audit(user["full_name"], "FINDING_STATUS_CHANGED", f"Finding {finding_id}: {status_value}")
     return {"finding_id": finding_id, "status": status_value}
 
+
+
+@router.patch("/cases/{case_id}/status")
+def update_case_status(case_id: str, req: CaseStatusUpdate, user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    status_value = req.status.upper().strip()
+    if status_value not in CASE_STATUSES:
+        raise HTTPException(422, f"Unsupported case status. Use one of {sorted(CASE_STATUSES)}.")
+    with get_db() as db:
+        row = db.execute("SELECT property_id FROM verification_cases WHERE case_id=?", (case_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Case not found")
+        db.execute("UPDATE verification_cases SET status=?,updated_at=? WHERE case_id=?", (status_value, _now(), case_id))
+    if row["property_id"]:
+        _record_timeline(row["property_id"], "CASE_STATUS_CHANGED", f"Case {case_id} changed to {status_value}", "Verification workflow")
+    log_audit(user["full_name"], "CASE_STATUS_CHANGED", f"Case {case_id}: {status_value}", case_id)
+    return {"case_id": case_id, "status": status_value}
+
+@router.post("/cases/{case_id}/tasks")
+def create_case_task(case_id: str, req: TaskCreate, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    task_id = "TASK-" + uuid.uuid4().hex[:10].upper()
+    now = _now()
+    with get_db() as db:
+        case = db.execute("SELECT property_id FROM verification_cases WHERE case_id=?", (case_id,)).fetchone()
+        if not case:
+            raise HTTPException(404, "Case not found")
+        db.execute("INSERT INTO verification_tasks(task_id,case_id,title,status,assigned_to,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", (task_id, case_id, req.title, "OPEN", req.assigned_to or user["email"], now, now))
+    if case["property_id"]:
+        _record_timeline(case["property_id"], "TASK_CREATED", f"Task {task_id}: {req.title}", "Verification workflow", now)
+    log_audit(user["full_name"], "TASK_CREATED", f"Created task {task_id}", case_id)
+    return {"task_id": task_id, "status": "OPEN"}
+
+@router.patch("/tasks/{task_id}")
+def update_case_task(task_id: str, req: TaskUpdate, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    allowed = {"OPEN", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
+    status_value = req.status.upper().strip()
+    if status_value not in allowed:
+        raise HTTPException(422, f"Unsupported task status. Use one of {sorted(allowed)}.")
+    with get_db() as db:
+        row = db.execute("SELECT case_id FROM verification_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Task not found")
+        db.execute("UPDATE verification_tasks SET status=?,updated_at=? WHERE task_id=?", (status_value, _now(), task_id))
+    log_audit(user["full_name"], "TASK_STATUS_CHANGED", f"Task {task_id}: {status_value}", row["case_id"])
+    return {"task_id": task_id, "status": status_value}
+
+@router.get("/cases/{case_id}/tasks")
+def list_case_tasks(case_id: str, user: dict = Depends(get_current_user)):
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM verification_tasks WHERE case_id=? ORDER BY created_at", (case_id,)).fetchall()
+    return {"tasks": [dict(x) for x in rows]}
+
 _ensure_tables()
 app.include_router(router)
