@@ -327,6 +327,13 @@ def create_case(req: CaseCreate, user: dict=Depends(require_roles(ROLE_DATA_OFFI
     case_id="CASE-"+uuid.uuid4().hex[:10].upper(); now=_now()
     with get_db() as db:
         db.execute("INSERT INTO verification_cases(case_id,property_id,status,assigned_officer,findings,warnings,comparison_results,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",(case_id,req.property_id,"OPEN",req.assigned_officer or user["email"],_json(req.findings),_json(req.warnings),"[]",now,now))
+        for item in req.findings:
+            if not isinstance(item, dict) or not item.get("title"):
+                continue
+            db.execute(
+                "INSERT INTO verification_findings(finding_id,property_id,case_id,finding_type,severity,status,title,evidence,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                ("FND-" + uuid.uuid4().hex[:10].upper(), req.property_id, case_id, item.get("finding_type","REVIEW"), item.get("severity","REVIEW"), "OPEN", item["title"], _json(item.get("evidence",{})), user["email"], now, now),
+            )
         if req.property_id: db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",(uuid.uuid4().hex,req.property_id,"VERIFICATION_STARTED",f"Verification case {case_id} created.","Verification workflow",now))
     log_audit(user["full_name"],"CASE_CREATED",f"Created verification case {case_id}",case_id)
     return {"case_id":case_id,"status":"OPEN"}
@@ -337,8 +344,9 @@ def case_detail(case_id: str, user: dict=Depends(get_current_user)):
         row=db.execute("SELECT * FROM verification_cases WHERE case_id=?",(case_id,)).fetchone()
         if not row: raise HTTPException(404,"Case not found")
         tasks=db.execute("SELECT * FROM verification_tasks WHERE case_id=? ORDER BY created_at",(case_id,)).fetchall()
+        findings=db.execute("SELECT * FROM verification_findings WHERE case_id=? ORDER BY created_at ASC",(case_id,)).fetchall()
         audits=db.execute("SELECT * FROM audit WHERE detail LIKE ? ORDER BY id DESC",(f"%{case_id}%",)).fetchall()
-    result=dict(row); result["findings"]=json.loads(result["findings"] or "[]"); result["warnings"]=json.loads(result["warnings"] or "[]"); result["comparison_results"]=json.loads(result["comparison_results"] or "[]"); result["tasks"]= [dict(x) for x in tasks]; result["audit"]= [dict(x) for x in audits]
+    result=dict(row); result["findings"]=json.loads(result["findings"] or "[]"); result["warnings"]=json.loads(result["warnings"] or "[]"); result["comparison_results"]=json.loads(result["comparison_results"] or "[]"); result["tasks"]= [dict(x) for x in tasks]; result["finding_records"]=[dict(x) for x in findings]; result["audit"]= [dict(x) for x in audits]
     return result
 
 @router.post("/import-geojson")
