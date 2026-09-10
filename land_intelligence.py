@@ -306,7 +306,10 @@ def land_dashboard(user: dict=Depends(get_current_user)):
         cases=db.execute("SELECT COUNT(*) c FROM verification_cases").fetchone()["c"]
         pending=db.execute("SELECT COUNT(*) c FROM verification_cases WHERE status IN ('OPEN','UNDER_REVIEW','NEEDS_CORRECTION')").fetchone()["c"]
         linked=db.execute("SELECT COUNT(DISTINCT document_id) c FROM property_documents").fetchone()["c"]
-    return {"total_properties":total,"documents_processed":docs,"pending_verification":pending,"review_required":0,"conflicts":0,"no_parcel_match":max(0,docs-linked),"low_confidence":0,"completed_cases":max(0,cases-pending),"demo_data":True}
+        review_required=db.execute("SELECT COUNT(*) c FROM verification_findings WHERE status IN ('OPEN','ACKNOWLEDGED') AND severity='REVIEW'").fetchone()["c"]
+        conflicts=db.execute("SELECT COUNT(*) c FROM verification_findings WHERE status IN ('OPEN','ACKNOWLEDGED') AND severity='CONFLICT'").fetchone()["c"]
+        low_confidence=db.execute("SELECT COUNT(*) c FROM documents WHERE mean_conf < 65").fetchone()["c"]
+    return {"total_properties":total,"documents_processed":docs,"pending_verification":pending,"review_required":review_required,"conflicts":conflicts,"no_parcel_match":max(0,docs-linked),"low_confidence":low_confidence,"completed_cases":max(0,cases-pending),"demo_data":True}
 
 @router.get("/cases")
 def list_cases(status: Optional[str]=None, user: dict=Depends(get_current_user)):
