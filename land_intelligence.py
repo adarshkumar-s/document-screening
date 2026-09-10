@@ -462,5 +462,51 @@ def property_provenance(property_id: str, user: dict = Depends(get_current_user)
         rows = db.execute("SELECT field_name,value,source,confidence,created_at FROM provenance WHERE property_id=? ORDER BY created_at DESC", (property_id,)).fetchall()
     return {"property_id": property_id, "provenance": [dict(x) for x in rows]}
 
+
+
+@router.get("/findings")
+def list_findings(property_id: Optional[str] = None, status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
+    clauses = []
+    params: List[Any] = []
+    if property_id:
+        clauses.append("property_id=?")
+        params.append(property_id)
+    if status_filter:
+        clauses.append("status=?")
+        params.append(status_filter)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with get_db() as db:
+        rows = db.execute(f"SELECT * FROM verification_findings{where} ORDER BY updated_at DESC", tuple(params)).fetchall()
+    return {"findings": [dict(x) for x in rows]}
+
+@router.post("/findings")
+def create_finding(req: FindingCreate, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    with get_db() as db:
+        prop = db.execute("SELECT property_id FROM properties WHERE property_id=? OR parcel_id=?", (req.property_id, req.property_id)).fetchone()
+        if not prop:
+            raise HTTPException(404, "Property not found")
+    finding_id = "FND-" + uuid.uuid4().hex[:10].upper()
+    now = _now()
+    with get_db() as db:
+        db.execute("INSERT INTO verification_findings(finding_id,property_id,case_id,finding_type,severity,status,title,evidence,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (finding_id, prop["property_id"], req.case_id, req.finding_type, req.severity.upper(), "OPEN", req.title, _json(req.evidence), user["email"], now, now))
+    _record_timeline(prop["property_id"], "FINDING_CREATED", f"Finding {finding_id}: {req.title}", "Verification engine", now)
+    log_audit(user["full_name"], "FINDING_CREATED", f"Created finding {finding_id} for {prop['property_id']}")
+    return {"finding_id": finding_id, "status": "OPEN"}
+
+@router.patch("/findings/{finding_id}")
+def update_finding(finding_id: str, req: FindingUpdate, user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    allowed = {"OPEN", "ACKNOWLEDGED", "RESOLVED", "DISMISSED"}
+    status_value = req.status.upper().strip()
+    if status_value not in allowed:
+        raise HTTPException(422, f"Unsupported finding status. Use one of {sorted(allowed)}.")
+    with get_db() as db:
+        row = db.execute("SELECT property_id FROM verification_findings WHERE finding_id=?", (finding_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Finding not found")
+        db.execute("UPDATE verification_findings SET status=?,updated_at=? WHERE finding_id=?", (status_value, _now(), finding_id))
+    _record_timeline(row["property_id"], "FINDING_STATUS_CHANGED", f"Finding {finding_id} changed to {status_value}", "Verification officer")
+    log_audit(user["full_name"], "FINDING_STATUS_CHANGED", f"Finding {finding_id}: {status_value}")
+    return {"finding_id": finding_id, "status": status_value}
+
 _ensure_tables()
 app.include_router(router)
