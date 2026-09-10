@@ -486,6 +486,26 @@ def property_provenance(property_id: str, user: dict = Depends(get_current_user)
 
 
 
+@router.get("/parent-consistency/{property_id}")
+def parent_consistency(property_id: str, user: dict = Depends(get_current_user)):
+    with get_db() as db:
+        child = db.execute("SELECT * FROM properties WHERE property_id=? OR parcel_id=?", (property_id, property_id)).fetchone()
+        if not child:
+            raise HTTPException(404, "Property not found")
+        parent_id = child["parent_property_id"]
+        if not parent_id:
+            return {"status":"INSUFFICIENT EVIDENCE","message":"No configured parent parcel for this property."}
+        parent = db.execute("SELECT property_id,parcel_id,area,area_unit FROM properties WHERE property_id=?", (parent_id,)).fetchone()
+        children = db.execute("SELECT property_id,parcel_id,area,area_unit FROM properties WHERE parent_property_id=?", (parent_id,)).fetchall()
+    if not parent:
+        return {"status":"INSUFFICIENT EVIDENCE","message":"Configured parent parcel is unavailable."}
+    unit = parent["area_unit"] or "ha"
+    compatible = [c for c in children if (c["area_unit"] or unit) == unit]
+    child_total = round(sum(float(c["area"] or 0) for c in compatible), 4)
+    difference = round(abs(float(parent["area"] or 0) - child_total), 4)
+    tolerance = float(os.getenv("LAND_AREA_TOLERANCE_HA", "0.05"))
+    return {"parent":dict(parent),"children":[dict(c) for c in children],"child_total":child_total,"difference":difference,"tolerance":tolerance,"status":"CONSISTENT" if difference <= tolerance else "REVIEW REQUIRED","explanation":"Derived area arithmetic only; not a legal survey conclusion."}
+
 @router.get("/findings")
 def list_findings(property_id: Optional[str] = None, status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
     clauses = []
