@@ -415,7 +415,7 @@ def require_roles(*allowed_roles: str):
 FIELD_KEYS = (
     "owner_name", "father_name", "survey_number", "khasra_number",
     "khata_number", "plot_number", "area", "village", "tehsil",
-    "district", "state", "land_class", "ownership_type",
+    "district", "state", "document_date", "land_class", "ownership_type",
     "mutation_no", "registration_no", "khatauni_year"
 )
 
@@ -1422,6 +1422,12 @@ def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
             else:
                 fields[key] = {"value": value, "confidence": 0.95}
     enriched, validation = enrich_and_validate_fields(fields)
+    if not enriched.get("owner_name", {}).get("value") and filename:
+        validation["issues"].append({
+            "severity": "warning",
+            "field": "owner_name",
+            "msg": "Record-holder name was not extracted from document text; filename is not treated as identity."
+        })
     return {
         "mean_conf": 95,
         "languages": ["English"],
