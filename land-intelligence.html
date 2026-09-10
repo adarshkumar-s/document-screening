@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Land Intelligence — Document + Parcel Verification</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQ3GZsQ8Z6g5G9d8t5d7sK5v5l4g0k=" crossorigin="">
+  <link rel="stylesheet" href="/land-intelligence.css">
+</head>
+<body>
+<header class="topbar"><div><div class="eyebrow">INDEPENDENT PROJECT</div><h1>LAND INTELLIGENCE</h1><p>Document + Parcel Verification Platform</p></div><div class="demo-badge">Demo / Synthetic Land Data</div><a class="back" href="/">Existing application ↗</a></header>
+<main>
+<section class="hero"><div><span class="pill">PROPERTY INTELLIGENCE</span><h2>Document → Intelligence → Property → Map → Verification</h2><p>Resolve extracted property identity against controlled parcel data, compare evidence, and keep a human reviewer in the loop.</p></div><button id="demoBtn" class="primary">Open demo property</button></section>
+<section class="metrics" id="metrics"></section>
+<section class="workspace">
+  <aside class="sidebar">
+    <div class="panel"><label for="search">Unified property search</label><div class="search"><input id="search" placeholder="Property, survey, gat, khasra, village"><button id="searchBtn">Search</button></div><div id="results" class="results"></div></div>
+    <div class="panel"><div class="panel-title">Parcels</div><div id="parcelList"></div></div>
+    <div class="panel disclaimer"><strong>Data boundary</strong><p>The current parcel dataset is synthetic/demo data. It is not government data and does not establish cadastral or legal truth.</p></div>
+  </aside>
+  <section class="map-panel"><div id="map"></div><div id="mapNotice" class="map-notice hidden"></div><div class="legend"><span class="swatch selected"></span> Selected <span class="swatch parcel"></span> Parcel <span class="swatch neighbor"></span> Neighbour</div></section>
+</section>
+<section class="detail-grid">
+ <article class="panel" id="propertyPanel"><div class="empty">Select a parcel to inspect PROPERTY INTELLIGENCE.</div></article>
+ <article class="panel" id="comparePanel"><div class="empty">Document ↔ Parcel comparison will appear here after a linked document is available.</div></article>
+</section>
+<section class="panel workflow"><h3>Verification workflow</h3><div class="steps"><span>DOCUMENT</span><i>→</i><span>EXTRACT</span><i>→</i><span>RESOLVE</span><i>→</i><span>LOCATE</span><i>→</i><span>COMPARE</span><i>→</i><span>HUMAN REVIEW</span></div><p>AI/OCR outputs are evidence with confidence, not absolute truth. The platform does not declare fraud, ownership, or legal validity.</p></section>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="/land-intelligence.js"></script>
+</body></html>
