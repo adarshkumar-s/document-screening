@@ -1646,6 +1646,20 @@ async def process_sample(
             )
         )
 
+    property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
+    try:
+        from land_intelligence import _resolve
+        property_resolution = _resolve(parsed["fields"])
+        if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
+            match_property = property_resolution["matches"][0]["property"]["property_id"]
+            with get_db() as db:
+                db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
+                db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
+            log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved sample document #{doc_id}: {property_resolution['status']}", doc_id)
+            property_resolution["property_id"] = match_property
+    except Exception:
+        property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
+
     log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id}", doc_id)
     for correction in parsed["pipeline_meta"].get("corrections", []):
         log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
@@ -1660,6 +1674,7 @@ async def process_sample(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
+        "property_resolution": property_resolution,
     }
 
 
@@ -1716,6 +1731,20 @@ async def process_upload(
                 json.dumps(parsed["original_fields"], ensure_ascii=False), user["email"], now, now
             )
         )
+
+    property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
+    try:
+        from land_intelligence import _resolve
+        property_resolution = _resolve(parsed["fields"])
+        if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
+            match_property = property_resolution["matches"][0]["property"]["property_id"]
+            with get_db() as db:
+                db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
+                db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
+            log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved document #{doc_id}: {property_resolution['status']}", doc_id)
+            property_resolution["property_id"] = match_property
+    except Exception:
+        property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
 
     log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id}", doc_id)
     for correction in parsed["pipeline_meta"].get("corrections", []):
