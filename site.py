@@ -2,6 +2,7 @@
 Imports the existing application unchanged, then registers the Land Intelligence layer
 and its standalone UI. The original / routes and APIs remain available.
 """
+import os
 from fastapi.responses import FileResponse
 from server import app, BASE_DIR
 import land_intelligence  # registers /api/land routes and initializes synthetic dataset
