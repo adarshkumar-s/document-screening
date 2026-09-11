@@ -557,6 +557,7 @@ function setupStaffPortal(role){
       ['learn', '🧠 AI Corrections'],
       ['users', '👥 Users'],
       ['audit', '🔐 Audit Trail'],
+      ['approvals', '🛡️ AI Approvals'],
       ['account', '⚙️ Settings']
     ];
   }
@@ -589,6 +590,7 @@ function switchStaffTab(tabName){
   if(tabName === 'records') loadStaffRecords();
   if(tabName === 'learn') loadStaffLearn();
   if(tabName === 'audit') loadStaffAudit();
+  if(tabName === 'approvals') loadAiApprovals();
   if(tabName === 'users') loadStaffUsers();
   if(tabName === 'account') loadStaffAccount();
 }
