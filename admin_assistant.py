@@ -839,6 +839,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     faulty = get_faulty_records(8)
     officers = list_verification_officers()
     recent = get_recent_activity(limit=5)
+    intelligence = get_operational_intelligence()
     context = {
         "statistics": stats,
         "pending_records": pending,
@@ -846,6 +847,8 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         "faulty_records": faulty,
         "verification_officers": officers,
         "recent_activity": recent,
+        "operational_intelligence": intelligence,
+        "governance": {"consequential_actions_require_admin_approval": True},
     }
 
     records_found = []
