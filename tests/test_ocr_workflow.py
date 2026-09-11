@@ -159,3 +159,22 @@ def test_production_docs_are_disabled_when_configured():
         assert server.app.openapi_url is None
     else:
         assert server.app.docs_url == "/docs"
+
+
+def test_change_password_rehashes_and_revokes_session(tmp_path):
+    server.DB_PATH = str(tmp_path / "change-password.db")
+    server.init_db()
+    client = TestClient(server.app)
+    admin = login(client)
+    changed = client.post(
+        "/api/auth/change-password",
+        headers=admin,
+        json={"current_password":"Admin@123","new_password":"New Strong Password 123!"}
+    )
+    assert changed.status_code == 200
+    assert client.get("/api/auth/me", headers=admin).status_code == 401
+    new_login = client.post("/api/auth/login", json={"email":"admin@landrec.gov.in","password":"New Strong Password 123!"})
+    assert new_login.status_code == 200
+    with server.get_db() as db:
+        stored = db.execute("SELECT password_hash FROM users WHERE email=?", ("admin@landrec.gov.in",)).fetchone()["password_hash"]
+    assert stored.startswith("$argon2id$")
