@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "Admin@123")
+os.environ.setdefault("APP_ENV", "test")
 import server
 
 
@@ -61,3 +62,100 @@ def test_upload_rejects_empty_and_unsupported_files(tmp_path):
     headers = login(client)
     assert client.post("/api/process", headers=headers, files={"file": ("bad.exe", b"x")}).status_code == 415
     assert client.post("/api/process", headers=headers, files={"file": ("empty.png", b"")}).status_code == 422
+
+    
+def test_password_hashing_uses_argon2id():
+    import hashlib
+    hashed = server.hash_password("Correct Horse Battery Staple")
+    assert hashed.startswith("$argon2id$")
+    assert server.verify_password(hashed, "Correct Horse Battery Staple")[0] is True
+    assert server.verify_password(hashed, "wrong")[0] is False
+    assert hashed != hashlib.sha256(b"Correct Horse Battery Staple").hexdigest()
+
+
+def test_signup_cannot_self_assign_elevated_role(tmp_path):
+    server.DB_PATH = str(tmp_path / "roles.db")
+    server.init_db()
+    client = TestClient(server.app)
+    r = client.post("/api/auth/signup", json={
+        "full_name":"Normal User","email":"normal@example.test",
+        "password":"Strong Test Password 123!","role":"ADMIN"
+    })
+    assert r.status_code == 200
+    assert r.json()["user"]["role"] == server.ROLE_DATA_OFFICER
+    with server.get_db() as db:
+        row = db.execute("SELECT role FROM users WHERE email=?", ("normal@example.test",)).fetchone()
+        assert row["role"] == server.ROLE_DATA_OFFICER
+
+
+def test_role_change_requires_admin_and_admin_cannot_change_self(tmp_path):
+    server.DB_PATH = str(tmp_path / "role-change.db")
+    server.init_db()
+    client = TestClient(server.app)
+    signup = client.post("/api/auth/signup", json={
+        "full_name":"Normal User","email":"normal2@example.test",
+        "password":"Strong Test Password 123!"
+    })
+    user_token = signup.json()["token"]
+    assert client.put(
+        "/api/users/whatever/role",
+        headers={"Authorization":f"Bearer {user_token}"},
+        json={"role":"ADMIN"}
+    ).status_code == 403
+    admin = login(client)
+    with server.get_db() as db:
+        admin_row = db.execute("SELECT id FROM users WHERE email=?", ("admin@landrec.gov.in",)).fetchone()
+        target = db.execute("SELECT id FROM users WHERE email=?", ("normal2@example.test",)).fetchone()
+    assert client.put(
+        f"/api/users/{admin_row['id']}/role",
+        headers=admin,
+        json={"role":"ADMIN"}
+    ).status_code == 400
+    ok = client.put(
+        f"/api/users/{target['id']}/role",
+        headers=admin,
+        json={"role":"VERIFICATION_OFFICER"}
+    )
+    assert ok.status_code == 200
+    assert ok.json()["user"]["role"] == server.ROLE_VERIFICATION_OFFICER
+
+
+def test_query_string_jwt_is_rejected(tmp_path):
+    server.DB_PATH = str(tmp_path / "query-token.db")
+    server.init_db()
+    client = TestClient(server.app)
+    admin = login(client)
+    token = admin["Authorization"].split(" ", 1)[1]
+    assert client.get("/api/auth/me", params={"token": token}).status_code == 401
+    assert client.get("/api/auth/me", headers=admin).status_code == 200
+
+
+def test_legacy_sha256_password_is_rehashed_on_success(tmp_path):
+    import hashlib
+    import uuid
+    server.DB_PATH = str(tmp_path / "legacy.db")
+    server.init_db()
+    email = "legacy@example.test"
+    password = "Legacy Password 123!"
+    legacy_hash = hashlib.sha256(password.encode()).hexdigest()
+    with server.get_db() as db:
+        db.execute(
+            "INSERT INTO users (id,full_name,email,password_hash,role,version,is_active) VALUES (?,?,?,?,?,?,?)",
+            (uuid.uuid4().hex[:12],"Legacy",email,legacy_hash,server.ROLE_DATA_OFFICER,0,1)
+        )
+    client = TestClient(server.app)
+    r = client.post("/api/auth/login", json={"email":email,"password":password})
+    assert r.status_code == 200
+    with server.get_db() as db:
+        stored = db.execute("SELECT password_hash FROM users WHERE email=?", (email,)).fetchone()["password_hash"]
+    assert stored.startswith("$argon2id$")
+    assert stored != legacy_hash
+
+
+def test_production_docs_are_disabled_when_configured():
+    if server.IS_PRODUCTION:
+        assert server.app.docs_url is None
+        assert server.app.redoc_url is None
+        assert server.app.openapi_url is None
+    else:
+        assert server.app.docs_url == "/docs"
