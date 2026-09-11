@@ -294,3 +294,88 @@ async function respondAiTask(taskId, nextStatus) {
 
 // Start after the existing page/app scripts have initialized authentication.
 setTimeout(loadAiTaskIdentity, 700);
+
+async function loadAiApprovals() {
+  const root = document.getElementById("aiApprovalList");
+  if (!root) return;
+  root.textContent = "Loading proposals…";
+  try {
+    const r = await fetch("/api/admin/ai-approval/proposals?limit=100", {credentials:"same-origin"});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Unable to load proposals.");
+    renderAiApprovals(data.proposals || []);
+  } catch (e) {
+    root.textContent = e.message || "Unable to load the AI Approval Center.";
+  }
+}
+
+function approvalText(value) {
+  return value == null ? "—" : String(value);
+}
+
+function renderAiApprovals(proposals) {
+  const root = document.getElementById("aiApprovalList");
+  if (!root) return;
+  root.replaceChildren();
+  if (!proposals.length) {
+    const empty = document.createElement("div"); empty.className = "muted"; empty.textContent = "No AI proposals are waiting for review."; root.appendChild(empty); return;
+  }
+  proposals.forEach(p => {
+    const card = document.createElement("article"); card.className = "ai-proposal-card";
+    const head = document.createElement("div"); head.className = "ai-proposal-head";
+    const title = document.createElement("div"); title.className = "ai-proposal-title"; title.textContent = p.action_type + " · " + p.proposal_id;
+    const status = document.createElement("span"); status.className = "ai-proposal-status status-" + String(p.status).toLowerCase(); status.textContent = p.status;
+    head.append(title,status);
+
+    const grid = document.createElement("div"); grid.className = "ai-proposal-grid";
+    const fields = [
+      ["Target", (p.target_ids || []).join(", ") || "—"],
+      ["Reason", p.reason],
+      ["Confidence", Math.round(Number(p.confidence || 0) * 100) + "%"],
+      ["Risk", p.risk],
+      ["Created by", p.created_by],
+      ["Created", new Date(Number(p.created_at || 0) * 1000).toLocaleString("en-IN")],
+      ["Expires", new Date(Number(p.expires_at || 0) * 1000).toLocaleString("en-IN")],
+      ["Approved by", p.approved_by || "—"]
+    ];
+    fields.forEach(([k,v]) => {
+      const item=document.createElement("div"); item.className="ai-proposal-field";
+      const lab=document.createElement("small"); lab.textContent=k;
+      const val=document.createElement("strong"); val.textContent=approvalText(v);
+      item.append(lab,val); grid.appendChild(item);
+    });
+    card.append(head,grid);
+
+    const details=document.createElement("details"); details.className="ai-proposal-details";
+    const summary=document.createElement("summary"); summary.textContent="View evidence and before/after state";
+    details.appendChild(summary);
+    const pre=document.createElement("pre"); pre.textContent=JSON.stringify({evidence:p.evidence,before:p.before_state,proposed:p.proposed_state,execution:p.execution_result},null,2);
+    details.appendChild(pre); card.appendChild(details);
+
+    if (p.status === "PROPOSED") {
+      const actions=document.createElement("div"); actions.className="ai-proposal-actions";
+      const approve=document.createElement("button"); approve.className="btn saffron"; approve.type="button"; approve.textContent="Approve & Execute";
+      const reject=document.createElement("button"); reject.className="btn ghost"; reject.type="button"; reject.textContent="Reject";
+      approve.onclick=()=>decideAiProposal(p.proposal_id,"approve",approve,reject);
+      reject.onclick=()=>decideAiProposal(p.proposal_id,"reject",reject,approve);
+      actions.append(approve,reject); card.appendChild(actions);
+    }
+    root.appendChild(card);
+  });
+}
+
+async function decideAiProposal(id, decision, primary, secondary) {
+  const note = window.prompt((decision === "approve" ? "Approval note (optional):" : "Reason for rejection (optional):"), "") ?? "";
+  primary.disabled = true; if (secondary) secondary.disabled = true;
+  try {
+    const r = await fetch("/api/admin/ai-approval/proposals/" + encodeURIComponent(id) + "/" + decision, {
+      method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body:JSON.stringify({note})
+    });
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.detail || "Proposal decision failed.");
+    await loadAiApprovals();
+  } catch(e) {
+    alert(e.message || "Proposal decision failed.");
+    primary.disabled=false; if(secondary) secondary.disabled=false;
+  }
+}
