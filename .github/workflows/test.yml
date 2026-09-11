@@ -19,7 +19,12 @@ jobs:
         run: |
           find . -name '*.py' -not -path './.git/*' -print0 | xargs -0 -n1 python -m py_compile
       - name: Verify frontend JavaScript syntax
-        run: node --check land-intelligence.js
+        run: |
+          node --check land-intelligence.js
+          node --check js/app.js
+          node --check js/admin-assistant.js
+      - name: Build production Docker image
+        run: docker build -t document-screening:test .
       - name: Verify actual ASGI import
         run: python -c "from main import app; print(app)"
       - name: Run tests
