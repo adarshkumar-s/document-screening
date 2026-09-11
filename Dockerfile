@@ -24,8 +24,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data \
+    && useradd --create-home --shell /usr/sbin/nologin appuser \
+    && chown -R appuser:appuser /app
 
+ENV APP_ENV=production
 ENV OMP_THREAD_LIMIT=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 ENV PORT=10000
@@ -34,5 +37,7 @@ ENV MAP_ATTRIBUTION="© OpenStreetMap contributors"
 ENV LAND_AREA_TOLERANCE_HA=0.05
 
 EXPOSE 10000
+
+USER appuser
 
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
