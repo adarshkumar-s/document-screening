@@ -12,3 +12,4 @@ python-multipart
 shapely
 pytest
 httpx
+argon2-cffi>=23.1,<26
