@@ -8,6 +8,14 @@ from demo_land import router as demo_land_router
 
 app.include_router(demo_land_router)
 
+@app.get("/land-intelligence.css", include_in_schema=False)
+def land_intelligence_css():
+    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.css"), media_type="text/css")
+
+@app.get("/land-intelligence.js", include_in_schema=False)
+def land_intelligence_js():
+    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.js"), media_type="application/javascript")
+
 @app.get("/land-intelligence", include_in_schema=False)
 def land_intelligence_ui():
     return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"))
