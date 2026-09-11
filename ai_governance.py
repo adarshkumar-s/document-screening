@@ -108,12 +108,18 @@ def _validate_target(p):
                 if not db.execute("SELECT id FROM documents WHERE id=?",(str(rid),)).fetchone():
                     raise HTTPException(404,f"Document '{rid}' not found.")
     if action in {"ASSIGN_AI_TASK","REASSIGN_AI_TASK"}:
-        oid=str(p["proposed_state"].get("assigned_to") or "")
-        if not oid: raise HTTPException(400,"assigned_to is required.")
+        assigned_values=[]
+        if action=="ASSIGN_AI_TASK" and p["proposed_state"].get("assignments"):
+            assigned_values=[str(x.get("officer_id")) for x in p["proposed_state"].get("assignments",[]) if x.get("officer_id")]
+        else:
+            oid=str(p["proposed_state"].get("assigned_to") or "")
+            if oid: assigned_values=[oid]
+        if not assigned_values: raise HTTPException(400,"A registered active Verification Officer is required.")
         with s.get_db() as db:
-            u=db.execute("SELECT id,role,is_active FROM users WHERE id=? OR LOWER(email)=?",(oid,oid.lower())).fetchone()
-        if not u or u["role"]!="VERIFICATION_OFFICER" or not u["is_active"]:
-            raise HTTPException(400,"Target must be an active Verification Officer.")
+            for oid in assigned_values:
+                u=db.execute("SELECT id,role,is_active FROM users WHERE id=? OR LOWER(email)=?",(oid,oid.lower())).fetchone()
+                if not u or u["role"]!="VERIFICATION_OFFICER" or not u["is_active"]:
+                    raise HTTPException(400,"Every proposed assignee must be an active Verification Officer.")
 
 def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT"):
     ensure_governance_tables()
