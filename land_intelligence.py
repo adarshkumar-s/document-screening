@@ -165,33 +165,97 @@ def _property(row: Any, include_geometry: bool = True) -> Dict[str, Any]:
 
 
 def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
-    identifiers = {k:_field(fields,k) for k in ("survey_number","gat_number","khasra_number","village","taluka","district")}
-    supplied = {k:v for k,v in identifiers.items() if v}
-    if not supplied:
-        return {"status":"INSUFFICIENT DATA","confidence":0,"matches":[],"reasons":["No property identifiers or location fields were extracted."]}
+    identifier_keys = ("survey_number", "gat_number", "khasra_number", "village", "taluka", "district", "sub_division")
+    supplied = {k: _field(fields, k) for k in identifier_keys if _field(fields, k)}
+    area_value = _field(fields, "area")
+    if not supplied and not area_value:
+        return {"status":"INSUFFICIENT DATA","confidence":0,"matches":[],"reasons":["No property identifiers, location fields, or area were extracted."]}
+
+    try:
+        area_num = float(str(area_value).replace(",", "").split()[0]) if area_value else None
+    except (TypeError, ValueError):
+        area_num = None
+    tolerance = float(os.getenv("LAND_AREA_TOLERANCE_HA", "0.05"))
+
+    weights = {
+        "survey_number": 3, "gat_number": 3, "khasra_number": 3,
+        "sub_division": 2, "village": 1, "taluka": 1, "district": 1,
+    }
     with get_db() as db:
         rows = [dict(r) for r in db.execute("SELECT * FROM properties").fetchall()]
-    scored=[]
-    for row in rows:
-        score=0; reasons=[]
-        for k,v in supplied.items():
-            rv=row.get(k)
-            if rv is None: continue
-            if _normal(rv)==_normal(v): score += 2 if k in ("survey_number","gat_number","khasra_number") else 1; reasons.append(f"{k.replace('_',' ')} matched")
-        max_score = sum(2 if k in ("survey_number","gat_number","khasra_number") else 1 for k in supplied)
-        pct = round((score/max_score)*100) if max_score else 0
-        if score: scored.append((pct,row,reasons))
-    scored.sort(key=lambda x:x[0],reverse=True)
-    if not scored: return {"status":"NO MATCH","confidence":0,"matches":[],"reasons":["No parcel matched the supplied identifiers/location."]}
-    top=scored[0]; matches=[]
-    for pct,row,reasons in scored[:5]:
-        if pct >= 70:
-            matches.append({"property":_property(row,False),"confidence":pct/100,"reasons":reasons})
-    if top[0] >= 95: status="MATCH"
-    elif top[0] >= 50: status="POSSIBLE MATCH"
-    else: status="NO MATCH"
-    return {"status":status,"confidence":top[0]/100,"matches":matches,"reasons":top[2]}
 
+    scored = []
+    for row in rows:
+        score = 0.0
+        max_score = 0.0
+        reasons: List[str] = []
+        missing: List[str] = []
+        conflicts: List[str] = []
+        strong_conflict = False
+
+        for key, value in supplied.items():
+            weight = weights[key]
+            max_score += weight
+            row_value = row.get(key)
+            if not row_value:
+                missing.append(key)
+                continue
+            if _normal(row_value) == _normal(value):
+                score += weight
+                reasons.append(f"{key.replace('_',' ')} matched")
+            else:
+                conflicts.append(key)
+                if key in {"survey_number", "gat_number", "khasra_number"}:
+                    strong_conflict = True
+
+        if area_num is not None and row.get("area") is not None:
+            max_score += 1
+            difference = abs(area_num - float(row["area"]))
+            if difference <= tolerance:
+                score += 1
+                reasons.append(f"area within {tolerance:g} tolerance")
+            else:
+                conflicts.append("area")
+        elif area_num is not None:
+            max_score += 1
+            missing.append("area")
+
+        if max_score <= 0 or score <= 0:
+            continue
+        pct = round((score / max_score) * 100)
+        scored.append((pct, row, reasons, missing, conflicts, strong_conflict))
+
+    scored.sort(key=lambda x: (x[0], len(x[2])), reverse=True)
+    if not scored:
+        return {"status":"NO MATCH","confidence":0,"matches":[],"reasons":["No parcel matched the supplied property identity or location fields."]}
+
+    matches = []
+    for pct, row, reasons, missing, conflicts, strong_conflict in scored[:5]:
+        if pct >= 50:
+            matches.append({
+                "property": _property(row, False),
+                "confidence": pct / 100,
+                "reasons": reasons,
+                "missing_fields": missing,
+                "conflicting_fields": conflicts,
+            })
+
+    top_pct, _, top_reasons, top_missing, top_conflicts, top_strong_conflict = scored[0]
+    if top_pct >= 95 and not top_strong_conflict and not top_conflicts:
+        status = "MATCH"
+    elif top_pct >= 50 and not top_strong_conflict:
+        status = "POSSIBLE MATCH"
+    else:
+        status = "NO MATCH"
+
+    return {
+        "status": status,
+        "confidence": top_pct / 100,
+        "matches": matches,
+        "reasons": top_reasons,
+        "missing_fields": top_missing,
+        "conflicting_fields": top_conflicts,
+    }
 
 class CaseCreate(BaseModel):
     property_id: Optional[str] = None
@@ -279,24 +343,69 @@ def compare_document_property(doc_id: str, property_id: str, user: dict=Depends(
         if not d or not p: raise HTTPException(404,"Document or property not found")
         if user["role"]==ROLE_DATA_OFFICER and d["uploaded_by"]!=user["email"]: raise HTTPException(403,"Access denied")
     fields=json.loads(d["fields"] or "{}"); prop=_property(p,False)
+
+    def field_meta(name: str):
+        raw=fields.get(name)
+        if isinstance(raw, dict):
+            return raw.get("value"), float(raw.get("confidence") or 0)
+        return raw, 0.0
+
+    def add_check(field: str, label: str, document_value: Any, property_value: Any, document_conf: float):
+        parcel_conf=float(prop.get("source_confidence") or 0)
+        parcel_source=prop.get("data_source") or prop.get("geometry_source") or "Parcel dataset"
+        if not document_value or property_value is None or property_value == "":
+            status_value="INSUFFICIENT EVIDENCE"
+        else:
+            status_value="CONSISTENT" if _normal(document_value)==_normal(property_value) else "CONFLICT"
+        return {
+            "field":field,"label":label,"document":document_value,"parcel":property_value,
+            "status":status_value,"source":f"OCR / {prop.get('data_source') or 'parcel dataset'}",
+            "document_source":"OCR-derived document field","parcel_source":parcel_source,
+            "confidence":{"document":document_conf,"parcel":parcel_conf},
+        }
+
     checks=[]
-    pairs=[("survey_number","Survey/Gat/Khasra",_field(fields,"survey_number") or _field(fields,"gat_number") or _field(fields,"khasra_number"),prop.get("survey_number") or prop.get("gat_number") or prop.get("khasra_number")),("village","Village",_field(fields,"village"),prop.get("village")),("taluka","Taluka",_field(fields,"taluka") or _field(fields,"tehsil"),prop.get("taluka")),("district","District",_field(fields,"district"),prop.get("district")),("sub_division","Subdivision",_field(fields,"sub_division"),prop.get("sub_division"))]
-    for key,label,dv,pv in pairs:
-        if not dv or not pv: checks.append({"field":key,"label":label,"status":"INSUFFICIENT EVIDENCE","document":dv,"parcel":pv}); continue
-        checks.append({"field":key,"label":label,"status":"CONSISTENT" if _normal(dv)==_normal(pv) else "CONFLICT","document":dv,"parcel":pv})
-    area_doc=_field(fields,"area")
+    for key,label in [
+        ("district","District"),("taluka","Taluka"),("village","Village"),
+        ("survey_number","Survey number"),("gat_number","Gat number"),
+        ("khasra_number","Khasra number"),("sub_division","Subdivision")
+    ]:
+        dv,dc=field_meta(key)
+        checks.append(add_check(key,label,dv,prop.get(key),dc))
+
+    area_doc,area_conf=field_meta("area")
     area_num=None
     if area_doc:
         import re
-        m=re.search(r"[0-9]+(?:\.[0-9]+)?",area_doc.replace(",","")); area_num=float(m.group()) if m else None
-    area_diff=None
-    if area_num is not None and prop.get("area") is not None:
-        area_diff=round(abs(area_num-prop["area"]),4)
+        m=re.search(r"[0-9]+(?:\.[0-9]+)?",str(area_doc).replace(",",""))
+        area_num=float(m.group()) if m else None
+    if area_num is None or prop.get("area") is None:
+        checks.append({
+            "field":"area","label":"Area","document":area_num,"parcel":prop.get("area"),
+            "status":"INSUFFICIENT EVIDENCE","source":"OCR-derived document field / parcel dataset",
+            "document_source":"OCR-derived document field","parcel_source":prop.get("data_source") or "Parcel dataset",
+            "confidence":{"document":area_conf,"parcel":float(prop.get("source_confidence") or 0)},
+        })
+    else:
+        area_diff=round(abs(area_num-float(prop["area"])),4)
         tol=float(os.getenv("LAND_AREA_TOLERANCE_HA","0.05"))
-        checks.append({"field":"area","label":"Area","status":"CONSISTENT" if area_diff<=tol else "REVIEW REQUIRED","document":area_num,"parcel":prop["area"],"difference":area_diff,"tolerance":tol,"unit":prop["area_unit"]})
-    conflicts=sum(x["status"]=="CONFLICT" for x in checks); reviews=sum(x["status"]=="REVIEW REQUIRED" for x in checks); missing=sum(x["status"]=="INSUFFICIENT EVIDENCE" for x in checks)
+        checks.append({
+            "field":"area","label":"Area","status":"CONSISTENT" if area_diff<=tol else "REVIEW REQUIRED",
+            "document":area_num,"parcel":prop["area"],"difference":area_diff,"tolerance":tol,
+            "unit":prop["area_unit"],"source":"OCR-derived document field / parcel dataset",
+            "document_source":"OCR-derived document field","parcel_source":prop.get("data_source") or "Parcel dataset",
+            "confidence":{"document":area_conf,"parcel":float(prop.get("source_confidence") or 0)},
+        })
+
+    conflicts=sum(x["status"]=="CONFLICT" for x in checks)
+    reviews=sum(x["status"]=="REVIEW REQUIRED" for x in checks)
+    missing=sum(x["status"]=="INSUFFICIENT EVIDENCE" for x in checks)
     overall="CONFLICT" if conflicts else ("REVIEW REQUIRED" if reviews else ("INSUFFICIENT EVIDENCE" if missing else "CONSISTENT"))
-    return {"document_id":doc_id,"property_id":prop["property_id"],"overall_status":overall,"checks":checks,"explanation":"Comparison is decision support only; it does not establish legal ownership, fraud, or authenticity."}
+    return {
+        "document_id":doc_id,"property_id":prop["property_id"],"overall_status":overall,
+        "checks":checks,
+        "explanation":"Comparison is decision support only; it does not establish legal ownership, fraud, or authenticity.",
+    }
 
 @router.get("/dashboard")
 def land_dashboard(user: dict=Depends(get_current_user)):
