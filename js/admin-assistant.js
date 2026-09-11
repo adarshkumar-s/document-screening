@@ -142,13 +142,7 @@ async function triggerSystemBriefing() {
 let aiTaskRole = null;
 let aiTaskPoller = null;
 
-function taskAuthHeaders() {
-  const token = localStorage.getItem('lrtoken') || '';
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': token ? `Bearer ${token}` : ''
-  };
-}
+function taskAuthHeaders() { return { "Content-Type": "application/json" }; }
 
 async function loadAiTaskIdentity() {
   try {
@@ -214,7 +208,7 @@ function escapeTaskText(value) {
 }
 
 async function refreshAiTasks() {
-  if (!localStorage.getItem('lrtoken')) return;
+  
   try {
     const r = await fetch('/api/admin/assistant/tasks', { headers: taskAuthHeaders() });
     if (!r.ok) return;
