@@ -8,8 +8,10 @@ from fastapi.responses import FileResponse, Response
 from server import app, BASE_DIR
 import land_intelligence
 from demo_land import router as demo_land_router
+from ai_governance import router as ai_approval_router
 
 app.include_router(demo_land_router)
+app.include_router(ai_approval_router)
 
 @app.get("/land-intelligence.css", include_in_schema=False)
 def land_intelligence_css():
