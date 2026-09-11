@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+from argon2 import PasswordHasher, Type
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 # Limit CPU threads
 os.environ["OMP_THREAD_LIMIT"] = "1"
@@ -77,7 +79,45 @@ SQLITE_PATH = os.getenv("DB_PATH", os.path.join(DATA_DIR, "land_records.db"))
 # Backward-compatible alias used by the existing test suite and local tooling.
 DB_PATH = SQLITE_PATH
 
-JWT_SECRET = os.getenv("JWT_SECRET", "").strip() or secrets.token_urlsafe(48)
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+IS_PRODUCTION = APP_ENV in {"production", "prod"}
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
+if IS_PRODUCTION and not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET must be configured in production.")
+if not JWT_SECRET:
+    JWT_SECRET = secrets.token_urlsafe(48)
+
+ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "").split(",") if origin.strip()]
+if IS_PRODUCTION and not ALLOWED_ORIGINS:
+    raise RuntimeError("ALLOWED_ORIGINS must be configured in production.")
+if not ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000", "http://127.0.0.1:8000"]
+
+PASSWORD_HASHER = PasswordHasher(time_cost=2, memory_cost=19456, parallelism=1, hash_len=32, salt_len=16, type=Type.ID)
+
+def hash_password(password: str) -> str:
+    return PASSWORD_HASHER.hash(password)
+
+def verify_password(stored_hash: str, password: str) -> tuple[bool, bool]:
+    if not stored_hash:
+        return False, False
+    if stored_hash.startswith("$argon2"):
+        try:
+            return PASSWORD_HASHER.verify(stored_hash, password), False
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False, False
+    if re.fullmatch(r"[0-9a-fA-F]{64}", stored_hash):
+        legacy = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(stored_hash, legacy), True
+    return False, False
+
+def needs_password_rehash(stored_hash: str) -> bool:
+    if not stored_hash.startswith("$argon2"):
+        return True
+    try:
+        return PASSWORD_HASHER.check_needs_rehash(stored_hash)
+    except (VerificationError, InvalidHashError):
+        return True
 
 ROLE_VIEWER = "VIEWER"
 ROLE_DATA_OFFICER = "DATA_OFFICER"
@@ -125,15 +165,37 @@ SUPPORTED_LANGUAGES = [
     {"code": "urd", "name": "Urdu"}
 ]
 
-app = FastAPI(title="DILRMP Land Record Digitization & Validation System")
+app = FastAPI(
+    title="DILRMP Land Record Digitization & Validation System",
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None if IS_PRODUCTION else "/redoc",
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+@app.exception_handler(Exception)
+async def handle_unexpected_error(request: Request, exc: Exception):
+    print(f"[UNHANDLED ERROR] {type(exc).__name__}")
+    return JSONResponse(status_code=500, content={"detail": "An unexpected server error occurred."})
+
 
 class DBConnection:
     def __init__(self):
@@ -320,7 +382,7 @@ def init_db():
             initial_admin_password = os.getenv("ADMIN_INITIAL_PASSWORD", "").strip()
             if not row and initial_admin_password:
                 admin_id = uuid.uuid4().hex[:12]
-                h = hashlib.sha256(initial_admin_password.encode()).hexdigest()
+                h = hash_password(initial_admin_password)
                 db.execute(
                     "INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)",
                     (admin_id, "System Administrator", "admin@landrec.gov.in", h, ROLE_ADMIN)
@@ -382,8 +444,10 @@ def verify_jwt_token(token: str) -> Dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
 
-def get_current_user(authorization: Optional[str] = Header(None), token: Optional[str] = Query(None)) -> Dict[str, Any]:
-    jwt_token = token or (authorization.replace("Bearer ", "").strip() if authorization else None)
+def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    jwt_token = authorization[7:].strip()
     if not jwt_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     
@@ -1479,12 +1543,16 @@ def healthcheck():
 @app.post("/api/auth/login")
 def login(req: LoginReq):
     clean_email = req.email.lower().strip()
-    h = hashlib.sha256(req.password.encode()).hexdigest()
     with get_db() as db:
-        cur = db.execute("SELECT * FROM users WHERE LOWER(email)=? AND password_hash=?", (clean_email, h))
+        cur = db.execute("SELECT * FROM users WHERE LOWER(email)=?", (clean_email,))
         user = cur.fetchone()
         if not user or not user["is_active"]:
             raise HTTPException(status_code=400, detail="Invalid credentials")
+        valid, legacy_sha256 = verify_password(user["password_hash"], req.password)
+        if not valid:
+            raise HTTPException(status_code=400, detail="Invalid credentials")
+        if legacy_sha256 or needs_password_rehash(user["password_hash"]):
+            db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(req.password), user["id"]))
         normalized = normalize_role(user["role"])
         token = create_jwt_token(user["id"], normalized, user["version"])
         return {"token": token, "user": {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": normalized}}
@@ -1493,9 +1561,8 @@ def login(req: LoginReq):
 def signup(req: SignupReq):
     clean_email = req.email.lower().strip()
     uid = uuid.uuid4().hex[:12]
-    h = hashlib.sha256(req.password.encode()).hexdigest()
-    role = normalize_role(req.role or ROLE_DATA_OFFICER)
-    if role == ROLE_ADMIN: role = ROLE_DATA_OFFICER
+    role = ROLE_DATA_OFFICER
+    h = hash_password(req.password)
     with get_db() as db:
         db.execute("INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)", (uid, req.full_name, clean_email, h, role))
     return {"token": create_jwt_token(uid, role, 0), "user": {"id": uid, "full_name": req.full_name, "email": clean_email, "role": role}}
@@ -1510,13 +1577,12 @@ def logout(user: dict = Depends(get_current_user)):
 
 @app.post("/api/auth/change-password")
 def change_password(req: ChangePassReq, user: dict = Depends(get_current_user)):
-    cur_h = hashlib.sha256(req.current_password.encode()).hexdigest()
     with get_db() as db:
         cur = db.execute("SELECT password_hash FROM users WHERE id=?", (user["id"],))
         row = cur.fetchone()
-        if not row or row["password_hash"] != cur_h:
+        if not row or not verify_password(row["password_hash"], req.current_password)[0]:
             raise HTTPException(status_code=400, detail="Current password does not match.")
-        new_h = hashlib.sha256(req.new_password.encode()).hexdigest()
+        new_h = hash_password(req.new_password)
         db.execute("UPDATE users SET password_hash=?, version=version+1 WHERE id=?", (new_h, user["id"]))
     log_audit(user["full_name"], "CHANGE_PASSWORD", "User changed password", None)
     return {"status": "ok"}
@@ -1530,9 +1596,10 @@ def list_users(user: dict = Depends(require_roles(ROLE_ADMIN))):
 @app.post("/api/users")
 def add_user(req: AddUserReq, user: dict = Depends(require_roles(ROLE_ADMIN))):
     uid = uuid.uuid4().hex[:12]
-    h = hashlib.sha256(req.password.encode()).hexdigest()
+    h = hash_password(req.password)
+    role = normalize_role(req.role)
     with get_db() as db:
-        db.execute("INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)", (uid, req.full_name, req.email.lower().strip(), h, normalize_role(req.role)))
+        db.execute("INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)", (uid, req.full_name, req.email.lower().strip(), h, role))
     return {"status": "ok"}
 
 @app.put("/api/users/{target_uid}/role")
@@ -1621,7 +1688,7 @@ async def process_sample(
         parsed_candidate = run_ocr_pipeline(data, name, lang)
         parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Could not process sample: {exc}")
+        raise HTTPException(status_code=422, detail="Could not process sample. Please verify the sample and try again.")
 
     now = time.time()
     status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
@@ -1708,7 +1775,7 @@ async def process_upload(
         parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
     except Exception as exc:
         log_audit(user["full_name"], "OCR_PROCESSING_ERROR", "Document processing failed", doc_id)
-        raise HTTPException(status_code=422, detail=f"Document processing failed: {exc}")
+        raise HTTPException(status_code=422, detail="Document processing failed. Please verify the file format and try again.")
 
     now = time.time()
     status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
