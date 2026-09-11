@@ -500,6 +500,11 @@ def recommend_assignment(record_id: str) -> Dict[str, Any]:
     }
 
 
+
+def _create_ai_proposal(action_type: str, target_type: str, target_ids: List[str], before: Dict[str, Any], after: Dict[str, Any], reason: str, evidence: List[Dict[str, Any]], confidence: float, risk: str = "MEDIUM"):
+    from ai_governance import create_proposal
+    return create_proposal({"action_type": action_type, "target_type": target_type, "target_ids": [str(x) for x in target_ids], "before": before, "after": after, "reason": reason, "evidence": evidence, "confidence": max(0.0, min(1.0, float(confidence))), "risk": risk}, created_by="AI_ASSISTANT")
+
 def prepare_assignment_action(record_id: str, officer_id: str) -> Dict[str, Any]:
     rec = get_record_details(record_id)
     if rec.get("error"):
@@ -507,20 +512,14 @@ def prepare_assignment_action(record_id: str, officer_id: str) -> Dict[str, Any]
     officer = _user_by_id_or_email(officer_id)
     if not officer or officer["role"] != "VERIFICATION_OFFICER" or not officer["is_active"]:
         return {"error": "Selected Verification Officer is not active or does not exist."}
-    payload = {
-        "action_type": "assign_record",
-        "target_id": str(record_id),
-        "parameters": {"officer_id": str(officer["id"])},
-    }
-    token = generate_action_token(payload)
-    return {
-        "confirmation_required": True,
-        "action_type": "assign_record",
-        "action_description": f"Assign record #{record_id} to {officer['full_name']}",
-        "target_id": record_id,
-        "target_display": f"Record #{record_id} → {officer['full_name']} (Verification Officer)",
-        "token": token,
-    }
+    proposal = _create_ai_proposal("ASSIGN_AI_TASK", "DOCUMENT", [str(record_id)],
+        {"documents": {str(record_id): {"status": rec.get("status"), "mean_conf": rec.get("mean_conf")}}},
+        {"assigned_to": str(officer["id"]), "task_type": "VERIFY_RECORD", "title": "Verify land record #" + str(record_id),
+         "description": "Review OCR output, validation findings and unresolved discrepancies.",
+         "priority": "CRITICAL" if float(rec.get("mean_conf") or 0) < 45 else ("HIGH" if float(rec.get("mean_conf") or 0) < 75 else "MEDIUM")},
+        "Assign to the selected active Verification Officer based on current workload.",
+        [{"type":"record","record_id":str(record_id),"status":rec.get("status"),"ocr_confidence":rec.get("mean_conf")}, {"type":"officer","officer_id":str(officer["id"]),"name":officer["full_name"]}], 0.9, "MEDIUM")
+    return {"confirmation_required": True, "proposal": proposal, "proposal_id": proposal["proposal_id"], "action_type": proposal["action_type"], "action_description": "Assign record #" + str(record_id) + " to " + officer["full_name"], "target_id": record_id, "target_display": "Record #" + str(record_id) + " → " + officer["full_name"] + " (Verification Officer)"}
 
 
 def prepare_distribution_action(records: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -990,3 +989,4 @@ try:
     ensure_task_table()
 except Exception as exc:
     print(f"[AI TASK TABLE WARNING] {exc}")
+\n\nfrom ai_governance import router as ai_approval_router\nrouter.include_router(ai_approval_router)\n
