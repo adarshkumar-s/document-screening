@@ -120,13 +120,10 @@ async function triggerSystemBriefing() {
 
     const card = document.createElement("div");
     card.className = "assistant-message assistant-bubble briefing-container";
-    card.innerHTML = data.briefing
-      .replace(/^# (.*$)/gim, '<div class="briefing-main-title">$1</div>')
-      .replace(/^## (.*$)/gim, '<div class="briefing-section-title">$1</div>')
-      .replace(/^\* (.*$)/gim, '<li>$1</li>')
-      .replace(/^- (.*$)/gim, '<li>$1</li>')
-      .replace(/\n/g, '<br>');
-
+    const briefing = document.createElement("div");
+    briefing.className = "assistant-safe-text";
+    briefing.textContent = data.briefing || "";
+    card.appendChild(briefing);
     log.appendChild(card);
   } catch (err) {
     appendAssistantMessage("Network error generating briefing.", "error-bubble");
