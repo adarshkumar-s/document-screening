@@ -533,8 +533,13 @@ def prepare_distribution_action(records: List[Dict[str, Any]]) -> Dict[str, Any]
         oid = min(loads, key=loads.get)
         assignments.append({"record_id": str(rec["id"]), "officer_id": str(oid), "priority": rec.get("severity", "MEDIUM")})
         loads[oid] += 1
-    payload = {"action_type": "distribute_faulty_records", "target_id": "BULK", "parameters": {"assignments": assignments}}
-    token = generate_action_token(payload)
+    proposal = _create_ai_proposal("ASSIGN_AI_TASK", "DOCUMENT", [str(r["id"]) for r in records],
+        {"records": {str(r["id"]): {"status": r.get("status"), "mean_conf": r.get("confidence")} for r in records}},
+        {"assignments": assignments, "task_type": "VERIFY_FAULTY_RECORD", "title": "Review flagged land record",
+         "description": "Review OCR, validation and consistency evidence requiring attention."},
+        "Balance flagged verification work using current deterministic officer workload.",
+        [{"type":"workload","officers":[{"id":o["id"],"active_tasks":o["active_tasks"]} for o in officers]},
+         {"type":"records","count":len(records)}], 0.88, "MEDIUM")
     preview = []
     by_id = {str(o["id"]): o["name"] for o in officers}
     for a in assignments:
@@ -545,7 +550,8 @@ def prepare_distribution_action(records: List[Dict[str, Any]]) -> Dict[str, Any]
         "action_description": f"Distribute {len(assignments)} faulty records across available Verification Officers",
         "target_id": "BULK",
         "target_display": "; ".join(preview[:8]) + ("; …" if len(preview) > 8 else ""),
-        "token": token,
+        "proposal": proposal,
+        "proposal_id": proposal["proposal_id"],
         "assignment_count": len(assignments),
     }
 
@@ -867,10 +873,7 @@ def assistant_briefing(user: dict = Depends(get_admin_dependency())):
 
 @router.post("/execute-action")
 def assistant_execute_action(req: ActionReq, user: dict = Depends(get_admin_dependency())):
-    payload = verify_and_consume_token(req.token)
-    if not payload:
-        raise HTTPException(status_code=400, detail="Action token is invalid, expired, or already used.")
-    return execute_action_in_db(payload, user)
+    raise HTTPException(status_code=410, detail="Legacy AI action execution is disabled. Review and approve the proposal in the AI Approval Center.")
 
 
 @router.get("/tasks")
