@@ -60,6 +60,8 @@ The default demo uses OpenStreetMap-compatible tiles only as a visual enhancemen
 ### UI
 
 - `GET /land-intelligence` — GIS/property investigation workspace.
+- `GET /land-intelligence.css` — explicit `text/css` asset route.
+- `GET /land-intelligence.js` — explicit JavaScript asset route.
 
 ### Credential-free demo API
 
@@ -70,6 +72,16 @@ The default demo uses OpenStreetMap-compatible tiles only as a visual enhancemen
 - `GET /api/demo-land/properties/{property_id}`
 - `GET /api/demo-land/documents`
 - `GET /api/demo-land/compare/{doc_id}/{property_id}`
+
+### Administrator AI governance API
+
+- `GET /api/admin/ai-approval/proposals` — administrator-only proposal queue.
+- `GET /api/admin/ai-approval/proposals/{proposal_id}` — proposal details.
+- `POST /api/admin/ai-approval/proposals/{proposal_id}/approve` — explicit administrator approval and one-time execution.
+- `POST /api/admin/ai-approval/proposals/{proposal_id}/reject` — explicit administrator rejection.
+- `GET /api/admin/ai-approval/proposals/{proposal_id}/events` — proposal governance history.
+
+Consequential AI actions are never executed from model output or legacy action tokens. The server validates a registered action type, target, before-state and administrator role before execution, then records the decision and result in the audit trail.
 
 ### Authenticated production API
 
