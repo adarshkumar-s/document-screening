@@ -27,7 +27,7 @@ async function handleAssistantSubmit(event) {
   log.scrollTop = log.scrollHeight;
 
   try {
-    const token = localStorage.getItem("lrtoken") || "";
+    
     const response = await fetch("/api/admin/assistant/query", {
       method: "POST",
       headers: {
@@ -58,103 +58,36 @@ async function handleAssistantSubmit(event) {
 }
 
 function appendAssistantMessage(text, className, records = []) {
-  const log = document.getElementById("assistantChatLog");
-  const msg = document.createElement("div");
-  msg.className = `assistant-message ${className}`;
-
-  const textContainer = document.createElement("div");
-  textContainer.innerHTML = (text || '').replace(/\n/g, "<br>");
-  msg.appendChild(textContainer);
-
-  if (records && records.length > 0) {
-    const recordsBox = document.createElement("div");
-    recordsBox.className = "assistant-records-attachment";
-
+  const log = document.getElementById("assistantChatLog"); if (!log) return;
+  const msg = document.createElement("div"); msg.className = "assistant-message " + className;
+  const textContainer = document.createElement("div"); textContainer.className = "assistant-safe-text"; textContainer.textContent = text || ""; msg.appendChild(textContainer);
+  if (records && records.length) {
+    const box = document.createElement("div"); box.className = "assistant-records-attachment";
     records.forEach(rec => {
-      const row = document.createElement("div");
-      row.className = "record-attachment-row";
-      const label = document.createElement("span");
-      label.textContent = `#${rec.id}: ${rec.owner_name || rec.filename || 'Doc'} (${rec.status || 'Processed'})`;
-
-      const openBtn = document.createElement("button");
-      openBtn.className = "btn ghost";
-      openBtn.style.padding = "2px 8px";
-      openBtn.style.fontSize = "11px";
-      openBtn.textContent = "Open Record";
-      openBtn.onclick = () => {
-        if (typeof window.openStaffReview === "function") {
-          window.openStaffReview(rec.id);
-        } else {
-          alert(`Selected Record: ID #${rec.id}`);
-        }
-      };
-
-      row.appendChild(label);
-      row.appendChild(openBtn);
-      recordsBox.appendChild(row);
-    });
-
-    msg.appendChild(recordsBox);
+      const row = document.createElement("div"); row.className = "record-attachment-row";
+      const label = document.createElement("span"); label.textContent = "#" + String(rec.id ?? "") + ": " + String(rec.owner_name || rec.filename || "Document") + " (" + String(rec.status || "Processed") + ")";
+      const btn = document.createElement("button"); btn.className = "btn ghost"; btn.type = "button"; btn.textContent = "Open Record";
+      btn.onclick = () => { if (typeof window.openStaffReview === "function") window.openStaffReview(rec.id); };
+      row.append(label, btn); box.appendChild(row);
+    }); msg.appendChild(box);
   }
-
-  log.appendChild(msg);
+  log.appendChild(msg); log.scrollTop = log.scrollHeight;
 }
 
 function renderConfirmationCard(actionData) {
-  const log = document.getElementById("assistantChatLog");
-  const card = document.createElement("div");
-  card.className = "assistant-action-card";
-
-  card.innerHTML = `
-    <div class="action-card-header">
-      <strong>⚠️ Action Requires Confirmation</strong>
-    </div>
-    <div class="action-card-body">
-      <p><strong>Action:</strong> ${actionData.action_description}</p>
-      <p><strong>Target:</strong> ${actionData.target_display}</p>
-      <p class="action-warning">This operation will execute on system records. Are you sure?</p>
-    </div>
-    <div class="action-card-actions">
-      <button class="btn-confirm" onclick="confirmAction('${actionData.token}', this)">Confirm</button>
-      <button class="btn-cancel" onclick="cancelAction(this)">Cancel</button>
-    </div>
-  `;
-  log.appendChild(card);
-  log.scrollTop = log.scrollHeight;
+  const log = document.getElementById("assistantChatLog"); if (!log || !actionData) return;
+  const card = document.createElement("div"); card.className = "assistant-action-card";
+  const header = document.createElement("div"); header.className = "action-card-header"; header.textContent = "AI proposal — Administrator approval required";
+  const body = document.createElement("div"); body.className = "action-card-body";
+  const p1 = document.createElement("p"); p1.textContent = "Action: " + String(actionData.action_description || actionData.action_type || "Proposed action");
+  const p2 = document.createElement("p"); p2.textContent = "Target: " + String(actionData.target_display || "See proposal details");
+  const p3 = document.createElement("p"); p3.className = "action-warning"; p3.textContent = "Nothing has been changed. Review evidence and before/after state in the AI Approval Center.";
+  body.append(p1,p2,p3);
+  const actions = document.createElement("div"); actions.className = "action-card-actions";
+  const open = document.createElement("button"); open.className = "btn-confirm"; open.type = "button"; open.textContent = "Open Approval Center";
+  open.onclick = () => { if (typeof window.switchStaffTab === "function") window.switchStaffTab("approvals"); if (typeof window.loadAiApprovals === "function") window.loadAiApprovals(); };
+  actions.appendChild(open); card.append(header,body,actions); log.appendChild(card); log.scrollTop = log.scrollHeight;
 }
-
-async function confirmAction(token, btn) {
-  const card = btn.closest(".assistant-action-card");
-  btn.disabled = true;
-  btn.textContent = "Executing...";
-
-  try {
-    const authToken = localStorage.getItem("lrtoken") || "";
-    const response = await fetch("/api/admin/assistant/execute-action", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": authToken ? `Bearer ${authToken}` : ""
-      },
-      body: JSON.stringify({ token: token })
-    });
-
-    const result = await response.json();
-    if (!response.ok) {
-      card.innerHTML = `<div class="action-result error">❌ ${result.detail || "Action failed."}</div>`;
-      return;
-    }
-    card.innerHTML = `<div class="action-result success">✅ ${result.message}</div>`;
-  } catch (err) {
-    card.innerHTML = `<div class="action-result error">❌ Network error.</div>`;
-  }
-}
-
-function cancelAction(btn) {
-  const card = btn.closest(".assistant-action-card");
-  card.innerHTML = `<div class="action-result cancelled">Action cancelled by Administrator.</div>`;
-}
-
 async function triggerSystemBriefing() {
   const briefingBtn = document.getElementById("btnGenerateBriefing");
   const loading = document.getElementById("assistantLoading");
@@ -170,7 +103,7 @@ async function triggerSystemBriefing() {
   log.appendChild(userMsg);
 
   try {
-    const token = localStorage.getItem("lrtoken") || "";
+    
     const response = await fetch("/api/admin/assistant/briefing", {
       method: "POST",
       headers: {
