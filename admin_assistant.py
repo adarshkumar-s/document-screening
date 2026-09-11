@@ -751,6 +751,31 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
             text = _report_officers()
         return {"response": text, "records": [], "action_card": None}
 
+    # Urgency and operational intelligence
+    if any(k in lower for k in ["urgent", "most urgent", "priority", "critical now", "what should i do"]):
+        intel = get_operational_intelligence()
+        critical = [r for r in intel["attention_records"] if r.get("severity") == "CRITICAL"]
+        overdue = intel["stale_ai_tasks"]
+        lines = ["CRITICAL", f"- {len(critical)} record(s) meet critical deterministic attention rules.", f"- {len(overdue)} AI task(s) are stale by the 7-day operational threshold.", "", "HIGH", f"- {len(intel['low_confidence'])} record(s) have OCR confidence below 75.", "", "RECOMMENDED NEXT ACTIONS", "1. Review critical records first.", "2. Review stale or unassigned verification work.", "3. Use the Approval Center for any consequential change.", "", "These are recommendations only. No authoritative record was changed."]
+        return {"response":"\n".join(lines), "records": critical[:8], "action_card": None}
+
+    # Prepare a governed reprocessing proposal
+    if ("reprocess" in lower or "re-processing" in lower) and ("record" in lower or "document" in lower):
+        record_id = _record_id_from_prompt(prompt)
+        if not record_id:
+            return {"response":"Please include a record number, for example: 'Propose reprocessing document #123'.", "records":[], "action_card":None}
+        proposal = propose_for_record("REQUEST_REPROCESSING", record_id, "Administrator requested reprocessing; AI prepared the change for review.", 0.94, "LOW")
+        if proposal.get("error"): return {"response":proposal["error"],"records":[],"action_card":None}
+        return {"response":"I prepared a reprocessing proposal. It is not executed. An administrator must review and approve it in the AI Approval Center.", "records":[{"id":record_id}], "action_card":{"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],"action_type":proposal["action_type"],"action_description":"Request document reprocessing","target_display":"Document #"+str(record_id)}}
+
+    # Prepare a governed escalation proposal
+    if "escalate" in lower and ("record" in lower or "document" in lower):
+        record_id = _record_id_from_prompt(prompt)
+        if not record_id:
+            return {"response":"Please include a record number, for example: 'Escalate record #123'.", "records":[], "action_card":None}
+        proposal = propose_for_record("ESCALATE_RECORD", record_id, "Escalation recommended for administrator review based on the selected record.", 0.9, "HIGH", {"assigned_to":None,"task_type":"ADMIN_REVIEW","title":"Administrator review for record #"+str(record_id),"priority":"CRITICAL"})
+        if proposal.get("error"): return {"response":proposal["error"],"records":[],"action_card":None}
+        return {"response":"I prepared an escalation proposal. No record status was changed.", "records":[{"id":record_id}], "action_card":{"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],"action_type":proposal["action_type"],"action_description":"Escalate record for administrator review","target_display":"Record #"+str(record_id)}}
     # Faulty records / attention
     if any(k in lower for k in ["faulty", "problematic", "problem records", "records with issues", "needs my attention"]):
         faulty = get_faulty_records(20)
