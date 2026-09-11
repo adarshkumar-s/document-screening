@@ -4,6 +4,7 @@ import time
 import hmac
 import hashlib
 import uuid
+import secrets
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional
 
@@ -46,7 +47,11 @@ def get_ai_client():
 
 router = APIRouter(prefix="/api/admin/assistant", tags=["AI Admin Assistant"])
 
-ACTION_SECRET = os.getenv("JWT_SECRET", "dilrmp-hackathon-secure-secret-2026")
+ACTION_SECRET = os.getenv("ADMIN_ACTION_SECRET", "").strip()
+if not ACTION_SECRET:
+    if os.getenv("APP_ENV", "development").strip().lower() in {"production", "prod"}:
+        raise RuntimeError("ADMIN_ACTION_SECRET must be configured in production.")
+    ACTION_SECRET = secrets.token_urlsafe(32)
 TOKEN_TTL_SECONDS = 300
 USED_ACTION_TOKENS = set()
 TASK_TABLE_READY = False
