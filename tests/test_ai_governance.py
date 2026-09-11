@@ -25,7 +25,7 @@ def test_land_intelligence_assets_and_types(client):
         assert response.status_code == status
         assert content_type in response.headers.get("content-type", "").lower()
     assert client.get("/land-intelligence.css").text.startswith(":root")
-    assert "Leaflet" in client.get("/land-intelligence.html").text if client.get("/land-intelligence.html").status_code == 200 else True
+    assert "LAND INTELLIGENCE" in client.get("/land-intelligence").text
 
 
 def test_demo_land_endpoints_are_available(client):
