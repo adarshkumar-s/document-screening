@@ -30,10 +30,8 @@ async function handleAssistantSubmit(event) {
     
     const response = await fetch("/api/admin/assistant/query", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": token ? `Bearer ${token}` : ""
-      },
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: query })
     });
 
@@ -106,10 +104,8 @@ async function triggerSystemBriefing() {
     
     const response = await fetch("/api/admin/assistant/briefing", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": token ? `Bearer ${token}` : ""
-      }
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }
     });
 
     const data = await response.json();
