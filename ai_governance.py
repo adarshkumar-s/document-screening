@@ -131,6 +131,8 @@ def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT"):
     p["risk"]=str(p.get("risk","MEDIUM")).upper()
     if p["confidence"]<0 or p["confidence"]>1: raise ValueError("confidence must be 0..1")
     _validate_target(p)
+    if not p.get("before") and p["target_ids"]:
+        p["before"] = _current_state(p["action_type"], p["target_ids"])
     pid="AI-"+uuid.uuid4().hex[:10].upper()
     now=time.time(); exp=now+TTL_SECONDS
     with _server().get_db() as db:
