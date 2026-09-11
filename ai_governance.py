@@ -212,12 +212,21 @@ def _execute(proposal, admin):
     _ensure_task_table()
     with s.get_db() as db:
         if action in {"CREATE_AI_TASK","REQUEST_REVIEW","ASSIGN_AI_TASK","ESCALATE_RECORD"}:
+            created=[]
+            assignments=after.get("assignments") if action=="ASSIGN_AI_TASK" else None
+            if assignments:
+                for item in assignments:
+                    rid=str(item.get("record_id"))
+                    assigned=str(item.get("officer_id"))
+                    u=db.execute("SELECT id,role,is_active FROM users WHERE id=? OR LOWER(email)=?",(assigned,assigned.lower())).fetchone()
+                    if not u or u["role"]!="VERIFICATION_OFFICER" or not u["is_active"]: raise HTTPException(400,"Assigned officer is no longer active.")
+                    created.append(_create_task(db,rid,str(u["id"]),after.get("task_type","VERIFY_FAULTY_RECORD"),after.get("title") or "Review flagged land record",after.get("description") or "Review the evidence and verification findings.",str(item.get("priority") or "MEDIUM"),admin["full_name"],after.get("metadata")))
+                return {"tasks":created}
             assigned=after.get("assigned_to")
             if assigned:
                 u=db.execute("SELECT id,role,is_active FROM users WHERE id=? OR LOWER(email)=?",(str(assigned),str(assigned).lower())).fetchone()
                 if not u or u["role"]!="VERIFICATION_OFFICER" or not u["is_active"]: raise HTTPException(400,"Assigned officer is no longer active.")
                 assigned=str(u["id"])
-            created=[]
             for rid in ids or [None]:
                 title=after.get("title") or f"Review record #{rid}"
                 task_type=after.get("task_type") or ("ADMIN_REVIEW" if action=="ESCALATE_RECORD" else "VERIFY_RECORD")
