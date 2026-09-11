@@ -63,7 +63,7 @@ def test_upload_rejects_empty_and_unsupported_files(tmp_path):
     assert client.post("/api/process", headers=headers, files={"file": ("bad.exe", b"x")}).status_code == 415
     assert client.post("/api/process", headers=headers, files={"file": ("empty.png", b"")}).status_code == 422
 
-    
+
 def test_password_hashing_uses_argon2id():
     import hashlib
     hashed = server.hash_password("Correct Horse Battery Staple")
