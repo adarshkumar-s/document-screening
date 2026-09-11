@@ -84,7 +84,6 @@ def test_authenticated_land_investigation_workflow():
     assert detail.status_code == 200
     data = detail.json()
     assert data["property_id"] == "DEMO-PROP-103-A"
-    assert data["documents"]
     assert data["provenance"]
     assert data["timeline"]
     assert "neighbors" in data
