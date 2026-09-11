@@ -697,6 +697,39 @@ def _attention_report() -> str:
     return "\n".join(lines)
 
 
+def get_operational_intelligence() -> Dict[str, Any]:
+    stats = get_system_statistics()
+    low = get_low_confidence_records(75, 20)
+    faulty = get_faulty_records(30)
+    officers = list_verification_officers()
+    tasks = get_tasks_for_user({"id": None, "role": "ADMIN"}, limit=100)
+    active = [t for t in tasks if str(t.get("status","")).upper() in ("PENDING","ACCEPTED","IN_PROGRESS")]
+    overdue = []
+    now = time.time()
+    for t in active:
+        if now - float(t.get("updated_at") or t.get("created_at") or now) > 7*86400:
+            overdue.append(t)
+    return {
+        "system": stats,
+        "low_confidence": low[:20],
+        "attention_records": faulty[:30],
+        "officer_workload": officers,
+        "active_ai_tasks": active[:50],
+        "stale_ai_tasks": overdue[:30],
+        "recent_activity": get_recent_activity(15),
+    }
+
+
+def propose_for_record(action_type: str, record_id: str, reason: str, confidence: float, risk: str = "MEDIUM", after: Optional[Dict[str, Any]] = None):
+    rec = get_record_details(record_id)
+    if rec.get("error"):
+        return rec
+    before = {"documents": {str(record_id): {"status": rec.get("status"), "mean_conf": rec.get("mean_conf")}}}
+    evidence = [{"type":"document","record_id":str(record_id),"status":rec.get("status"),"ocr_confidence":rec.get("mean_conf")},
+                {"type":"validation","value":rec.get("validation",{})}]
+    return _create_ai_proposal(action_type, "DOCUMENT", [str(record_id)], before, after or {}, reason, evidence, confidence, risk)
+
+
 def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     ensure_task_table()
     lower = prompt.lower().strip()
