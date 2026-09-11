@@ -577,7 +577,7 @@ function switchStaffTab(tabName){
     t.classList.toggle('active', t.dataset.stab === tabName);
   });
 
-  ['dashboard','upload','queue','review','compare','consistency','records','learn','audit','users','account'].forEach(p=>{
+  ['dashboard','upload','queue','review','compare','consistency','records','learn','audit','users','approvals','account'].forEach(p=>{
     const elPane = $('#staff-tab-' + p);
     if(elPane) elPane.classList.toggle('hidden', p !== tabName);
   });
@@ -590,6 +590,7 @@ function switchStaffTab(tabName){
   if(tabName === 'records') loadStaffRecords();
   if(tabName === 'learn') loadStaffLearn();
   if(tabName === 'audit') loadStaffAudit();
+  if(tabName === 'approvals' && typeof loadAiApprovals === 'function') loadAiApprovals();
   if(tabName === 'approvals') loadAiApprovals();
   if(tabName === 'users') loadStaffUsers();
   if(tabName === 'account') loadStaffAccount();
