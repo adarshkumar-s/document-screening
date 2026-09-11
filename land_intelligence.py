@@ -472,6 +472,13 @@ async def import_geojson(
     if data.get("type")!="FeatureCollection": raise HTTPException(422,"Expected a GeoJSON FeatureCollection")
     features=data.get("features") or []
     if len(features)>1000: raise HTTPException(422,"Too many features for one import")
+    requested_crs = data.get("crs")
+    if requested_crs:
+        crs_name = ""
+        if isinstance(requested_crs, dict):
+            crs_name = str(((requested_crs.get("properties") or {}).get("name")) or "")
+        if crs_name and crs_name.upper() not in {"EPSG:4326", "URN:OGC:DEF:CRS:OGC:1.3:CRS84"}:
+            raise HTTPException(422,"Only WGS84/EPSG:4326 GeoJSON is supported.")
     imported=0; rejected=[]
     for idx,f in enumerate(features):
         geom=f.get("geometry"); props=f.get("properties") or {}
@@ -479,11 +486,14 @@ async def import_geojson(
         if HAS_SHAPELY:
             try:
                 g=shape(geom)
-                if g.is_empty or not g.is_valid or not g.geom_type in ("Polygon","MultiPolygon"): rejected.append({"index":idx,"reason":explain_validity(g)}); continue
+                if g.is_empty or not g.is_valid or not g.geom_type in ("Polygon","MultiPolygon"): rejected.append({"index":idx,"reason":"Invalid polygon geometry"}); continue
                 if not all(math.isfinite(x) for x in g.bounds): raise ValueError("Non-finite coordinates")
+                minx,miny,maxx,maxy=g.bounds
+                if minx < -180 or maxx > 180 or miny < -90 or maxy > 90:
+                    raise ValueError("Coordinates fall outside WGS84 bounds")
                 centroid=g.centroid
                 lon,lat=centroid.x,centroid.y
-            except Exception as exc: rejected.append({"index":idx,"reason":str(exc)}); continue
+            except Exception: rejected.append({"index":idx,"reason":"Invalid polygon geometry"}); continue
         else: rejected.append({"index":idx,"reason":"Shapely is required for safe polygon import"}); continue
         parcel_id=str(props.get("parcel_id") or props.get("property_id") or f"IMPORTED-{idx+1}").strip()
         property_id=str(props.get("property_id") or parcel_id).strip()
