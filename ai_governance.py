@@ -12,6 +12,10 @@ def _server():
     import server
     return server
 
+def _admin_user():
+    s=_server()
+    return s.require_roles(s.ROLE_ADMIN)
+
 router = APIRouter(prefix="/api/admin/ai-approval", tags=["AI Approval Center"])
 
 PROPOSED="PROPOSED"; APPROVED="APPROVED"; REJECTED="REJECTED"; EXPIRED="EXPIRED"; EXECUTED="EXECUTED"; FAILED="FAILED"
@@ -267,8 +271,8 @@ def approve_proposal(pid, admin, note=""):
     current=_current_state(p["action_type"],p["target_ids"])
     _assert_before(p,current)
     with _server().get_db() as db:
-        db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(APPROVED,admin["full_name"],time.time(),pid,PROPOSED))
-        if db.execute("SELECT changes() AS c").fetchone()["c"]!=1: raise HTTPException(409,"Proposal was already decided.")
+        cur=db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(APPROVED,admin["full_name"],time.time(),pid,PROPOSED))
+        if getattr(cur,"rowcount",1)!=1: raise HTTPException(409,"Proposal was already decided.")
     _event(pid,admin["full_name"],"AI_PROPOSAL_APPROVED",f"Administrator approved proposal. {note[:240]}")
     try:
         result=_execute(p,admin)
@@ -292,7 +296,7 @@ def reject_proposal(pid, admin, note=""):
     return get_proposal(pid)
 
 @router.get("/proposals")
-def proposals(status_filter: Optional[str]=None, limit:int=100, user:dict=Depends(lambda: _server().require_roles(_server().ROLE_ADMIN))):
+def proposals(status_filter: Optional[str]=None, limit:int=100, user:dict=Depends(_admin_user)):
     return {"proposals":list_proposals(status_filter,limit)}
 
 @router.get("/proposals/{proposal_id}")
