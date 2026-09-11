@@ -31,9 +31,8 @@ function escapeHtml(s) {
 }
 
 function authUrl(path){
-  if(!token) return path;
-  const sep = path.includes('?') ? '&' : '?';
-  return path + sep + 'token=' + encodeURIComponent(token);
+  // Credentials are sent only in the Authorization header, never in URLs.
+  return path;
 }
 
 async function api(path, opts={}){
@@ -118,7 +117,7 @@ $('#signupBtn').onclick = async()=>{
   try{
     const d = await api('/api/auth/signup',{method:'POST',body:JSON.stringify({
       full_name:$('#suName').value, email:$('#suEmail').value,
-      password:$('#suPass').value, role:$('#suRole').value})});
+      password:$('#suPass').value})});
     token = d.token; store_.setItem('lrtoken', token); me = d.user;
     showApp();
   }catch(e){ $('#signupError').textContent = e.message; $('#signupError').classList.remove('hidden'); }
@@ -156,6 +155,20 @@ function getStatusBadge(status){
   };
   const [cls, lbl] = map[clean] || ['pending', clean];
   return `<span class="pill ${cls}">${lbl}</span>`;
+}
+
+async function loadProtectedDocumentImage(img, docId){
+  try{
+    const headers = token ? {'Authorization':'Bearer ' + token} : {};
+    const r = await fetch('/api/documents/' + encodeURIComponent(docId) + '/file', {headers});
+    if(!r.ok) throw new Error('Preview unavailable');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    img.dataset.objectUrl = url;
+    img.src = url;
+  }catch(e){
+    if(img.parentElement) img.parentElement.innerHTML = '<div class="muted" style="color:#cbd5e1">Preview unavailable</div>';
+  }
 }
 
 function renderFieldInputCard(key, fObj, prefix='editfield', isReadOnly=false){
@@ -842,7 +855,7 @@ async function openStaffReview(id){
           </div>
           
           <div id="staffScanView" style="height:250px;border:1px solid var(--gov-border);border-radius:6px;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
-            <img src="/api/documents/${d.id}/file?token=${encodeURIComponent(token)}" alt="Document Scan" style="max-height:100%;max-width:100%;object-fit:contain" onerror="this.parentElement.innerHTML='<div class=\'muted\' style=\'color:#cbd5e1\'>Preview unavailable</div>'">
+            <img id="staffScanImage" src="" alt="Document Scan" style="max-height:100%;max-width:100%;object-fit:contain" onerror="this.parentElement.innerHTML='<div class=\'muted\' style=\'color:#cbd5e1\'>Preview unavailable</div>'">
           </div>
 
           <div id="staffRawText" class="raw-ocr-box hidden" style="height:250px">${escapeHtml(d.ocr_text || 'No raw OCR text')}</div>
@@ -861,6 +874,8 @@ async function openStaffReview(id){
     `;
 
     box.innerHTML = html;
+    const scanImage = box.querySelector('#staffScanImage');
+    if(scanImage) loadProtectedDocumentImage(scanImage, d.id);
     switchStaffTab('review');
   }catch(e){ alert(e.message); }
 }
