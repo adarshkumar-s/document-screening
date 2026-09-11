@@ -735,11 +735,8 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     lower = prompt.lower().strip()
 
     # Existing administrative actions
-    if any(k in lower for k in ["disable", "deactivate"]):
-        parts = prompt.split()
-        target = parts[-1]
-        card = prepare_admin_action("disable_user", target)
-        return {"response": f"I identified a request to disable {target}. Please confirm the action below.", "records": [], "action_card": card if card.get("confirmation_required") else None}
+    if any(k in lower for k in ["disable", "deactivate", "change role", "promote", "demote"]):
+        return {"response": "For security, the AI assistant cannot prepare or execute account deactivation or role changes. Perform those administrator controls through the existing Users interface; the AI may only report user/workload information.", "records": [], "action_card": None}
 
     # Officer reporting / availability
     if ("verification officer" in lower or "verifier" in lower) and any(k in lower for k in ["report", "workload", "performance", "busy", "free", "available", "who"]):
