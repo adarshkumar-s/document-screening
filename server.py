@@ -444,10 +444,9 @@ def verify_jwt_token(token: str) -> Dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
 
-def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-    jwt_token = authorization[7:].strip()
+def get_current_user(request: Request, authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    cookie_token = request.cookies.get("lr_session")
+    jwt_token = cookie_token or (authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else "")
     if not jwt_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     
@@ -1555,7 +1554,9 @@ def login(req: LoginReq):
             db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(req.password), user["id"]))
         normalized = normalize_role(user["role"])
         token = create_jwt_token(user["id"], normalized, user["version"])
-        return {"token": token, "user": {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": normalized}}
+        response = JSONResponse({"token": token, "user": {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": normalized}})
+        response.set_cookie("lr_session", token, httponly=True, secure=IS_PRODUCTION, samesite="lax", max_age=86400*14, path="/")
+        return response
 
 @app.post("/api/auth/signup")
 def signup(req: SignupReq):
@@ -1573,7 +1574,9 @@ def me(user: dict = Depends(get_current_user)):
 
 @app.post("/api/auth/logout")
 def logout(user: dict = Depends(get_current_user)):
-    return {"status": "ok"}
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie("lr_session", path="/")
+    return response
 
 @app.post("/api/auth/change-password")
 def change_password(req: ChangePassReq, user: dict = Depends(get_current_user)):
