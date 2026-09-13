@@ -20,10 +20,10 @@
     markers: null,
     markerById: new Map(),
     tileLayer: null,
-    // Use the public Esri imagery tiles first. The Esri street cache contains
-    // legitimate "Map data not yet available" tiles for some regions/scales;
-    // imagery avoids that empty-cache presentation while remaining keyless.
-    tileSource: 'esri',
+    // Use a keyless OSM France tile endpoint first. The direct OSM endpoint
+    // can block hosted applications for policy reasons, and Esri can return
+    // legitimate "Map data not yet available" placeholder tiles.
+    tileSource: 'osmfr',
     currentView: 'sheet',
     mapReady: false,
     pinMode: false,
@@ -32,10 +32,18 @@
   };
 
   const TILE_SOURCES = {
+    osmfr: {
+      label: 'OpenStreetMap France',
+      url: 'https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors · tiles courtesy of <a href="https://www.openstreetmap.fr/" target="_blank" rel="noreferrer">OpenStreetMap France</a>',
+      subdomains: 'abc',
+      maxNativeZoom: 19,
+    },
     osm: {
       label: 'OpenStreetMap',
       url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
+      maxNativeZoom: 19,
     },
     esri: {
       label: 'Esri World Imagery',
@@ -52,7 +60,7 @@
   };
   const TILE_SOURCE_STORAGE_KEY = 'documentScreeningMapTileSource';
   const LEGACY_TILE_SOURCE_STORAGE_KEY = 'portfolioMapTileSource';
-  const TILE_FALLBACK_ORDER = ['esri', 'topo', 'osm', 'schematic'];
+  const TILE_FALLBACK_ORDER = ['osmfr', 'esri', 'topo', 'osm', 'schematic'];
 
   class ApiError extends Error {
     constructor(status, message) { super(message); this.status = status; }
@@ -391,12 +399,12 @@
       const current = window.localStorage.getItem(TILE_SOURCE_STORAGE_KEY);
       const legacy = window.localStorage.getItem(LEGACY_TILE_SOURCE_STORAGE_KEY);
       const stored = current || legacy;
-      // Migrate previous defaults (OSM, CARTO, and Esri street) to imagery
-      // so returning users do not see provider-policy or empty-cache tiles.
-      if (stored === 'carto' || stored === 'esri-street' || (stored === 'osm' && !current)) return 'esri';
-      if (stored === 'schematic' || Object.prototype.hasOwnProperty.call(TILE_SOURCES, stored)) return stored;
+      // Migrate every previous default/provider choice to the keyless OSM
+      // France endpoint so returning users do not see policy or no-data tiles.
+      if (stored === 'carto' || stored === 'esri-street' || stored === 'esri' || stored === 'osm' || (!current && stored === 'topo')) return 'osmfr';
+      if (stored === 'schematic' || stored === 'osmfr' || Object.prototype.hasOwnProperty.call(TILE_SOURCES, stored)) return stored;
     } catch (_) { /* storage is optional */ }
-    return 'esri';
+    return 'osmfr';
   }
 
   function saveTileSource() {
@@ -407,7 +415,7 @@
   }
 
   function setTileSource(source) {
-    state.tileSource = ['esri', 'topo', 'osm', 'schematic'].includes(source) ? source : 'esri';
+    state.tileSource = ['osmfr', 'esri', 'topo', 'osm', 'schematic'].includes(source) ? source : 'osmfr';
     saveTileSource();
     if (!state.mapReady) return;
     removeTileLayer();
@@ -425,6 +433,7 @@
       attribution: definition.attribution,
       maxZoom: 19,
       maxNativeZoom: definition.maxNativeZoom || 19,
+      subdomains: definition.subdomains || 'abc',
       crossOrigin: true,
     });
     attachTileHealth(state.tileLayer, state.tileSource);
