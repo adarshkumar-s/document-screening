@@ -132,7 +132,7 @@ function renderProperty(p){
     (neighbours.length?neighbours.map(n=>'<button type="button" class="result" data-neighbor="'+esc(n.property_id)+'"><strong>'+esc(n.parcel_id)+'</strong><span class="muted">Survey '+esc(n.survey_number)+' · '+esc(n.area)+' '+esc(n.area_unit)+'</span></button>').join(""):'<span class="muted">No adjacent parcels detected.</span>');
   $("propertyPanel").querySelectorAll("[data-doc]").forEach(b=>b.addEventListener("click",()=>compareDoc(b.dataset.doc,p.property_id)));
   $("propertyPanel").querySelectorAll("[data-neighbor]").forEach(b=>b.addEventListener("click",()=>selectParcel(b.dataset.neighbor)));
-  $("propertyPanel").insertAdjacentHTML("beforeend",renderLocationPanel(p)+"<div class="location-actions"><button type="button" class="btn secondary" id="showMapBtn">Show on map</button></div>");
+  $("propertyPanel").insertAdjacentHTML("beforeend",renderLocationPanel(p)+'<div class="location-actions"><button type="button" class="btn secondary" id="showMapBtn">Show on map</button></div>');
   $("showMapBtn").onclick=()=>focusMapProperty(p.property_id);
   if(canEditLocation()){const sb=$("setPinBtn");if(sb)sb.onclick=()=>{state.pinMode=true;notice("Exact-pin mode: click the map to place the selected property. The server validates and audits the change.");setStatus("Click the map to set exact pin")};const cb=$("clearPinBtn");if(cb)cb.onclick=()=>clearExactPin(p.property_id)}
 
