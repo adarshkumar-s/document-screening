@@ -81,6 +81,8 @@ def test_map_records_are_document_grounded_and_role_filtered():
     assert record["lon"] == 77.10
     assert record["survey"] == "452"
     assert record["village"] == "Sundarpur"
+    assert record["location_status"] == "EXACT_PIN"
+    assert response.json()["metadata"]["summary"]["exact_pins"] >= 1
 
 
 def test_exact_document_pin_is_rbac_protected_and_audited():
@@ -112,6 +114,20 @@ def test_history_includes_current_record_and_transfer_aware_reasoning():
     assert {item["id"] for item in data["items"]} >= {"MAP-HISTORY-2019", "MAP-HISTORY-2023"}
     assert "ownership_history" in data
     assert "findings" in data["ownership_history"]
+    assert data["history_summary"]["owners"] == ["Ram Singh", "Kamla Devi"]
+
+
+def test_map_summary_and_export_are_authenticated_and_role_scoped():
+    _insert_document("MAP-EXPORT-1", lat=28.63, lon=77.11, status="APPROVED")
+    headers = _make_user("VERIFICATION_OFFICER")
+    summary = client.get("/api/map/summary", headers=headers)
+    assert summary.status_code == 200
+    assert summary.json()["summary"]["records"] >= 1
+    export = client.get("/api/map/export.csv", headers=headers)
+    assert export.status_code == 200
+    assert "land-map-register.csv" in export.headers.get("content-disposition", "")
+    assert "MAP-EXPORT-1" in export.text
+    assert "location_status" in export.text.splitlines()[0]
 
 
 def test_geocode_is_cached_without_fabricating_unresolved_coordinates(monkeypatch):

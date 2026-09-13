@@ -23,8 +23,10 @@ Open `/map` from the portal after signing in. The replacement map provides:
 - **Village Sheet** — cascading district, tehsil/taluka, and village selectors; plot/survey grouping; plot search; source-record browsing; neighbouring-plot navigation;
 - **Real Map** — Leaflet record map with OpenStreetMap, CARTO Voyager, Esri imagery, OpenTopoMap, and a fully offline schematic mode;
 - **document-grounded positions** — exact reviewer pins, cached village-level geocodes, and explicit unresolved locations instead of fabricated coordinates;
-- **record navigation** — filtered record sidebar, exact marker selection, popup actions, refresh, and stable local Leaflet assets;
-- **year-wise history** — survey-and-village passbook containing the current record, earlier records, and deterministic ownership/transfer review signals;
+- **record navigation** — filtered record sidebar, exact marker selection, popup actions, plot-to-map jumps, refresh, and stable local Leaflet assets;
+- **coverage dashboard** — exact-pin, village-approximate, unresolved, survey, village, district, and review-queue metrics;
+- **review filters and export** — filter by location quality/status and download a role-scoped CSV map register;
+- **year-wise history** — survey-and-village passbook containing the current record, earlier records, ownership-chain changes, transfer evidence, and deterministic review signals;
 - **audited exact pins** — Verification Officers and Administrators can set or clear a document pin; every change is written to the existing audit table;
 - **privacy-aware visibility** — viewer and data-officer access follows the same document visibility rules as the canonical document API.
 
@@ -50,10 +52,12 @@ The old Land Intelligence UI, credential-free demo router/assets, and old mappin
 
 ### Authenticated map API
 
-- `GET /api/map/records` — visible uploaded-document records and extracted land fields.
+- `GET /api/map/records` — visible uploaded-document records and extracted land fields; supports `q`, `district`, `tehsil`, `village`, `status`, `location`, and `limit` filters.
+- `GET /api/map/summary` — role-scoped coverage and review metrics.
+- `GET /api/map/export.csv` — role-scoped CSV map register for review/reporting.
 - `PUT /api/map/records/{doc_id}/location` — audited verifier/admin exact pin update; send `{"lat":null,"lon":null}` to clear.
-- `POST /api/map/geocode` — cached, throttled village/district lookup for approximate markers.
-- `GET /api/documents/{doc_id}/history` — year-ordered survey/village passbook with ownership review signals.
+- `POST /api/map/geocode` — cached, throttled village/district lookup for approximate markers with a seven-day cache policy.
+- `GET /api/documents/{doc_id}/history` — year-ordered survey/village passbook with ownership-chain and transfer review signals.
 
 ### Existing application API
 

@@ -28,7 +28,7 @@
       box.append(b,m);host.insertBefore(box,host.firstChild);
     }
   }
-  function records(){document.querySelectorAll('#simpleDocTable tbody tr,#staffRecordsTable tbody tr').forEach(r=>{if(r.querySelector('.land-map-file-link'))return;const c=r.querySelectorAll('td');if(c.length<2)return;const id=(c[0].textContent||'').trim().replace(/^#/,'').split(/\s+/)[0];if(!/^\d+$/.test(id))return;const a=document.createElement('a');a.className='btn ghost land-map-file-link';a.href='/map?document_id='+encodeURIComponent(id);a.textContent='Open map';a.style.cssText='display:inline-block;margin-left:6px;padding:5px 9px;font-size:11px;white-space:nowrap;text-decoration:none';c[c.length-1].appendChild(a)})}
+  function records(){document.querySelectorAll('#simpleDocTable tbody tr,#staffRecordsTable tbody tr').forEach(r=>{if(r.querySelector('.land-map-file-link'))return;const c=r.querySelectorAll('td');if(c.length<2)return;const id=(c[0].textContent||'').trim().replace(/^#/,'').split(/\s+/)[0];if(!id||id==='—')return;const a=document.createElement('a');a.className='btn ghost land-map-file-link';a.href='/map?document_id='+encodeURIComponent(id);a.textContent='Open map';a.style.cssText='display:inline-block;margin-left:6px;padding:5px 9px;font-size:11px;white-space:nowrap;text-decoration:none';c[c.length-1].appendChild(a)})}
   function run(){nav();hide();records()}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',run,{once:true});else run();
   new MutationObserver(run).observe(document.documentElement,{subtree:true,childList:true});

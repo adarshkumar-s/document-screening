@@ -12,6 +12,7 @@
   const state = {
     user: null,
     records: [],
+    summary: null,
     selectedId: null,
     historyId: null,
     villageCache: {},
@@ -140,6 +141,17 @@
     }
   }
 
+  function renderSummary(summary) {
+    state.summary = summary || {};
+    const value = (key) => Number.isFinite(Number(state.summary[key])) ? Number(state.summary[key]) : '—';
+    $('statRecords').textContent = value('records');
+    $('statExact').textContent = value('exact_pins');
+    $('statVillage').textContent = value('village_level');
+    $('statReview').textContent = value('review_required');
+    const context = $('statContext');
+    if (context) context.textContent = `${value('villages')} villages · ${value('districts')} districts · ${value('surveys')} survey numbers`;
+  }
+
   function sortedUnique(values) {
     const seen = new Map();
     values.forEach((value) => {
@@ -222,6 +234,12 @@
     $('sheetSubheader').textContent = `${records.length} document record${records.length === 1 ? '' : 's'} grouped into ${groupedPlots(records).length} plot${groupedPlots(records).length === 1 ? '' : 's'}.`;
     const grid = $('sheetGrid');
     const plots = groupedPlots(records);
+    const searchStatus = $('plotSearchStatus');
+    const query = String($('sheetPlotSearch')?.value || '').trim();
+    if (searchStatus) {
+      searchStatus.className = 'field-hint ' + (query ? (plots.length ? 'ok' : 'warn') : '');
+      searchStatus.textContent = query ? (plots.length ? `✓ ${plots.length} plot${plots.length === 1 ? '' : 's'} matched` : 'No plot in this village') : '';
+    }
     if (!plots.length) {
       grid.innerHTML = '<div class="empty-state">No records match this geography or plot search.<br>Upload or screen a land document in the portal first.</div>';
       $('plotInfo').innerHTML = 'Select a plot to see holders, area, source records, and neighbouring plots.';
@@ -256,7 +274,7 @@
     $('sheetGrid').querySelectorAll('.plot-card').forEach((button) => button.classList.toggle('active', normalise(button.dataset.plotKey) === normalise(group.key)));
     const first = group.records[0];
     const nearby = plots.filter((plot) => plot !== group).slice(0, 4);
-    const recordsHtml = group.records.map((record) => `<div class="plot-record"><div><strong>${esc(record.filename || `Record ${record.id}`)}</strong><br><span class="muted">${esc(record.status || 'Pending review')} · ${esc(record.doc_type || 'Land Record')}</span></div><button type="button" data-history-id="${esc(record.id)}">History</button></div>`).join('');
+    const recordsHtml = group.records.map((record) => `<div class="plot-record"><div><strong>${esc(record.filename || `Record ${record.id}`)}</strong><br><span class="muted">${esc(record.status || 'Pending review')} · ${esc(record.doc_type || 'Land Record')}</span></div><div class="plot-actions"><button type="button" data-history-id="${esc(record.id)}">History</button><button type="button" data-map-id="${esc(record.id)}">Map</button></div></div>`).join('');
     const nearbyHtml = nearby.length ? `<div class="info-kicker">NEIGHBOURING PLOTS</div>${nearby.map((plot) => `<button class="nearby-plot" data-nearby-plot="${esc(plot.key)}" type="button">${esc(plot.key)} <span>${esc(plot.records[0].owner || '—')}</span></button>`).join('')}` : '';
     info.classList.remove('empty-state');
     info.innerHTML = `<h3>Plot ${esc(group.key)}</h3>
@@ -265,18 +283,37 @@
       <div class="info-row"><div class="info-kicker">AREA</div><div class="info-value">${esc(group.records.map((record) => record.area).filter(Boolean).join(' · ') || 'Not extracted')}</div></div>
       <div class="info-kicker">SOURCE RECORDS</div>${recordsHtml}${nearbyHtml}`;
     info.querySelectorAll('[data-history-id]').forEach((button) => button.addEventListener('click', () => openHistory(button.dataset.historyId)));
+    info.querySelectorAll('[data-map-id]').forEach((button) => button.addEventListener('click', () => showRecordOnMap(button.dataset.mapId)));
     info.querySelectorAll('[data-nearby-plot]').forEach((button) => button.addEventListener('click', () => selectPlot(button.dataset.nearbyPlot)));
+  }
+
+  async function showRecordOnMap(id) {
+    switchView('map');
+    await initMap();
+    renderMarkers();
+    selectRecord(id);
+    const record = recordById(id);
+    if (record && !recordCoordinate(record)) geocodeVillages();
   }
 
   function filteredMapRecords() {
     const query = normalise($('mapSearch')?.value);
-    return query ? state.records.filter((record) => recordSearchText(record).includes(query)) : state.records;
+    const location = $('mapLocationFilter')?.value || '';
+    const status = $('mapStatusFilter')?.value || '';
+    return state.records.filter((record) => {
+      if (query && !recordSearchText(record).includes(query)) return false;
+      if (location && record.location_status !== location) return false;
+      if (status && String(record.status || '').toUpperCase() !== status) return false;
+      return true;
+    });
   }
 
   function locationBadge(record) {
-    const coordinate = recordCoordinate(record);
-    if (!coordinate) return '<span class="record-badge">No location</span>';
-    return coordinate.exact ? '<span class="record-badge exact">Exact pin</span>' : '<span class="record-badge village">Village approx.</span>';
+    if (record.location_status === 'EXACT_PIN') return '<span class="record-badge exact">Exact pin</span>';
+    if (record.location_status === 'VILLAGE_LEVEL') {
+      return recordCoordinate(record) ? '<span class="record-badge village">Village approx.</span>' : '<span class="record-badge village">Village pending</span>';
+    }
+    return '<span class="record-badge">No location</span>';
   }
 
   function renderRecordList() {
@@ -482,9 +519,16 @@
     const items = data.items || [];
     const currentId = String(data.current_id || '');
     $('historyTitle').textContent = `Survey history${data.survey ? ` · ${data.survey}` : ''}`;
-    $('historySummary').innerHTML = `<strong>${esc(data.village || 'Village not extracted')}</strong> · ${items.length} record${items.length === 1 ? '' : 's'} in the document passbook${data.including_current ? ' · current record included' : ''}`;
-    const reasoning = data.ownership_history;
-    if (reasoning && Array.isArray(reasoning.findings) && reasoning.findings.length) {
+    const reasoning = data.ownership_history || {};
+    const historySummary = data.history_summary || {};
+    const ownerChanges = Array.isArray(historySummary.owner_changes) ? historySummary.owner_changes : [];
+    const transferDocs = Array.isArray(historySummary.transfer_documents) ? historySummary.transfer_documents : [];
+    let summaryHtml = `<strong>${esc(data.village || 'Village not extracted')}</strong> · ${items.length} record${items.length === 1 ? '' : 's'} in the document passbook${data.including_current ? ' · current record included' : ''}`;
+    if (historySummary.assessment) summaryHtml += `<span class="history-assessment">Assessment: ${esc(String(historySummary.assessment).replace(/_/g, ' '))}</span>`;
+    if (ownerChanges.length) summaryHtml += `<div class="history-chain"><strong>Ownership chain:</strong> ${ownerChanges.map((change) => `${esc(change.from)} → ${esc(change.to)}${change.year ? ` (${esc(change.year)})` : ''}`).join(' · ')}</div>`;
+    if (transferDocs.length) summaryHtml += `<div class="history-chain"><strong>Transfer evidence:</strong> ${transferDocs.length} transfer/mutation record${transferDocs.length === 1 ? '' : 's'} in this passbook.</div>`;
+    $('historySummary').innerHTML = summaryHtml;
+    if (Array.isArray(reasoning.findings) && reasoning.findings.length) {
       $('historySummary').innerHTML += `<div class="history-alert">${reasoning.findings.map((finding) => `<strong>${esc(finding.title || finding.type || 'Review signal')}:</strong> ${esc(finding.reason || 'Human verification required.')}`).join('<br>')}</div>`;
     }
     const timeline = $('historyTimeline');
@@ -546,11 +590,34 @@
     }
   }
 
+  async function exportMapCsv() {
+    try {
+      const response = await fetch('/api/map/export.csv', {
+        headers: token() ? { Authorization: `Bearer ${token()}` } : {},
+        credentials: 'same-origin',
+      });
+      if (!response.ok) throw new Error('Export is not available for this session.');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'land-map-register.csv';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setNotice('<strong>Map register exported.</strong> The CSV contains only records visible to your role.', 'info');
+    } catch (error) {
+      setNotice(`<strong>Export failed.</strong> ${esc(error.message)}`, 'warn');
+    }
+  }
+
   async function loadRecords() {
     if (!state.user) return;
     try {
       const response = await api('/api/map/records');
       state.records = Array.isArray(response.records) ? response.records : [];
+      renderSummary(response.metadata?.summary || {});
       $('recordCount').textContent = `${state.records.length} document record${state.records.length === 1 ? '' : 's'}`;
       rebuildDistricts();
       renderRecordList();
@@ -580,6 +647,10 @@
     $('sheetVillage').addEventListener('change', loadVillageSheet);
     $('sheetPlotSearch').addEventListener('input', loadVillageSheet);
     $('mapSearch').addEventListener('input', () => { renderRecordList(); renderMarkers(); if (state.mapReady) fitMap(); });
+    ['mapLocationFilter', 'mapStatusFilter'].forEach((id) => $(id).addEventListener('change', () => {
+      renderRecordList(); renderMarkers(); if (state.mapReady) fitMap();
+    }));
+    $('exportMapBtn').addEventListener('click', exportMapCsv);
     $('mapTileSource').addEventListener('change', (event) => setTileSource(event.target.value));
     $('mapPinMode').addEventListener('change', (event) => {
       state.pinMode = event.target.checked;

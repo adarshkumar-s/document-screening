@@ -46,6 +46,13 @@
         <button id="realMapTab" class="view-tab" role="tab" aria-selected="false" type="button">⌖ Real Map <span>स्थान मानचित्र</span></button>
         <div id="recordCount" class="view-count">Loading records…</div>
       </div>
+      <div id="mapStats" class="map-stats" aria-live="polite">
+        <div class="stat-card"><span class="stat-label">VISIBLE RECORDS</span><strong id="statRecords">—</strong></div>
+        <div class="stat-card exact-stat"><span class="stat-label">EXACT PINS</span><strong id="statExact">—</strong></div>
+        <div class="stat-card village-stat"><span class="stat-label">VILLAGE APPROX.</span><strong id="statVillage">—</strong></div>
+        <div class="stat-card review-stat"><span class="stat-label">REVIEW QUEUE</span><strong id="statReview">—</strong></div>
+        <div class="stat-context"><span id="statContext">Loading map coverage…</span></div>
+      </div>
 
       <div id="mapSheetView" class="sheet-view" role="tabpanel">
         <div class="sheet-controls">
@@ -60,6 +67,7 @@
           </label>
           <label class="plot-search">Plot / survey search
             <input id="sheetPlotSearch" type="search" placeholder="e.g. 312, 45/2, khata…" autocomplete="off">
+            <span id="plotSearchStatus" class="field-hint"></span>
           </label>
         </div>
         <div class="sheet-meta">
@@ -94,6 +102,25 @@
               <option value="schematic">▦ Offline schematic</option>
             </select>
           </label>
+          <label class="filter-picker">Location
+            <select id="mapLocationFilter">
+              <option value="">All locations</option>
+              <option value="EXACT_PIN">Exact pins</option>
+              <option value="VILLAGE_LEVEL">Village approximate</option>
+              <option value="UNRESOLVED">Unresolved</option>
+            </select>
+          </label>
+          <label class="filter-picker">Review status
+            <select id="mapStatusFilter">
+              <option value="">All statuses</option>
+              <option value="DRAFT">Draft</option>
+              <option value="PENDING_VERIFICATION">Pending review</option>
+              <option value="RETURNED_TO_DATA_OFFICER">Returned</option>
+              <option value="APPROVED">Approved</option>
+              <option value="VERIFIED">Verified</option>
+            </select>
+          </label>
+          <button id="exportMapBtn" class="btn ghost export-btn" type="button">⇩ Export CSV</button>
           <label id="pinModeLabel" class="pin-toggle"><input id="mapPinMode" type="checkbox"> <span>📍 Set exact pin</span></label>
           <span id="mapCount" class="toolbar-count"></span>
         </div>
@@ -112,7 +139,13 @@
             <div id="pinHint" class="pin-hint hidden">Click the map to place an exact pin. You will be asked to confirm the change.</div>
           </div>
         </div>
-        <div class="disclaimer"><strong>Source labels matter.</strong> Blue pins are exact document locations; amber pins are village-level geocodes; grey records have no resolvable position yet.</div>
+        <div class="map-legend" aria-label="Map legend">
+          <span><i class="legend-dot exact-dot"></i> Exact reviewer pin</span>
+          <span><i class="legend-dot village-dot"></i> Village-level approximate</span>
+          <span><i class="legend-dot unresolved-dot"></i> Unresolved</span>
+          <span class="legend-note">Export respects your role visibility.</span>
+        </div>
+        <div class="disclaimer"><strong>Source labels matter.</strong> Green pins are exact reviewer locations; amber pins are village-level geocodes; records without a resolvable position remain visible in the list.</div>
       </div>
     </section>
 

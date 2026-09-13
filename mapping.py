@@ -8,7 +8,9 @@ serve the replacement map UI.
 """
 from __future__ import annotations
 
+import csv
 import difflib
+import io
 import json
 import re
 import time
@@ -18,7 +20,8 @@ import urllib.request
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 
 from server import (
@@ -36,6 +39,7 @@ map_router = APIRouter(prefix="/api/map", tags=["Document Map"])
 document_history_router = APIRouter(prefix="/api", tags=["Document History"])
 
 MAP_NOMINATIM_USER_AGENT = "Document-Screening-Portfolio-Map/1.0"
+MAP_GEOCODE_TTL_SECONDS = 7 * 24 * 60 * 60
 _map_geocode_cache: Dict[str, Dict[str, Any]] = {}
 _map_last_geocode_request = 0.0
 
@@ -828,6 +832,13 @@ def _map_document_visible(row: Any, user: Dict[str, Any]) -> bool:
 
 def _map_document_item(row: Any) -> Dict[str, Any]:
     fields = _parse_json(row["fields"], {}) or {}
+    lat = row["lat"] if "lat" in row.keys() else None
+    lon = row["lon"] if "lon" in row.keys() else None
+    has_exact_pin = lat is not None and lon is not None
+    village = _field_value(fields, "village")
+    validation = _parse_json(row["validation"], {}) if "validation" in row.keys() else {}
+    if not isinstance(validation, dict):
+        validation = {}
     item = {
         "id": row["id"],
         "filename": row["filename"],
@@ -840,34 +851,115 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
         "khata": _field_value(fields, "khata_number"),
         "plot": _field_value(fields, "plot_number"),
         "area": _field_value(fields, "area"),
-        "village": _field_value(fields, "village"),
-        "tehsil": _field_value(fields, "tehsil"),
+        "village": village,
+        "tehsil": _field_value(fields, "tehsil", "taluka"),
         "district": _field_value(fields, "district"),
         "state": _field_value(fields, "state"),
-        "year": _field_value(fields, "khatauni_year", "document_date"),
-        "lat": row["lat"] if "lat" in row.keys() else None,
-        "lon": row["lon"] if "lon" in row.keys() else None,
+        "year": _field_value(fields, "khatauni_year", "year", "document_date"),
+        "lat": float(lat) if lat is not None else None,
+        "lon": float(lon) if lon is not None else None,
         "created_at": row["created_at"],
+        "updated_at": row["updated_at"] if "updated_at" in row.keys() else row["created_at"],
+        "location_status": "EXACT_PIN" if has_exact_pin else ("VILLAGE_LEVEL" if village else "UNRESOLVED"),
+        "location_source": "Authorised reviewer pin" if has_exact_pin else ("Cached village geocode" if village else None),
+        "review_required": str(row["status"] or "").upper() not in {"APPROVED", "VERIFIED", "AUTO_APPROVED"},
+        "validation_issues": len(validation.get("issues") or []) if isinstance(validation.get("issues"), list) else 0,
     }
-    # Explicit nulls make the response stable for offline/village-level
-    # records and match the reference map contract.
-    item["lat"] = float(item["lat"]) if item["lat"] is not None else None
-    item["lon"] = float(item["lon"]) if item["lon"] is not None else None
     return item
 
 
+def _map_visible_records(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM documents ORDER BY created_at DESC LIMIT 10000").fetchall()
+    return [_map_document_item(row) for row in rows if _map_document_visible(row, user)]
+
+
+def _map_record_matches(record: Dict[str, Any], *, q: str = "", district: str = "", tehsil: str = "", village: str = "", status: str = "", location: str = "") -> bool:
+    if q and q not in " ".join(str(record.get(key) or "") for key in (
+        "id", "filename", "owner", "father", "survey", "khasra", "khata", "plot", "area",
+        "village", "tehsil", "district", "state", "doc_type", "status")).casefold():
+        return False
+    for key, expected in (("district", district), ("tehsil", tehsil), ("village", village), ("status", status)):
+        if expected and _normalise(record.get(key)) != _normalise(expected):
+            return False
+    if location and _normalise(record.get("location_status")) != _normalise(location):
+        return False
+    return True
+
+
+def _map_summary(records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    statuses = {"EXACT_PIN": 0, "VILLAGE_LEVEL": 0, "UNRESOLVED": 0}
+    for record in records:
+        statuses[record.get("location_status") or "UNRESOLVED"] = statuses.get(record.get("location_status") or "UNRESOLVED", 0) + 1
+    return {
+        "records": len(records),
+        "exact_pins": statuses.get("EXACT_PIN", 0),
+        "village_level": statuses.get("VILLAGE_LEVEL", 0),
+        "unresolved": statuses.get("UNRESOLVED", 0),
+        "review_required": sum(1 for record in records if record.get("review_required")),
+        "approved": sum(1 for record in records if not record.get("review_required")),
+        "villages": len({normalise for normalise in (_normalise(record.get("village")) for record in records) if normalise}),
+        "districts": len({normalise for normalise in (_normalise(record.get("district")) for record in records) if normalise}),
+        "surveys": len({normalise for normalise in (_land_number(record.get("survey")) for record in records) if normalise}),
+    }
+
+
 @map_router.get("/records")
-def map_records(user: Dict[str, Any] = Depends(get_current_user)):
-    """Return visible document records for the GIS view.
+def map_records(
+    q: str = Query("", max_length=200),
+    district: str = Query("", max_length=200),
+    tehsil: str = Query("", max_length=200),
+    village: str = Query("", max_length=200),
+    status: str = Query("", max_length=80),
+    location: str = Query("", max_length=40),
+    limit: int = Query(5000, ge=1, le=10000),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return Portfolio-style document map records with server-side filters.
 
     Exact coordinates are human-set pins. Records without a pin remain useful
-    to the client because their village/district fields can be geocoded and
-    cached at village level, exactly as in the Portfolio implementation.
+    because their village/district fields can be geocoded and cached at
+    village level. The summary metadata lets a future client render a map
+    dashboard without downloading a second dataset.
     """
-    with get_db() as db:
-        rows = db.execute("SELECT * FROM documents ORDER BY created_at DESC LIMIT 5000").fetchall()
-    records = [_map_document_item(row) for row in rows if _map_document_visible(row, user)]
-    return {"records": records, "total": len(records)}
+    all_records = _map_visible_records(user)
+    filtered = [record for record in all_records if _map_record_matches(
+        record, q=_normalise(q), district=district, tehsil=tehsil, village=village,
+        status=status, location=location)]
+    return {
+        "records": filtered[:limit],
+        "total": len(filtered),
+        "metadata": {
+            "authoritative": False,
+            "source": "Screened document fields and authorised reviewer pins",
+            "summary": _map_summary(all_records),
+            "filters": {"q": q, "district": district, "tehsil": tehsil, "village": village, "status": status, "location": location},
+        },
+    }
+
+
+@map_router.get("/summary")
+def map_summary(user: Dict[str, Any] = Depends(get_current_user)):
+    """Compact map dashboard metrics for the portal and integrations."""
+    records = _map_visible_records(user)
+    return {"summary": _map_summary(records), "metadata": {"authoritative": False}}
+
+
+@map_router.get("/export.csv")
+def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
+    """Download a review-friendly map register without exposing hidden records."""
+    output = io.StringIO(newline="")
+    output.write("\\ufeff")
+    writer = csv.DictWriter(output, fieldnames=(
+        "id", "filename", "doc_type", "status", "owner", "survey", "khasra", "khata", "plot",
+        "area", "village", "tehsil", "district", "state", "year", "lat", "lon",
+        "location_status", "location_source", "review_required"), extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(_map_visible_records(user))
+    return Response(content=output.getvalue(), media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": "attachment; filename=land-map-register.csv",
+        "Cache-Control": "no-store",
+    })
 
 
 @map_router.put("/records/{doc_id}/location")
@@ -906,6 +998,10 @@ def map_set_document_location(
     return result
 
 
+def _public_geocode_result(value: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: item for key, item in value.items() if not key.startswith("_")}
+
+
 @map_router.post("/geocode")
 def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_current_user)):
     """Geocode a free-form village query with a cached Nominatim request."""
@@ -915,20 +1011,21 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
         raise HTTPException(status_code=400, detail="query required (max 200 chars)")
     key = _normalise(query)
     cached = _map_geocode_cache.get(key)
-    if cached is not None:
-        return {**cached, "cached": True}
+    if cached is not None and (_now() - float(cached.get("_cached_at", 0))) < MAP_GEOCODE_TTL_SECONDS:
+        return {**_public_geocode_result(cached), "cached": True}
+    _map_geocode_cache.pop(key, None)
     # Reuse the persistent land cache where possible, but do not alter its
     # structured response shape.
     with get_db() as db:
-        cached_row = db.execute("SELECT latitude, longitude, display_name, status FROM geocode_cache WHERE cache_key=?", (key,)).fetchone()
-    if cached_row:
+        cached_row = db.execute("SELECT latitude, longitude, display_name, status, created_at FROM geocode_cache WHERE cache_key=?", (key,)).fetchone()
+    if cached_row and cached_row["status"] == "RESOLVED" and (_now() - float(cached_row["created_at"] or 0)) < MAP_GEOCODE_TTL_SECONDS:
         cached_result = {
             "query": query,
             "lat": cached_row["latitude"],
             "lon": cached_row["longitude"],
             "display_name": cached_row["display_name"],
         }
-        _map_geocode_cache[key] = cached_result
+        _map_geocode_cache[key] = {**cached_result, "_cached_at": _now()}
         return {**cached_result, "cached": True}
 
     elapsed = _now() - _map_last_geocode_request
@@ -954,7 +1051,7 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
         latitude, longitude = _number(data[0].get("lat")), _number(data[0].get("lon"))
         result = {"query": query, "lat": latitude, "lon": longitude,
                   "display_name": data[0].get("display_name"), "cached": False}
-    _map_geocode_cache[key] = {k: v for k, v in result.items() if k != "cached"}
+    _map_geocode_cache[key] = {**{k: v for k, v in result.items() if k != "cached"}, "_cached_at": _now()}
     # Persist only valid coordinate results in the shared cache. An unresolved
     # network response should be retried later rather than frozen indefinitely.
     if result.get("lat") is not None and result.get("lon") is not None:
@@ -976,7 +1073,34 @@ def _history_item(row: Any) -> Dict[str, Any]:
         "survey": item["survey"], "khasra": item["khasra"], "khata": item["khata"],
         "area": item["area"], "village": item["village"], "tehsil": item["tehsil"],
         "district": item["district"], "state": item["state"], "year": item["year"],
-        "lat": item["lat"], "lon": item["lon"], "created_at": item["created_at"],
+        "lat": item["lat"], "lon": item["lon"], "location_status": item["location_status"],
+        "created_at": item["created_at"],
+    }
+
+
+def _history_summary(items: Sequence[Dict[str, Any]], ownership: Dict[str, Any]) -> Dict[str, Any]:
+    owners = []
+    changes = []
+    transfer_documents = []
+    previous_owner = ""
+    for item in items:
+        owner = str(item.get("owner") or "").strip()
+        if owner and _normalise(owner) not in {_normalise(value) for value in owners}:
+            owners.append(owner)
+        if owner and previous_owner and _normalise(owner) != _normalise(previous_owner):
+            changes.append({"from": previous_owner, "to": owner, "document_id": item.get("id"), "year": item.get("year")})
+        if owner:
+            previous_owner = owner
+        if _is_transfer_document(item):
+            transfer_documents.append(item.get("id"))
+    return {
+        "record_count": len(items),
+        "owners": owners,
+        "owner_changes": changes,
+        "transfer_documents": transfer_documents,
+        "assessment": ownership.get("assessment", "INSUFFICIENT_DATA"),
+        "review_required": bool(ownership.get("findings") or ownership.get("relationships")),
+        "disclaimer": "A history signal supports review; it does not establish title or legal ownership.",
     }
 
 
@@ -1019,7 +1143,8 @@ def document_history(doc_id: str, user: Dict[str, Any] = Depends(get_current_use
     ownership_history = analyze_ownership_history(ownership_records) if ownership_records else {"assessment": "INSUFFICIENT_DATA", "events": [], "findings": [], "relationships": []}
     return {"survey": survey, "village": village, "current_id": doc_id,
             "items": items, "including_current": any(item["id"] == doc_id for item in items),
-            "ownership_history": ownership_history}
+            "ownership_history": ownership_history,
+            "history_summary": _history_summary(items, ownership_history)}
 
 
 
