@@ -20,9 +20,10 @@
     markers: null,
     markerById: new Map(),
     tileLayer: null,
-    // CARTO is the safer default for hosted deployments; some network environments
-    // return a policy 403 for the public OpenStreetMap tile endpoint.
-    tileSource: 'carto',
+    // Use the public Esri street tiles first. CARTO now returns an API-key
+    // placeholder in some deployments, while Esri's public raster endpoint is
+    // keyless and the fallback chain still preserves an offline view.
+    tileSource: 'esri-street',
     currentView: 'sheet',
     mapReady: false,
     pinMode: false,
@@ -36,10 +37,10 @@
       url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
     },
-    carto: {
-      label: 'CARTO Voyager',
-      url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-      attribution: '&copy; OpenStreetMap contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noreferrer">CARTO</a>',
+    'esri-street': {
+      label: 'Esri World Street Map',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      attribution: 'Tiles &copy; Esri',
     },
     esri: {
       label: 'Esri World Imagery',
@@ -54,7 +55,7 @@
   };
   const TILE_SOURCE_STORAGE_KEY = 'documentScreeningMapTileSource';
   const LEGACY_TILE_SOURCE_STORAGE_KEY = 'portfolioMapTileSource';
-  const TILE_FALLBACK_ORDER = ['carto', 'esri', 'topo', 'schematic'];
+  const TILE_FALLBACK_ORDER = ['esri-street', 'esri', 'osm', 'topo', 'schematic'];
 
   class ApiError extends Error {
     constructor(status, message) { super(message); this.status = status; }
@@ -357,8 +358,8 @@
 
   function nextTileSource(source) {
     if (source === 'schematic') return null;
-    const start = source === 'osm' ? -1 : TILE_FALLBACK_ORDER.indexOf(source);
-    return TILE_FALLBACK_ORDER.slice(start + 1).find((candidate) => candidate !== source) || null;
+    const start = TILE_FALLBACK_ORDER.indexOf(source);
+    return TILE_FALLBACK_ORDER.slice(Math.max(0, start + 1)).find((candidate) => candidate !== source) || null;
   }
 
   function attachTileHealth(layer, source) {
@@ -393,10 +394,12 @@
       const current = window.localStorage.getItem(TILE_SOURCE_STORAGE_KEY);
       const legacy = window.localStorage.getItem(LEGACY_TILE_SOURCE_STORAGE_KEY);
       const stored = current || legacy;
-      if (stored === 'osm' && !current) return 'carto';
+      // Migrate both previous defaults (OSM and CARTO) to the keyless Esri
+      // street layer so a returning user does not see a provider error again.
+      if (stored === 'carto' || (stored === 'osm' && !current)) return 'esri-street';
       if (stored === 'schematic' || Object.prototype.hasOwnProperty.call(TILE_SOURCES, stored)) return stored;
     } catch (_) { /* storage is optional */ }
-    return 'carto';
+    return 'esri-street';
   }
 
   function saveTileSource() {
@@ -407,7 +410,7 @@
   }
 
   function setTileSource(source) {
-    state.tileSource = source === 'osm' || source === 'carto' || source === 'esri' || source === 'topo' || source === 'schematic' ? source : 'carto';
+    state.tileSource = ['esri-street', 'esri', 'osm', 'topo', 'schematic'].includes(source) ? source : 'esri-street';
     saveTileSource();
     if (!state.mapReady) return;
     removeTileLayer();

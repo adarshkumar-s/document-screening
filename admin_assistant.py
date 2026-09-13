@@ -121,6 +121,17 @@ def _now() -> float:
     return time.time()
 
 
+def _json_object(raw: Any) -> Dict[str, Any]:
+    """Parse stored JSON defensively so one malformed record cannot break the assistant."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def _task_row(row) -> Dict[str, Any]:
     if not row:
         return {}
@@ -212,18 +223,9 @@ def get_faulty_records(limit: int = 30) -> List[Dict[str, Any]]:
     faulty = []
     for row in rows:
         d = dict(row)
-        try:
-            fields = json.loads(d.get("fields") or "{}")
-        except Exception:
-            fields = {}
-        try:
-            validation = json.loads(d.get("validation") or "{}")
-        except Exception:
-            validation = {}
-        try:
-            ai = json.loads(d.get("ai_decision_support") or "{}")
-        except Exception:
-            ai = {}
+        fields = _json_object(d.get("fields"))
+        validation = _json_object(d.get("validation"))
+        ai = _json_object(d.get("ai_decision_support"))
 
         reasons: List[str] = []
         severity = "MEDIUM"
@@ -251,6 +253,11 @@ def get_faulty_records(limit: int = 30) -> List[Dict[str, Any]]:
             severity = max_severity(severity, "HIGH")
         if invalid:
             reasons.append("Validation issues: " + ", ".join(invalid[:4]))
+            severity = max_severity(severity, "HIGH")
+
+        validation_issues = validation.get("issues") if isinstance(validation.get("issues"), list) else []
+        if validation_issues and not (missing or invalid):
+            reasons.append(f"Validation reported {len(validation_issues)} issue(s)")
             severity = max_severity(severity, "HIGH")
 
         corrections = ai.get("ai_corrections") or ai.get("corrections") or []
@@ -384,7 +391,7 @@ def get_pending_records(limit: int = 10) -> List[Dict[str, Any]]:
         results = []
         for r in cur.fetchall():
             item = dict(r)
-            f = json.loads(item.get("fields") or "{}")
+            f = _json_object(item.get("fields"))
             results.append({
                 "id": item["id"], "filename": item["filename"],
                 "owner_name": f.get("owner_name", {}).get("value", "—"),
@@ -399,7 +406,7 @@ def get_low_confidence_records(threshold: int = 75, limit: int = 10) -> List[Dic
         results = []
         for r in cur.fetchall():
             item = dict(r)
-            f = json.loads(item.get("fields") or "{}")
+            f = _json_object(item.get("fields"))
             results.append({
                 "id": item["id"], "filename": item["filename"],
                 "owner_name": f.get("owner_name", {}).get("value", "—"),
@@ -415,7 +422,7 @@ def search_records(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     results = []
     for r in rows:
         item = dict(r)
-        f = json.loads(item.get("fields") or "{}")
+        f = _json_object(item.get("fields"))
         owner = (f.get("owner_name", {}).get("value") or "").lower()
         survey = (f.get("survey_number", {}).get("value") or f.get("khasra_number", {}).get("value") or "").lower()
         village = (f.get("village", {}).get("value") or "").lower()
@@ -669,8 +676,13 @@ Rules:
 
 
 def _record_id_from_prompt(prompt: str) -> Optional[str]:
+    """Extract numeric and UUID-style document IDs used by the current portal."""
     import re
-    m = re.search(r"(?:record|document|lr)\s*#?\s*(\d+)", prompt.lower())
+    m = re.search(
+        r"(?:record|document|lr)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})",
+        prompt,
+        re.I,
+    )
     return m.group(1) if m else None
 
 
@@ -842,6 +854,18 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         else:
             text = _report_officers()
         return {"response": text, "records": [], "action_card": None}
+
+    # Recent activity is deterministic so this useful dashboard query works
+    # even when Gemini is not configured or temporarily unavailable.
+    if any(phrase in lower for phrase in ("recent activity", "recent audit", "audit activity")):
+        activity = get_recent_activity(limit=10)
+        if not activity:
+            return {"response": "No recent audit activity was found.", "records": [], "action_card": None}
+        lines = ["RECENT AUDIT ACTIVITY"]
+        for item in activity:
+            doc = f" · record #{item['doc_id']}" if item.get("doc_id") else ""
+            lines.append(f"- {item['time']} · {item['user']} · {item['action']}{doc}: {item['detail']}")
+        return {"response": "\n".join(lines), "records": [], "action_card": None}
 
     # Urgency and operational intelligence
     if any(k in lower for k in ["urgent", "most urgent", "priority", "critical now", "what should i do"]):

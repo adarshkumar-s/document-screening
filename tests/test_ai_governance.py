@@ -12,6 +12,13 @@ import ai_governance
 client = TestClient(main.app)
 
 
+def test_admin_assistant_accepts_current_non_numeric_document_ids():
+    import admin_assistant
+
+    assert admin_assistant._record_id_from_prompt("Show document #DOC-2026-ABC") == "DOC-2026-ABC"
+    assert admin_assistant._record_id_from_prompt("Propose reprocessing record 123") == "123"
+
+
 def test_ai_action_registry_is_closed():
     assert "REQUEST_REPROCESSING" in ai_governance.ACTION_REGISTRY
     assert "DROP_DATABASE" not in ai_governance.ACTION_REGISTRY

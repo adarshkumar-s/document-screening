@@ -21,7 +21,7 @@ The replacement is intentionally limited to the mapping surface and mapping-only
 Open `/map` from the portal after signing in. The replacement map provides:
 
 - **Village Sheet** — cascading district, tehsil/taluka, and village selectors; plot/survey grouping; plot search; source-record browsing; neighbouring-plot navigation;
-- **Real Map** — Leaflet record map with OpenStreetMap, CARTO Voyager, Esri imagery, OpenTopoMap, and a fully offline schematic mode;
+- **Real Map** — Leaflet record map with a keyless Esri street layer by default, Esri imagery, OpenStreetMap/OpenTopoMap fallbacks, and a fully offline schematic mode;
 - **document-grounded positions** — exact reviewer pins, cached village-level geocodes, and explicit unresolved locations instead of fabricated coordinates;
 - **record navigation** — filtered record sidebar, exact marker selection, popup actions, plot-to-map jumps, refresh, and stable local Leaflet assets;
 - **coverage dashboard** — exact-pin, village-approximate, unresolved, survey, village, district, and review-queue metrics;
@@ -41,6 +41,10 @@ External tile and geocoding services are optional. Tile failures leave the recor
 - `tests/test_mapping.py` — replacement map smoke and compatibility tests.
 
 The old Land Intelligence UI, credential-free demo router/assets, and old mapping route registration are intentionally absent.
+
+## OCR language coverage
+
+The upload and staff OCR selectors expose 21 Tesseract language packs: English, Hindi, Telugu, Tamil, Bengali, Marathi, Gujarati, Punjabi, Kannada, Odia, Urdu, Assamese, Malayalam, Nepali, Sanskrit, Sindhi, Sinhala, Arabic, Persian, Burmese, and Tibetan. Auto-detection retains the existing multilingual fallback and never changes the document validation or approval rules.
 
 ## Routes
 

@@ -197,6 +197,8 @@ VALID_STATUSES = {
     STATUS_APPROVED, STATUS_RETURNED, STATUS_REJECTED
 }
 
+# Language packs installed by Dockerfile and exposed by /api/languages.
+# Keep this list as the single source of truth for the upload selectors and OCR.
 SUPPORTED_LANGUAGES = [
     {"code": "eng", "name": "English"},
     {"code": "hin", "name": "Hindi"},
@@ -208,7 +210,17 @@ SUPPORTED_LANGUAGES = [
     {"code": "pan", "name": "Punjabi"},
     {"code": "kan", "name": "Kannada"},
     {"code": "ori", "name": "Odia"},
-    {"code": "urd", "name": "Urdu"}
+    {"code": "urd", "name": "Urdu"},
+    {"code": "asm", "name": "Assamese"},
+    {"code": "mal", "name": "Malayalam"},
+    {"code": "nep", "name": "Nepali"},
+    {"code": "san", "name": "Sanskrit"},
+    {"code": "snd", "name": "Sindhi"},
+    {"code": "sin", "name": "Sinhala"},
+    {"code": "ara", "name": "Arabic"},
+    {"code": "fas", "name": "Persian"},
+    {"code": "mya", "name": "Burmese"},
+    {"code": "bod", "name": "Tibetan"},
 ]
 
 app = FastAPI(
@@ -542,11 +554,22 @@ def clean_ocr_image(image: Image.Image) -> Image.Image:
     return enhancer.enhance(1.5)
 
 def detect_primary_script(text: str) -> str:
+    # These ranges let the expanded language set report a useful detected
+    # language/script without changing the existing field extraction rules.
     counts = {
-        "hin": sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F),
-        "tel": sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F),
-        "tam": sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF),
-        "ben": sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF)
+        "hin": sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F),  # Devanagari
+        "ben": sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF),  # Bengali/Assamese
+        "pan": sum(1 for c in text if 0x0A00 <= ord(c) <= 0x0A7F),  # Gurmukhi
+        "guj": sum(1 for c in text if 0x0A80 <= ord(c) <= 0x0AFF),  # Gujarati
+        "ori": sum(1 for c in text if 0x0B00 <= ord(c) <= 0x0B7F),  # Odia
+        "tam": sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF),  # Tamil
+        "tel": sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F),  # Telugu
+        "kan": sum(1 for c in text if 0x0C80 <= ord(c) <= 0x0CFF),  # Kannada
+        "mal": sum(1 for c in text if 0x0D00 <= ord(c) <= 0x0D7F),  # Malayalam
+        "sin": sum(1 for c in text if 0x0D80 <= ord(c) <= 0x0DFF),  # Sinhala
+        "urd": sum(1 for c in text if 0x0600 <= ord(c) <= 0x06FF),  # Arabic/Persian/Urdu
+        "bod": sum(1 for c in text if 0x0F00 <= ord(c) <= 0x0FFF),  # Tibetan
+        "mya": sum(1 for c in text if 0x1000 <= ord(c) <= 0x109F),  # Myanmar
     }
     if not counts or max(counts.values()) == 0:
         return "eng"
@@ -564,11 +587,12 @@ def _rotate_image(image: Image.Image, rotation: int) -> Image.Image:
 
 
 def _ocr_languages(preferred: str = "auto") -> List[str]:
-    """Return a small, safe language list for the installed Tesseract setup."""
+    """Return Tesseract language candidates from the shared 21-language list."""
     requested = (preferred or "auto").lower().strip()
-    if requested in {"eng", "hin", "tel", "tam", "ben", "mar", "guj", "pan", "kan", "ori", "urd"}:
+    supported_codes = {item["code"] for item in SUPPORTED_LANGUAGES}
+    if requested in supported_codes:
         return [requested]
-    # Keep the existing multilingual behaviour as the first choice.
+    # Keep the existing multilingual behaviour as the first choice for auto mode.
     return ["hin+eng+tel+tam", "eng"]
 
 
@@ -829,8 +853,8 @@ def ai_prescan_document(image_bytes: bytes) -> Dict[str, Any]:
     prompt = """Inspect this land-record document image and return STRICT JSON ONLY with:
 {
   "document_type": "Land Record/Sale Deed/Khatauni/Patta/Jamabandi/Other",
-  "language": "English/Hindi/Telugu/Tamil/Bengali/Marathi/Gujarati/Punjabi/Kannada/Odia/Urdu/Mixed",
-  "script": "Latin/Devanagari/Telugu/Tamil/Bengali/Gujarati/Gurmukhi/Kannada/Odia/Urdu/Mixed",
+  "language": "English/Hindi/Telugu/Tamil/Bengali/Marathi/Gujarati/Punjabi/Kannada/Odia/Urdu/Assamese/Malayalam/Nepali/Sanskrit/Sindhi/Sinhala/Arabic/Persian/Burmese/Tibetan/Mixed",
+  "script": "Latin/Devanagari/Telugu/Tamil/Bengali/Assamese/Gujarati/Gurmukhi/Kannada/Odia/Malayalam/Sinhala/Arabic/Tibetan/Myanmar/Mixed",
   "quality": "high/medium/low",
   "layout": "table/dense_text/mixed",
   "rotation": 0,
@@ -856,15 +880,20 @@ def select_ai_ocr_strategy(prescan: Dict[str, Any], requested_lang: str = "auto"
     script = str(prescan.get("script", "Mixed")).lower()
     layout = str(prescan.get("layout", "mixed")).lower()
     quality = str(prescan.get("quality", "medium")).lower()
+    prescan_text = f"{language} {script}"
+    detected_code = next(
+        (item["code"] for item in SUPPORTED_LANGUAGES if item["name"].lower() in prescan_text or item["code"] in prescan_text),
+        None,
+    )
 
     if requested_lang and requested_lang != "auto":
         candidates = _ocr_languages(requested_lang)
-    elif "hindi" in language or "devanagari" in script:
+    elif detected_code and detected_code != "eng":
+        candidates = [f"{detected_code}+eng", "eng"]
+    elif detected_code == "eng":
+        candidates = ["eng"]
+    elif "devanagari" in script:
         candidates = ["hin+eng", "eng"]
-    elif "telugu" in language or "telugu" in script:
-        candidates = ["tel+eng", "eng"]
-    elif "tamil" in language or "tamil" in script:
-        candidates = ["tam+eng", "eng"]
     elif "mixed" in language or "mixed" in script:
         candidates = ["hin+eng+tel+tam", "eng"]
     else:

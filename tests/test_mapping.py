@@ -63,6 +63,8 @@ def test_map_assets_are_explicit_and_portal_navigation_is_visible():
     assert "Land Records Map" in html.text
     assert "/static/vendor/leaflet/leaflet.css" in html.text
     assert "Offline schematic" in html.text
+    assert "World_Street_Map" in js.text
+    assert "basemaps.cartocdn.com" not in js.text
     assert "portfolioMapVillageCache" in js.text
     assert "set exact pin" in js.text.lower()
     assert css.headers["content-type"].split(";", 1)[0] == "text/css"

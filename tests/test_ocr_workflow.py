@@ -10,6 +10,16 @@ os.environ.setdefault("APP_ENV", "test")
 import server
 
 
+def test_supported_language_catalog_has_21_tesseract_choices():
+    codes = [item["code"] for item in server.SUPPORTED_LANGUAGES]
+    assert len(codes) == 21
+    assert len(set(codes)) == 21
+    for code in ("asm", "mal", "nep", "san", "snd", "sin", "ara", "fas", "mya", "bod"):
+        assert server._ocr_languages(code) == [code]
+    strategy = server.select_ai_ocr_strategy({"language": "Malayalam", "script": "Malayalam", "layout": "mixed", "quality": "high"})
+    assert strategy["lang"] == "mal+eng"
+
+
 def login(client):
     response = client.post("/api/auth/login", json={"email": "admin@landrec.gov.in", "password": "Admin@123"})
     assert response.status_code == 200

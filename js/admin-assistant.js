@@ -1,3 +1,16 @@
+function assistantToken() {
+  try { return window.localStorage.getItem("lrtoken") || ""; } catch (_) { return ""; }
+}
+
+function fetchAssistant(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const headers = { ...(options.headers || {}) };
+  const jwt = assistantToken();
+  if (jwt) headers.Authorization = "Bearer " + jwt;
+  return fetch(url, { ...options, headers, signal: controller.signal }).finally(() => window.clearTimeout(timeout));
+}
+
 function submitAssistantQuestion(text) {
   const input = document.getElementById("assistantInput");
   if (input) {
@@ -28,7 +41,7 @@ async function handleAssistantSubmit(event) {
 
   try {
     
-    const response = await fetch("/api/admin/assistant/query", {
+    const response = await fetchAssistant("/api/admin/assistant/query", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
@@ -47,7 +60,10 @@ async function handleAssistantSubmit(event) {
       renderConfirmationCard(data.action_card);
     }
   } catch (error) {
-    appendAssistantMessage("Network error: The assistant is temporarily unreachable.", "error-bubble");
+    const message = error.name === "AbortError"
+      ? "The assistant took too long to respond. Your records were not changed; try again or use a suggested query."
+      : "Network error: The assistant is temporarily unreachable.";
+    appendAssistantMessage(message, "error-bubble");
   } finally {
     loading.style.display = "none";
     submitBtn.disabled = false;
@@ -102,7 +118,7 @@ async function triggerSystemBriefing() {
 
   try {
     
-    const response = await fetch("/api/admin/assistant/briefing", {
+    const response = await fetchAssistant("/api/admin/assistant/briefing", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" }
@@ -122,7 +138,10 @@ async function triggerSystemBriefing() {
     card.appendChild(briefing);
     log.appendChild(card);
   } catch (err) {
-    appendAssistantMessage("Network error generating briefing.", "error-bubble");
+    appendAssistantMessage(
+      err.name === "AbortError" ? "Briefing generation timed out. Try again shortly." : "Network error generating briefing.",
+      "error-bubble"
+    );
   } finally {
     briefingBtn.disabled = false;
     loading.style.display = "none";
@@ -135,11 +154,16 @@ async function triggerSystemBriefing() {
 let aiTaskRole = null;
 let aiTaskPoller = null;
 
-function taskAuthHeaders() { return { "Content-Type": "application/json" }; }
+function taskAuthHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  const jwt = assistantToken();
+  if (jwt) headers.Authorization = "Bearer " + jwt;
+  return headers;
+}
 
 async function loadAiTaskIdentity() {
   try {
-    const r = await fetch('/api/auth/me', { headers: taskAuthHeaders() });
+    const r = await fetch('/api/auth/me', { credentials: 'same-origin', headers: taskAuthHeaders() });
     if (!r.ok) return;
     const d = await r.json();
     aiTaskRole = d.user?.role || d.role || null;
@@ -293,7 +317,7 @@ async function loadAiApprovals() {
   if (!root) return;
   root.textContent = "Loading proposals…";
   try {
-    const r = await fetch("/api/admin/ai-approval/proposals?limit=100", {credentials:"same-origin"});
+    const r = await fetch("/api/admin/ai-approval/proposals?limit=100", {credentials:"same-origin", headers: taskAuthHeaders()});
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || "Unable to load proposals.");
     renderAiApprovals(data.proposals || []);
@@ -362,7 +386,7 @@ async function decideAiProposal(id, decision, primary, secondary) {
   primary.disabled = true; if (secondary) secondary.disabled = true;
   try {
     const r = await fetch("/api/admin/ai-approval/proposals/" + encodeURIComponent(id) + "/" + decision, {
-      method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body:JSON.stringify({note})
+      method:"POST", credentials:"same-origin", headers:taskAuthHeaders(), body:JSON.stringify({note})
     });
     const data=await r.json();
     if(!r.ok) throw new Error(data.detail || "Proposal decision failed.");
