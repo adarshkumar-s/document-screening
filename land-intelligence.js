@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const state={map:null,tileLayer:null,tileSource:"osm",geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,locationMarkers:new Map(),locationRecords:new Map(),documentRecords:[],documentMarkers:new Map(),selectedDocumentId:null,documentPinMode:false,documentVillageCache:{},scenarios:[],activeScenario:null,loading:false,user:null,pinMode:false,visibleFeatures:[]};
+const state={map:null,tileLayer:null,tileSource:"osm",mapInitAttempts:0,mapRetryTimer:null,geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,locationMarkers:new Map(),locationRecords:new Map(),documentRecords:[],documentMarkers:new Map(),selectedDocumentId:null,documentPinMode:false,documentVillageCache:{},scenarios:[],activeScenario:null,loading:false,user:null,pinMode:false,visibleFeatures:[]};
 const API="/api/demo-land";
 const LAND_API="/api/land";
 const $=id=>document.getElementById(id);
@@ -152,8 +152,24 @@ async function focusMapProperty(id){
 function loadingPanel(id,title="Loading…"){const root=$(id);if(root)root.innerHTML='<div class="empty"><strong>'+esc(title)+'</strong><p>Please wait while evidence is retrieved.</p></div>'}
 
 function initMap(){
-  if(!window.L){notice("Interactive map library unavailable. Parcel intelligence remains available.");setStatus("Map library unavailable");return}
+  if(state.map)return;
+  // The local Leaflet script normally runs before this file. If a deployed
+  // asset is slow or the CDN fallback is still loading, retry instead of
+  // permanently giving up during the first paint.
+  if(!window.L){
+    state.mapInitAttempts++;
+    setStatus("Loading map library…");
+    if(state.mapInitAttempts <= 20){
+      clearTimeout(state.mapRetryTimer);
+      state.mapRetryTimer=setTimeout(initMap,250);
+    }else{
+      notice("Interactive map library could not be loaded. Use the parcel list and evidence panels, or reload when online.");
+      setStatus("Map library unavailable");
+    }
+    return;
+  }
   try{
+    state.mapInitAttempts=0;
     state.map=L.map("map",{zoomControl:true,preferCanvas:true,attributionControl:true}).setView([28.622,77.106],14);
     mapSetTileSource(mapSavedTileSource());
     window.addEventListener("resize",()=>state.map?.invalidateSize());
@@ -161,7 +177,16 @@ function initMap(){
       if(state.documentPinMode&&state.selectedDocumentId){state.documentPinMode=false;renderDocumentList();setDocumentPin(state.selectedDocumentId,e.latlng.lat,e.latlng.lng);return}
       if(state.pinMode&&state.selected){state.pinMode=false;setExactPin(state.selected.property_id,e.latlng.lat,e.latlng.lng)}
     });
-  }catch(e){notice("Map could not be initialized. Property intelligence remains available.");setStatus("Map unavailable")}
+    // If Leaflet became available after the data requests finished, draw the
+    // already-loaded geometry and markers now rather than waiting for refresh.
+    if(state.visibleFeatures.length)renderParcels(state.visibleFeatures);
+    if(state.locationRecords.size)renderLocationMarkers([...state.locationRecords.values()]);
+    if(state.documentRecords.length)renderDocumentMarkers();
+  }catch(e){
+    state.map=null;
+    notice("Map could not be initialized. Property intelligence remains available.");
+    setStatus("Map unavailable");
+  }
 }
 function fitAll(){
   if(!state.map||!state.parcelLayers.size){setStatus("No parcel geometry available");return}

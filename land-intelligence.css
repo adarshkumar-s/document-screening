@@ -602,6 +602,9 @@ textarea {
   position: absolute;
   inset: 0;
   z-index: 1;
+  background-color: #dfe8f0;
+  background-image: linear-gradient(rgba(15,43,72,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(15,43,72,.05) 1px, transparent 1px);
+  background-size: 48px 48px;
 }
 
 .map-toolbar {
