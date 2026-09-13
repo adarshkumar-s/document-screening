@@ -34,6 +34,7 @@ jobs:
           APP_ENV: production
           JWT_SECRET: ci-test-only-random-secret
           ALLOWED_ORIGINS: http://127.0.0.1:8000
+          ADMIN_ACTION_SECRET: ci-test-only-admin-secret
         run: |
           set -e
           uvicorn main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
