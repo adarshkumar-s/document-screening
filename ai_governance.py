@@ -406,20 +406,20 @@ def proposal_detail(proposal_id:str,user:dict=Depends(_admin_user())):
     return {"proposal":p}
 
 @router.post("/proposals")
-def proposal_create(req:AIProposalRequest,user:dict=Depends(lambda: _server().require_roles(_server().ROLE_ADMIN))):
+def proposal_create(req:AIProposalRequest,user:dict=Depends(_admin_user())):
     # This endpoint is for an administrator to explicitly create a proposal; AI itself uses create_proposal internally.
     return {"proposal":create_proposal(req.proposal.model_dump(),created_by="ADMIN_PREPARED")}
 
 @router.post("/proposals/{proposal_id}/approve")
-def proposal_approve(proposal_id:str,req:DecisionReq,user:dict=Depends(lambda: _server().require_roles(_server().ROLE_ADMIN))):
+def proposal_approve(proposal_id:str,req:DecisionReq,user:dict=Depends(_admin_user())):
     return {"proposal":approve_proposal(proposal_id,user,req.note)}
 
 @router.post("/proposals/{proposal_id}/reject")
-def proposal_reject(proposal_id:str,req:DecisionReq,user:dict=Depends(lambda: _server().require_roles(_server().ROLE_ADMIN))):
+def proposal_reject(proposal_id:str,req:DecisionReq,user:dict=Depends(_admin_user())):
     return {"proposal":reject_proposal(proposal_id,user,req.note)}
 
 @router.get("/proposals/{proposal_id}/events")
-def proposal_events(proposal_id:str,user:dict=Depends(lambda: _server().require_roles(_server().ROLE_ADMIN))):
+def proposal_events(proposal_id:str,user:dict=Depends(_admin_user())):
     ensure_governance_tables()
     with _server().get_db() as db:
         rows=db.execute("SELECT * FROM ai_approval_events WHERE proposal_id=? ORDER BY created_at ASC",(proposal_id,)).fetchall()
