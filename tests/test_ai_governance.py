@@ -60,3 +60,39 @@ def test_legacy_ai_execution_endpoint_is_disabled():
     assert response.status_code in (401, 403, 410)
     if response.status_code == 410:
         assert "approval" in response.json()["detail"].lower()
+
+
+def test_create_verification_case_requires_admin_approval_and_executes_server_side(tmp_path):
+    server.DB_PATH = str(tmp_path / "governed-case.db")
+    server.init_db()
+    from land_intelligence import _ensure_tables
+    _ensure_tables()
+    with server.get_db() as db:
+        db.execute(
+            "INSERT INTO documents (id,filename,doc_type,mean_conf,verdict,status,languages,pages,fields,validation,ai_decision_support,ocr_text,cleaned_ocr_text,detected_language,original_fields,uploaded_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("CASE-DOC","case.pdf","Land Record",60,"review","PENDING_VERIFICATION","[]",1,
+             '{"owner_name":{"value":"A","confidence":0.6},"survey_number":{"value":"452","confidence":0.9},"village":{"value":"Sundarpur","confidence":0.9}}',
+             '{}','{}','','','eng','{}','admin@landrec.gov.in',0,0)
+        )
+    admin = client.post("/api/auth/login", json={"email":"admin@landrec.gov.in","password":"Admin@123"})
+    assert admin.status_code == 200
+    headers = {"Authorization": f"Bearer {admin.json()['token']}"}
+    proposal = client.post("/api/admin/ai-approval/proposals", headers=headers, json={
+        "action_type":"CREATE_VERIFICATION_CASE",
+        "target_type":"DOCUMENT",
+        "target_ids":["CASE-DOC"],
+        "before":{},
+        "after":{"title":"Review ownership evidence"},
+        "reason":"Ownership evidence requires human review.",
+        "evidence":[{"kind":"FACT","field":"survey_number","value":"452"}],
+        "confidence":0.9,
+        "risk":"MEDIUM"
+    })
+    assert proposal.status_code == 200
+    pid=proposal.json()["proposal"]["proposal_id"]
+    approved = client.post(f"/api/admin/ai-approval/proposals/{pid}/approve", headers=headers, json={"note":"Approved for verification"})
+    assert approved.status_code == 200
+    assert approved.json()["proposal"]["status"] == "EXECUTED"
+    assert approved.json()["proposal"]["execution_result"]["cases"]
+    with server.get_db() as db:
+        assert db.execute("SELECT 1 FROM verification_cases").fetchone() is not None
