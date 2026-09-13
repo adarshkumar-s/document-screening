@@ -48,5 +48,13 @@ jobs:
           curl -fsS http://127.0.0.1:8000/api/demo-land/scenarios
           curl -fsS http://127.0.0.1:8000/land-intelligence > /tmp/land-intelligence.html
           grep -q "LAND INTELLIGENCE" /tmp/land-intelligence.html
+          css_type=$(curl -fsSI http://127.0.0.1:8000/land-intelligence.css | tr -d '\r' | grep -i '^content-type:' | head -1)
+          echo "$css_type" | grep -qi 'text/css'
+          curl -fsS http://127.0.0.1:8000/land-intelligence.css > /tmp/land-intelligence.css
+          ! grep -qi '<html' /tmp/land-intelligence.css
+          js_type=$(curl -fsSI http://127.0.0.1:8000/land-intelligence.js | tr -d '\r' | grep -i '^content-type:' | head -1)
+          echo "$js_type" | grep -qi 'javascript'
+          curl -fsS http://127.0.0.1:8000/land-intelligence.js > /tmp/land-intelligence.js
+          ! grep -qi '<html' /tmp/land-intelligence.js
           kill "$pid"
           wait "$pid" || true
