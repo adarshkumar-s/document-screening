@@ -214,3 +214,98 @@ def test_land_intelligence_route_table_has_one_ui_asset_route_each():
     assert paths.count("/land-intelligence") == 1
     assert paths.count("/land-intelligence.css") == 1
     assert paths.count("/land-intelligence.js") == 1
+
+
+def _ownership_doc(doc_id, owner, year, survey="452", khasra="77", village="Sundarpur", area="2.5", doc_type="Land Record", status="PENDING_VERIFICATION", ocr_text=""):
+    return {
+        "id": doc_id, "filename": doc_id + ".txt", "doc_type": doc_type, "status": status,
+        "ocr_text": ocr_text,
+        "fields": {
+            "owner_name": {"value": owner, "confidence": 0.95},
+            "survey_number": {"value": survey, "confidence": 0.95},
+            "khasra_number": {"value": khasra, "confidence": 0.95},
+            "village": {"value": village, "confidence": 0.95},
+            "area": {"value": area, "confidence": 0.95},
+            "khatauni_year": {"value": str(year), "confidence": 0.95},
+        },
+    }
+
+
+def test_ownership_transfer_without_mutation_is_review_not_conflict():
+    from land_intelligence import analyze_ownership_history
+    result = analyze_ownership_history([
+        _ownership_doc("A-2019", "Ram Bahadur Singh", 2019),
+        _ownership_doc("B-2023", "Kamla Devi Singh", 2023),
+    ])
+    assert result["findings"][0]["type"] == "TRANSFER_CANDIDATE"
+    assert result["findings"][0]["severity"] == "WARNING"
+    assert result["findings"][0]["human_action"] == "Verification required"
+
+
+def test_ownership_transfer_with_mutation_is_supported_but_not_approved():
+    from land_intelligence import analyze_ownership_history
+    result = analyze_ownership_history([
+        _ownership_doc("A-2019", "Ram Bahadur Singh", 2019),
+        _ownership_doc("M-2021", "Ram Bahadur Singh", 2021, doc_type="Mutation Record", ocr_text="Mutation transferred from Ram Bahadur Singh to Kamla Devi Singh"),
+        _ownership_doc("B-2023", "Kamla Devi Singh", 2023),
+    ])
+    assert any(f["type"] == "TRANSFER_SUPPORTED" for f in result["findings"])
+    assert result["legal_authority"] is False
+    assert all(f["human_action"] == "Verification required" for f in result["findings"])
+
+
+def test_same_period_different_owner_is_conflict():
+    from land_intelligence import analyze_ownership_history
+    result = analyze_ownership_history([
+        _ownership_doc("A-2019", "Ram Bahadur Singh", 2019),
+        _ownership_doc("C-2019", "Mahesh Verma", 2019),
+    ])
+    assert result["findings"][0]["type"] == "OWNERSHIP_CONFLICT"
+    assert result["findings"][0]["severity"] == "ERROR"
+
+
+def test_same_survey_different_village_is_not_ownership_conflict():
+    from land_intelligence import analyze_ownership_history
+    result = analyze_ownership_history([
+        _ownership_doc("A", "Ram Bahadur Singh", 2019, village="Sundarpur"),
+        _ownership_doc("B", "Kamla Devi Singh", 2023, village="Pipariya"),
+    ])
+    assert result["findings"] == []
+    assert result["relationships"] == []
+
+
+def test_ocr_owner_variation_is_conservative_duplicate_signal():
+    from land_intelligence import analyze_ownership_history
+    result = analyze_ownership_history([
+        _ownership_doc("A", "Ram Bahadur Singh", 2019),
+        _ownership_doc("B", "Ram Bahadur Sing", 2020),
+    ])
+    assert result["findings"][0]["type"] == "POSSIBLE_DUPLICATE_OCR_VARIATION"
+    assert "OCR variation" in result["findings"][0]["reason"]
+
+
+def test_partition_candidate_is_not_treated_as_duplicate():
+    from land_intelligence import analyze_ownership_history
+    result = analyze_ownership_history([
+        _ownership_doc("B-2021", "Kamla Devi Singh", 2021, khasra="77", area="2.5"),
+        _ownership_doc("P-2022", "Kamla Devi Singh", 2022, khasra="77/1", area="1.25"),
+    ])
+    assert result["findings"][0]["type"] == "PARTITION_CANDIDATE"
+    assert result["relationships"][0]["relationship_type"] == "POSSIBLE_PREDECESSOR"
+
+
+def test_indic_digits_and_cadastral_separators_are_safe():
+    from land_intelligence import _land_number
+    assert _land_number("४५२") == "452"
+    assert _land_number("45/2") == "45/2"
+    assert _land_number("452") != _land_number("45/2")
+
+
+def test_unverified_reference_is_explicit_in_history_event():
+    from land_intelligence import analyze_ownership_history
+    result = analyze_ownership_history([
+        _ownership_doc("A", "Ram Bahadur Singh", 2019, status="PENDING_VERIFICATION"),
+        _ownership_doc("B", "Kamla Devi Singh", 2023, status="PENDING_VERIFICATION"),
+    ])
+    assert result["events"][0]["verification_status"] == "PENDING_VERIFICATION"
+    assert result["findings"][0]["human_action"] == "Verification required"
