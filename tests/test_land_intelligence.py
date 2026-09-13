@@ -185,3 +185,32 @@ def test_land_intelligence_assets_are_available_from_canonical_server_app():
     assert js.headers["content-type"].split(";", 1)[0] == "application/javascript"
     assert ":root{" in css.text
     assert '"use strict"' in js.text
+
+
+def test_land_intelligence_css_matches_repository_file():
+    import server
+    from pathlib import Path
+    from main import BASE_DIR
+
+    r = client.get("/land-intelligence.css")
+    expected = Path(BASE_DIR, "land-intelligence.css").read_text(encoding="utf-8")
+    assert r.text == expected
+
+
+def test_land_intelligence_js_matches_repository_file():
+    import server
+    from pathlib import Path
+    from main import BASE_DIR
+
+    r = client.get("/land-intelligence.js")
+    expected = Path(BASE_DIR, "land-intelligence.js").read_text(encoding="utf-8")
+    assert r.text == expected
+
+
+def test_land_intelligence_route_table_has_one_ui_asset_route_each():
+    import server
+
+    paths = [route.path for route in server.app.routes]
+    assert paths.count("/land-intelligence") == 1
+    assert paths.count("/land-intelligence.css") == 1
+    assert paths.count("/land-intelligence.js") == 1
