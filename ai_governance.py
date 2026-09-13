@@ -115,17 +115,19 @@ def _validate_target(p):
                 if not db.execute("SELECT property_id FROM properties WHERE property_id=? OR parcel_id=?",(str(rid),str(rid))).fetchone():
                     raise HTTPException(404,f"Property '{rid}' not found.")
         if action == "SET_PROPERTY_LOCATION":
-            lat, lon = p["proposed_state"].get("latitude"), p["proposed_state"].get("longitude")
+            proposed = p.get("proposed_state") or p.get("after") or {}
+            lat, lon = proposed.get("latitude"), proposed.get("longitude")
             if lat is None or lon is None:
                 raise HTTPException(400,"SET_PROPERTY_LOCATION requires latitude and longitude.")
             if not (-90 <= float(lat) <= 90 and -180 <= float(lon) <= 180):
                 raise HTTPException(400,"Property coordinates are outside WGS84 bounds.")
     if action in {"ASSIGN_AI_TASK","REASSIGN_AI_TASK"}:
         assigned_values=[]
-        if action=="ASSIGN_AI_TASK" and p["proposed_state"].get("assignments"):
-            assigned_values=[str(x.get("officer_id")) for x in p["proposed_state"].get("assignments",[]) if x.get("officer_id")]
+        proposed = p.get("proposed_state") or p.get("after") or {}
+        if action=="ASSIGN_AI_TASK" and proposed.get("assignments"):
+            assigned_values=[str(x.get("officer_id")) for x in proposed.get("assignments",[]) if x.get("officer_id")]
         else:
-            oid=str(p["proposed_state"].get("assigned_to") or "")
+            oid=str(proposed.get("assigned_to") or "")
             if oid: assigned_values=[oid]
         if not assigned_values: raise HTTPException(400,"A registered active Verification Officer is required.")
         with s.get_db() as db:
