@@ -1,41 +1,38 @@
-"""Production ASGI entrypoint.
-Imports the existing application unchanged, then registers the Land Intelligence
-layer and its standalone UI. The original routes remain available.
-"""
+"""Compatibility ASGI entrypoint for Document Screening."""
 import os
 from fastapi import Request
 from fastapi.responses import FileResponse, Response
 from server import app, BASE_DIR
-import land_intelligence
+from document_mapping import router as document_mapping_router
 from demo_land import router as demo_land_router
 from ai_governance import router as ai_approval_router
 
 app.include_router(demo_land_router)
 app.include_router(ai_approval_router)
+app.include_router(document_mapping_router)
 
-@app.get("/land-intelligence.css", include_in_schema=False)
-def land_intelligence_css():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.css"), media_type="text/css")
+@app.get('/document-map', include_in_schema=False)
+def document_map_ui():
+    return FileResponse(os.path.join(BASE_DIR,'document-map.html'))
 
-@app.get("/land-intelligence.js", include_in_schema=False)
-def land_intelligence_js():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.js"), media_type="application/javascript")
+@app.get('/document-map.css', include_in_schema=False)
+def document_map_css():
+    return FileResponse(os.path.join(BASE_DIR,'document-map.css'),media_type='text/css')
 
-@app.get("/land-intelligence", include_in_schema=False)
-def land_intelligence_ui():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"))
+@app.get('/document-map.js', include_in_schema=False)
+def document_map_js():
+    return FileResponse(os.path.join(BASE_DIR,'document-map.js'),media_type='application/javascript')
 
-@app.middleware("http")
-async def add_land_intelligence_link(request: Request, call_next):
-    """Add one small navigation action without redesigning the existing application."""
-    response = await call_next(request)
-    if request.url.path != "/" or "text/html" not in response.headers.get("content-type", ""):
+@app.middleware('http')
+async def add_document_mapping_link(request: Request, call_next):
+    response=await call_next(request)
+    if request.url.path!='/' or 'text/html' not in response.headers.get('content-type',''):
         return response
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    link = ('<a href="/land-intelligence" style="position:fixed;right:18px;bottom:18px;z-index:99999;'
-            'background:#1f4f8a;color:#fff;padding:11px 15px;border-radius:9px;text-decoration:none;'
-            'font:700 13px system-ui;box-shadow:0 5px 18px rgba(0,0,0,.18)">Land Intelligence &rarr;</a>').encode("ascii")
-    if b"/land-intelligence" not in body and b"</body>" in body:
-        body = body.replace(b"</body>", link + b"</body>", 1)
-    headers = {k:v for k,v in response.headers.items() if k.lower() != "content-length"}
-    return Response(content=body, status_code=response.status_code, headers=headers, media_type="text/html")
+    body=b''.join([chunk async for chunk in response.body_iterator])
+    link=(' <a href="/document-map" style="position:fixed;right:18px;bottom:18px;z-index:99999;'
+          'background:#1f4f8a;color:#fff;padding:11px 15px;border-radius:9px;text-decoration:none;'
+          'font:700 13px system-ui;box-shadow:0 5px 18px rgba(0,0,0,.18)">Document Mapping &rarr;</a>').encode('ascii')
+    if b'/document-map' not in body and b'</body>' in body:
+        body=body.replace(b'</body>',link+b'</body>',1)
+    headers={k:v for k,v in response.headers.items() if k.lower()!='content-length'}
+    return Response(content=body,status_code=response.status_code,headers=headers,media_type='text/html')
