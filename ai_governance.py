@@ -31,6 +31,8 @@ ACTION_REGISTRY = {
     "PROPOSE_STATUS_CHANGE",
     "CREATE_VERIFICATION_CASE",
     "ESCALATE_RECORD",
+    "SET_PROPERTY_LOCATION",
+    "CLEAR_PROPERTY_LOCATION",
 }
 
 class ProposalCreate(BaseModel):
@@ -107,6 +109,17 @@ def _validate_target(p):
             for rid in ids:
                 if not db.execute("SELECT id FROM documents WHERE id=?",(str(rid),)).fetchone():
                     raise HTTPException(404,f"Document '{rid}' not found.")
+    if action in {"SET_PROPERTY_LOCATION","CLEAR_PROPERTY_LOCATION"}:
+        with s.get_db() as db:
+            for rid in ids:
+                if not db.execute("SELECT property_id FROM properties WHERE property_id=? OR parcel_id=?",(str(rid),str(rid))).fetchone():
+                    raise HTTPException(404,f"Property '{rid}' not found.")
+        if action == "SET_PROPERTY_LOCATION":
+            lat, lon = p["proposed_state"].get("latitude"), p["proposed_state"].get("longitude")
+            if lat is None or lon is None:
+                raise HTTPException(400,"SET_PROPERTY_LOCATION requires latitude and longitude.")
+            if not (-90 <= float(lat) <= 90 and -180 <= float(lon) <= 180):
+                raise HTTPException(400,"Property coordinates are outside WGS84 bounds.")
     if action in {"ASSIGN_AI_TASK","REASSIGN_AI_TASK"}:
         assigned_values=[]
         if action=="ASSIGN_AI_TASK" and p["proposed_state"].get("assignments"):
@@ -171,6 +184,7 @@ def _current_state(action, ids):
     s=_server()
     with s.get_db() as db:
         docs={}
+        properties={}
         for rid in ids:
             row=db.execute("SELECT id,status,mean_conf,fields,uploaded_by FROM documents WHERE id=?",(rid,)).fetchone()
             if row:
@@ -178,7 +192,11 @@ def _current_state(action, ids):
                 try:d["fields"]=json.loads(d.get("fields") or "{}")
                 except Exception:d["fields"]={}
                 docs[rid]=d
-        return {"documents":docs}
+            prow=db.execute("""SELECT property_id,location_status,latitude,longitude,location_updated_at
+                               FROM properties WHERE property_id=? OR parcel_id=?""",(rid,rid)).fetchone()
+            if prow:
+                properties[prow["property_id"]]=dict(prow)
+        return {"documents":docs,"properties":properties}
 
 def _assert_before(proposal,current):
     before=proposal.get("before_state") or {}
@@ -191,6 +209,14 @@ def _assert_before(proposal,current):
         for key in ("status","mean_conf"):
             if key in exp and str(got.get(key))!=str(exp.get(key)):
                 raise HTTPException(409,f"Target {rid} changed since this proposal was created.")
+    expected_props=before.get("properties") or {}
+    actual_props=current.get("properties") or {}
+    for rid, exp in expected_props.items():
+        got=actual_props.get(rid)
+        if not got: raise HTTPException(409,f"Property {rid} no longer exists.")
+        for key in ("location_status","latitude","longitude","location_updated_at"):
+            if key in exp and str(got.get(key)) != str(exp.get(key)):
+                raise HTTPException(409,f"Property {rid} location changed since this proposal was created.")
 
 def _ensure_task_table():
     s=_server()
@@ -243,6 +269,17 @@ def _execute(proposal, admin):
             if not u or u["role"]!="VERIFICATION_OFFICER" or not u["is_active"]: raise HTTPException(400,"Target officer is unavailable.")
             db.execute("UPDATE ai_tasks SET assigned_to=?,status='PENDING',updated_at=? WHERE id=?",(u["id"],time.time(),tid))
             return {"task_id":tid,"assigned_to":u["id"]}
+        if action in {"SET_PROPERTY_LOCATION","CLEAR_PROPERTY_LOCATION"}:
+            from land_intelligence import LocationUpdate, update_property_location
+            for rid in ids:
+                req = LocationUpdate(
+                    latitude=after.get("latitude") if action=="SET_PROPERTY_LOCATION" else None,
+                    longitude=after.get("longitude") if action=="SET_PROPERTY_LOCATION" else None,
+                    reason=str(after.get("reason") or "AI proposal approved by administrator."),
+                )
+                update = update_property_location(rid, req, admin)
+            return {"properties": ids, "location_status": "EXACT_PIN" if action=="SET_PROPERTY_LOCATION" else "RESTORED"}
+
         if action=="REQUEST_REPROCESSING":
             for rid in ids:
                 db.execute("UPDATE documents SET status=?,updated_at=? WHERE id=?",(s.STATUS_DRAFT,time.time(),rid))
