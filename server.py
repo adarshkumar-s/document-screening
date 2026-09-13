@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import secrets
 import unicodedata
+import urllib.parse
 from datetime import datetime, date
 from typing import Optional, Dict, Any, List, Tuple
 from dotenv import load_dotenv
@@ -88,7 +89,51 @@ if IS_PRODUCTION and not JWT_SECRET:
 if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(48)
 
-ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "").split(",") if origin.strip()]
+
+def parse_allowed_origins(raw: str, *, production: bool) -> List[str]:
+    """Parse and validate CORS origins without accepting URLs with paths or wildcards."""
+    origins = [item.strip() for item in (raw or "").split(",") if item.strip()]
+    if not origins:
+        return []
+
+    invalid = []
+    validated = []
+    for origin in origins:
+        if origin == "*":
+            invalid.append(origin)
+            continue
+        try:
+            parsed = urllib.parse.urlsplit(origin)
+            # An origin is scheme + authority only; paths/query/fragment are not origins.
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError
+            if parsed.path or parsed.query or parsed.fragment:
+                raise ValueError
+            if parsed.port is not None and not (1 <= parsed.port <= 65535):
+                raise ValueError
+        except (ValueError, TypeError):
+            invalid.append(origin)
+            continue
+        validated.append(origin)
+
+    if invalid:
+        raise RuntimeError(
+            "ALLOWED_ORIGINS contains invalid origin(s): "
+            + ", ".join(repr(origin) for origin in invalid)
+            + ". Use comma-separated http(s) origins without paths or wildcards."
+        )
+    if production and "*" in validated:
+        # Defensive: the wildcard is already rejected above and must never be enabled in production.
+        raise RuntimeError("ALLOWED_ORIGINS wildcard is not permitted in production.")
+    return validated
+
+
+ALLOWED_ORIGINS = parse_allowed_origins(
+    os.getenv("ALLOWED_ORIGINS", ""),
+    production=IS_PRODUCTION,
+)
 if IS_PRODUCTION and not ALLOWED_ORIGINS:
     raise RuntimeError("ALLOWED_ORIGINS must be configured in production.")
 if not ALLOWED_ORIGINS:
