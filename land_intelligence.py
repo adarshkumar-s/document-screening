@@ -161,7 +161,7 @@ def _ensure_tables() -> None:
                      georeferenced,geometry_source,geometry_confidence,data_source,source_confidence,
                      location_status,location_source,location_confidence,location_base_latitude,location_base_longitude,location_base_source,
                      created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (p["property_id"],p["parcel_id"],p["district"],p["taluka"],p["village"],p["survey_number"],
                      p["gat_number"],p["khasra_number"],p["sub_division"],p["parent_property_id"],p["area"],p["area_unit"],
                      _json(geom),_json(centroid),p["latitude"],p["longitude"],"EPSG:4326",1,p["geometry_source"],
