@@ -1076,4 +1076,7 @@ try:
     ensure_task_table()
 except Exception as exc:
     print(f"[AI TASK TABLE WARNING] {exc}")
-\n\nfrom ai_governance import router as ai_approval_router\nrouter.include_router(ai_approval_router)\n
+
+
+from ai_governance import router as ai_approval_router
+router.include_router(ai_approval_router)
