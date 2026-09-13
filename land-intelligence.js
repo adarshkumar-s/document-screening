@@ -7,8 +7,12 @@ const $=id=>document.getElementById(id);
 const esc=v=>String(v??"—").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const badge=status=>{const s=String(status||"UNKNOWN");const cls=["MATCH","CONSISTENT","VERIFIED"].includes(s)?"ok":(["CONFLICT","NO MATCH"].includes(s)?"bad":(["REVIEW REQUIRED","POSSIBLE MATCH","OPEN","ACKNOWLEDGED"].includes(s)?"warn":"neutral"));return '<span class="status '+cls+'">'+esc(s)+'</span>';};
 
+function authHeaders(extra={}){
+  const h={...extra};try{const token=window.localStorage.getItem("lrtoken");if(token)h.Authorization="Bearer "+token}catch(_){}
+  return h;
+}
 async function api(url){
-  const r=await fetch(url,{headers:{"Accept":"application/json"}});
+  const r=await fetch(url,{headers:authHeaders({"Accept":"application/json"})});
   let data={}; try{data=await r.json()}catch(_){}
   if(!r.ok) throw new Error(data.detail||data.error||("Request failed ("+r.status+")"));
   return data;
@@ -140,7 +144,7 @@ function renderProperty(p){
 function setExactPin(propertyId,lat,lon){
   if(!canEditLocation()){notice("Only Verification Officers or Administrators may set an exact pin.");return}
   const current=state.locationRecords.get(propertyId);
-  fetch(LAND_API+"/properties/"+encodeURIComponent(propertyId)+"/location",{method:"PUT",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({latitude:lat,longitude:lon,reason:"Placed from Land Intelligence map.",expected_location_updated_at:current?.location?.updated_at})})
+  fetch(LAND_API+"/properties/"+encodeURIComponent(propertyId)+"/location",{method:"PUT",headers:authHeaders({"Content-Type":"application/json","Accept":"application/json"}),body:JSON.stringify({latitude:lat,longitude:lon,reason:"Placed from Land Intelligence map.",expected_location_updated_at:current?.location?.updated_at})})
     .then(async r=>{let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Location update failed");return d})
     .then(async()=>{await loadMapLocations();await selectParcel(propertyId);setStatus("Exact location saved and audited")})
     .catch(e=>{notice("Exact pin was not saved: "+e.message);setStatus("Pin update failed")});
