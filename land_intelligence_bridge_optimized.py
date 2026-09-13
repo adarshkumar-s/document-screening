@@ -33,26 +33,17 @@ def _related_docs(source:Dict[str,Any])->List[Dict[str,Any]]:
         for key in ("survey_number","gat_number","khasra_number","village"):
             value=identity.get(key)
             if not value:continue
-            if db.is_pg:
-                clauses.append(f"LOWER(TRIM((fields::jsonb ->> '{key}'))) = LOWER(TRIM(?))")
-            else:
-                clauses.append(f"LOWER(TRIM(json_extract(fields, '$.{key}'))) = LOWER(TRIM(?))")
+            clauses.append((f"LOWER(TRIM((fields::jsonb ->> '{key}'))) = LOWER(TRIM(?))") if db.is_pg else (f"LOWER(TRIM(json_extract(fields, '$.{key}'))) = LOWER(TRIM(?))"))
             params.append(value)
         if clauses:
-            try:
-                rows=db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id<>? AND ("+" OR ".join(clauses)+") ORDER BY created_at ASC LIMIT 100",tuple([source.get("id")]+params)).fetchall()
-            except Exception:
-                rows=[]
+            try:rows=db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id<>? AND ("+" OR ".join(clauses)+") ORDER BY created_at ASC LIMIT 100",tuple([source.get("id")]+params)).fetchall()
+            except Exception:rows=[]
     out=[]
     for row in rows:
-        d=_doc(row);dv=_identity_values(d);matches=[k for k in identity if identity[k] and dv[k] and identity[k].strip().lower()==dv[k].strip().lower()]
-        strong=[k for k in ("survey_number","gat_number","khasra_number") if k in matches]
-        same_village=bool(identity["village"] and dv["village"] and identity["village"].strip().lower()==dv["village"].strip().lower())
+        d=_doc(row);dv=_identity_values(d);matches=[k for k in identity if identity[k] and dv[k] and identity[k].strip().lower()==dv[k].strip().lower()];strong=[k for k in ("survey_number","gat_number","khasra_number") if k in matches];same_village=bool(identity["village"] and dv["village"] and identity["village"].strip().lower()==dv["village"].strip().lower())
         if strong or (len(matches)>=2 and same_village):
-            f=d.get("fields") or {}
-            out.append({"id":d.get("id"),"filename":d.get("filename"),"doc_type":d.get("doc_type") or "Land Record","status":d.get("status"),"owner":_v(f,"owner_name","owner"),"survey":_v(f,"survey_number","gat_number","khasra_number"),"village":_v(f,"village"),"taluka":_v(f,"taluka","tehsil"),"district":_v(f,"district"),"area":_v(f,"area"),"year":_record_year(d),"matched_fields":matches,"transfer_document":_is_transfer_document(d)})
-    out.sort(key=lambda x:((x.get("year") is None),x.get("year") or 9999,str(x.get("id"))))
-    return out[:50]
+            f=d.get("fields") or {};out.append({"id":d.get("id"),"filename":d.get("filename"),"doc_type":d.get("doc_type") or "Land Record","status":d.get("status"),"owner":_v(f,"owner_name","owner"),"survey":_v(f,"survey_number","gat_number","khasra_number"),"village":_v(f,"village"),"taluka":_v(f,"taluka","tehsil"),"district":_v(f,"district"),"area":_v(f,"area"),"year":_record_year(d),"matched_fields":matches,"transfer_document":_is_transfer_document(d)})
+    out.sort(key=lambda x:((x.get("year") is None),x.get("year") or 9999,str(x.get("id"))));return out[:50]
 
 def _load(document_id:str):
     with get_db() as db:row=db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id=?",(document_id,)).fetchone()
@@ -63,13 +54,11 @@ def _load(document_id:str):
 def _document_payload(source,fields):
     return {"id":source.get("id"),"filename":source.get("filename"),"doc_type":source.get("doc_type") or "Land Record","status":source.get("status"),"fields":fields,"owner":_v(fields,"owner_name","owner"),"survey":_v(fields,"survey_number","gat_number","khasra_number"),"village":_v(fields,"village"),"taluka":_v(fields,"taluka","tehsil"),"district":_v(fields,"district"),"area":_v(fields,"area"),"confidence":source.get("mean_conf"),"year":_record_year(source)}
 
-def _base(resolution,prop):
-    return {"source_of_truth":"saved_document_record","second_upload_required":False,"human_verification_required":resolution.get("status")!="MATCH","property_link_persisted":bool(prop and prop.get("property_id")),"legal_authority":False,"data_semantics":"Document evidence and project property candidates; not authoritative cadastral/legal proof.","loading_mode":"full_investigation"}
+def _base(resolution,prop):return {"source_of_truth":"saved_document_record","second_upload_required":False,"human_verification_required":resolution.get("status")!="MATCH","property_link_persisted":bool(prop and prop.get("property_id")),"legal_authority":False,"data_semantics":"Document evidence and project property candidates; not authoritative cadastral/legal proof.","loading_mode":"full_investigation"}
 
 @router.get("/document/{document_id}")
 def investigate_saved_document(document_id:str,user=Depends(get_current_user)):
-    source,fields,resolution,matches,prop,related=_load(document_id);docs=[source]
-    ids=[str(x.get("id")) for x in related]
+    source,fields,resolution,matches,prop,related=_load(document_id);docs=[source];ids=[str(x.get("id")) for x in related]
     if ids:
         with get_db() as db:
             placeholders=",".join("?" for _ in ids);rows=db.execute(f"SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id IN ({placeholders})",tuple(ids)).fetchall()
@@ -78,9 +67,11 @@ def investigate_saved_document(document_id:str,user=Depends(get_current_user)):
     if prop and prop.get("property_id"):
         with get_db() as db:
             exists=db.execute("SELECT 1 FROM property_documents WHERE property_id=? AND document_id=?",(prop["property_id"],document_id)).fetchone()
-            if not exists:
-                db.execute("INSERT INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)",(prop["property_id"],document_id,"document_screening_resolution",time.time()));linked_now=True
-            for d in docs[1:]:db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)",(prop["property_id"],d.get("id"),"document_screening_resolution",time.time()))
+            if not exists:db.execute("INSERT INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)",(prop["property_id"],document_id,"document_screening_resolution",time.time()));linked_now=True
+            for d in docs[1:]:
+                if not d.get("id"):continue
+                try:db.execute("INSERT INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?) ON CONFLICT(property_id,document_id) DO NOTHING",(prop["property_id"],d.get("id"),"document_screening_resolution",time.time()))
+                except Exception:pass
         if linked_now:
             try:log_audit(user.get("full_name",user.get("email","user")),"DOCUMENT_PROPERTY_LINKED",f"Linked saved Document Screening record {document_id} to property {prop['property_id']}.",str(prop["property_id"]))
             except Exception:pass
