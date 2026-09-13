@@ -109,14 +109,24 @@
     return text(record.plot || record.survey || record.khasra || record.khata || record.id, 'Unnumbered');
   }
 
+  function coordinatePair(rawLat, rawLon) {
+    // Number(null) and Number('') both equal zero. Never turn missing document
+    // coordinates into an exact pin at 0,0; that sends fitBounds to the ocean.
+    if (rawLat == null || rawLon == null) return null;
+    if (String(rawLat).trim() === '' || String(rawLon).trim() === '') return null;
+    const lat = Number(rawLat);
+    const lon = Number(rawLon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+    return { lat, lon };
+  }
+
   function recordCoordinate(record) {
-    if (Number.isFinite(Number(record.lat)) && Number.isFinite(Number(record.lon))) {
-      return { lat: Number(record.lat), lon: Number(record.lon), exact: true };
-    }
+    const exact = coordinatePair(record.lat, record.lon);
+    if (exact) return { ...exact, exact: true };
     const cached = state.villageCache[villageKey(record)];
-    if (cached && Number.isFinite(Number(cached.lat)) && Number.isFinite(Number(cached.lon))) {
-      return { lat: Number(cached.lat), lon: Number(cached.lon), exact: false };
-    }
+    const approximate = coordinatePair(cached?.lat, cached?.lon);
+    if (approximate) return { ...approximate, exact: false };
     return null;
   }
 
@@ -524,7 +534,7 @@
     const missing = [];
     const seen = new Set();
     state.records.forEach((record) => {
-      if (record.lat != null && record.lon != null) return;
+      if (coordinatePair(record.lat, record.lon)) return;
       const key = villageKey(record);
       if (!key || seen.has(key) || state.villageCache[key]) return;
       seen.add(key); missing.push({ key, record });
