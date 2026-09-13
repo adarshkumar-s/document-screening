@@ -5,7 +5,7 @@ from server import app
 import land_intelligence
 from demo_land import router as demo_land_router
 from ai_governance import router as ai_approval_router
-from land_intelligence_bridge import router as land_bridge_router
+from land_intelligence_bridge_optimized import router as land_bridge_router
 from land_intelligence_fast import router as land_fast_router
 
 app.include_router(demo_land_router)
@@ -46,6 +46,9 @@ LAND_INTELLIGENCE_SCRIPT = b'''<script>
 @app.middleware("http")
 async def inject_land_intelligence_record_action(request: Request, call_next):
     response = await call_next(request)
+    if request.url.path.startswith("/api/land/intelligence/"):
+        response.headers["Cache-Control"] = "no-store, private"
+        return response
     if request.url.path != "/" or "text/html" not in response.headers.get("content-type", ""):
         return response
     body = b"".join([chunk async for chunk in response.body_iterator])
