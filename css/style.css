@@ -548,3 +548,117 @@ table.gov-table tbody tr:hover { background: #f1f5f9; }
   border-top: 4px solid #ea580c;
 }
 .hidden { display: none !important; }
+/* Compact administration dialog. The existing Users, Settings, and AI
+   Correction panes are mounted here once; no duplicate feature markup is
+   rendered in the dashboard. */
+body.administration-open { overflow: hidden; }
+.administration-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.administration-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(9, 26, 44, .68);
+  backdrop-filter: blur(2px);
+}
+.administration-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, 100%);
+  max-height: min(820px, calc(100vh - 36px));
+  overflow: hidden;
+  border: 1px solid #94a3b8;
+  border-top: 4px solid var(--gov-saffron);
+  border-radius: 10px;
+  background: var(--gov-bg);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .32);
+}
+.administration-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 18px 12px;
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--gov-navy), var(--gov-navy-dark));
+}
+.admin-eyebrow { color: #fbd38d; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.administration-header h2 { margin: 2px 0 2px; font-size: 19px; line-height: 1.2; }
+.administration-header p { margin: 0; color: #cbd5e1; font-size: 11px; }
+.administration-close {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,.4);
+  border-radius: 6px;
+  color: #ffffff;
+  background: rgba(255,255,255,.1);
+  font-size: 23px;
+  line-height: 1;
+  cursor: pointer;
+}
+.administration-close:hover, .administration-close:focus-visible { background: rgba(255,255,255,.22); }
+.administration-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 5px 8px 0;
+  border-bottom: 1px solid var(--gov-border);
+  background: #e2e8f0;
+}
+.administration-tab {
+  min-width: 150px;
+  padding: 9px 14px 10px;
+  border: 0;
+  border-top: 3px solid transparent;
+  border-radius: 6px 6px 0 0;
+  color: #475569;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.administration-tab:hover, .administration-tab:focus-visible { color: var(--gov-navy); background: rgba(255,255,255,.7); }
+.administration-tab.active { color: var(--gov-navy); border-top-color: var(--gov-saffron); background: #ffffff; }
+.administration-mount {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 18px;
+  background: var(--gov-bg);
+}
+.administration-mount > [id^="staff-tab-"] { width: 100%; }
+.administration-mount .card { margin-bottom: 0; }
+.administration-mount table.gov-table { min-width: 580px; }
+.administration-mount #staff-tab-users > div { min-width: 0; }
+.administration-mount #staff-tab-account .card { padding: 16px; }
+.administration-mount #staff-tab-learn .card { padding: 16px; }
+.administration-mount #staff-tab-learn { overflow-x: auto; }
+.administration-modal :focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
+
+@media (max-width: 700px) {
+  .administration-modal { align-items: flex-start; padding: 8px; }
+  .administration-dialog { max-height: calc(100vh - 16px); border-radius: 8px; }
+  .administration-header { padding: 13px 14px 10px; }
+  .administration-header h2 { font-size: 17px; }
+  .administration-tabs { padding-left: 5px; }
+  .administration-tab { min-width: 132px; padding: 9px 11px; }
+  .administration-mount { padding: 10px; }
+  .administration-mount #staff-tab-users > div { grid-template-columns: 1fr !important; gap: 10px !important; }
+  .administration-mount .card { padding: 14px; }
+}
+
+@media (max-width: 700px) {
+  .gov-header { flex-wrap: wrap; gap: 10px; padding: 10px 12px; }
+  .gov-user-panel { width: 100%; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .gov-user-panel .user-badge { margin-right: auto; }
+}

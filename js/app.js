@@ -87,6 +87,7 @@ function routePortal(){
 
   if(isSimple) setupSimplePortal(role);
   else setupStaffPortal(role);
+  setupAdministrationPanel(role);
 }
 
 function showAuth(){ $('#authView').classList.remove('hidden'); $('#appShell').classList.add('hidden'); }
@@ -110,6 +111,7 @@ function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').class
 
 function doLogout(quiet){
   if(token && !quiet){ api('/api/auth/logout',{method:'POST'}).catch(()=>{}); }
+  if(typeof closeAdministration === 'function') closeAdministration();
   store_.removeItem('lrtoken'); token=null; me=null; showAuth();
 }
 
@@ -558,9 +560,7 @@ function setupStaffPortal(role){
       ['queue', '⏳ Verification Queue'],
       ['consistency', '🔍 Consistency Check'],
       ['compare', '⚖️ Comparison'],
-      ['records', '🗂️ All Records'],
-      ['learn', '🧠 AI Corrections'],
-      ['account', '⚙️ Settings']
+      ['records', '🗂️ All Records']
     ];
   } else if(isAdmin){
     tabs = [
@@ -570,11 +570,8 @@ function setupStaffPortal(role){
       ['consistency', '🔍 Consistency Check'],
       ['records', '🗂️ All Records'],
       ['compare', '⚖️ Comparison'],
-      ['learn', '🧠 AI Corrections'],
-      ['users', '👥 Users'],
       ['audit', '🔐 Audit Trail'],
-      ['approvals', '🛡️ AI Approvals'],
-      ['account', '⚙️ Settings']
+      ['approvals', '🛡️ AI Approvals']
     ];
   }
 
@@ -588,12 +585,134 @@ function setupStaffPortal(role){
   switchStaffTab(tabs[0][0]);
 }
 
+let administrationOpen = false;
+let administrationTab = 'users';
+let administrationWired = false;
+let administrationOptions = [];
+
+function administrationDefinitions(role){
+  const isAdmin = role === ROLE_ADMIN;
+  const isStaff = isAdmin || role === ROLE_VERIFICATION_OFFICER;
+  if(!isStaff) return [];
+  const options = [];
+  // Users remain Administrator-only, matching the existing staff navigation.
+  if(isAdmin) options.push({key:'users', label:'Users', pane:'staff-tab-users', load:loadStaffUsers});
+  options.push({key:'account', label:'Settings', pane:'staff-tab-account', load:loadStaffAccount});
+  options.push({key:'learn', label:'AI Correction', pane:'staff-tab-learn', load:loadStaffLearn});
+  return options;
+}
+
+function administrationFocusable(){
+  const modal = $('#administrationModal');
+  if(!modal) return [];
+  return [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]')]
+    .filter(node => node.offsetParent !== null);
+}
+
+function setAdministrationTab(tabName){
+  const option = administrationOptions.find(item => item.key === tabName) || administrationOptions[0];
+  if(!option) return;
+  administrationTab = option.key;
+  administrationOptions.forEach(item => {
+    const pane = $('#'+item.pane);
+    const tab = $('#administration-tab-'+item.key);
+    if(pane) pane.classList.toggle('hidden', item.key !== administrationTab);
+    if(tab){
+      const active = item.key === administrationTab;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.setAttribute('tabindex', active ? '0' : '-1');
+    }
+  });
+  // Reuse the existing loaders and DOM rather than rebuilding any feature.
+  option.load();
+}
+
+function openAdministration(){
+  const modal = $('#administrationModal');
+  if(!modal || !administrationOptions.length) return;
+  administrationOpen = true;
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('administration-open');
+  // Users is the default for Administrators; roles without Users start at Settings.
+  setAdministrationTab(administrationOptions[0].key);
+  $('#administrationCloseBtn')?.focus();
+}
+
+function closeAdministration(){
+  const modal = $('#administrationModal');
+  if(!modal) return;
+  administrationOpen = false;
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('administration-open');
+  const openButton = $('#administrationOpenBtn');
+  if(openButton && !openButton.classList.contains('hidden')) openButton.focus();
+}
+
+function setupAdministrationPanel(role){
+  const openButton = $('#administrationOpenBtn');
+  const modal = $('#administrationModal');
+  const tabs = $('#administrationTabs');
+  if(!openButton || !modal || !tabs) return;
+  administrationOptions = administrationDefinitions(role);
+  const canAccess = administrationOptions.length > 0;
+  openButton.classList.toggle('hidden', !canAccess);
+  openButton.setAttribute('aria-hidden', String(!canAccess));
+  if(!canAccess){
+    closeAdministration();
+    tabs.innerHTML = '';
+    return;
+  }
+  tabs.innerHTML = administrationOptions.map(item => `<button type="button" class="administration-tab" id="administration-tab-${item.key}" role="tab" aria-controls="${item.pane}" aria-selected="false" tabindex="-1">${item.label}</button>`).join('');
+  administrationOptions.forEach(item => {
+    $('#administration-tab-'+item.key)?.addEventListener('click', () => setAdministrationTab(item.key));
+  });
+  if(!administrationWired){
+    administrationWired = true;
+    openButton.addEventListener('click', openAdministration);
+    $('#administrationCloseBtn')?.addEventListener('click', closeAdministration);
+    modal.addEventListener('click', event => {
+      if(event.target.matches('[data-administration-close="true"]')) closeAdministration();
+    });
+    document.addEventListener('keydown', event => {
+      if(!administrationOpen) return;
+      if(event.key === 'Escape'){
+        event.preventDefault();
+        closeAdministration();
+        return;
+      }
+      if(event.key === 'Tab'){
+        const focusable = administrationFocusable();
+        if(!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if(event.shiftKey && document.activeElement === first){ event.preventDefault(); last.focus(); }
+        else if(!event.shiftKey && document.activeElement === last){ event.preventDefault(); first.focus(); }
+      }
+    });
+    tabs.addEventListener('keydown', event => {
+      if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      const current = administrationOptions.findIndex(item => item.key === administrationTab);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? administrationOptions.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + administrationOptions.length) % administrationOptions.length;
+      const option = administrationOptions[next];
+      setAdministrationTab(option.key);
+      $('#administration-tab-'+option.key)?.focus();
+    });
+  }
+  // Keep all three existing panes in the modal only. They are hidden until selected.
+  administrationOptions.forEach(item => $('#'+item.pane)?.classList.add('hidden'));
+  if(administrationOpen) setAdministrationTab(administrationOptions[0].key);
+}
+
 function switchStaffTab(tabName){
   document.querySelectorAll('#staffTabsList .tab').forEach(t=>{
     t.classList.toggle('active', t.dataset.stab === tabName);
   });
 
-  ['dashboard','upload','queue','review','compare','consistency','records','learn','audit','users','approvals','account'].forEach(p=>{
+  ['dashboard','upload','queue','review','compare','consistency','records','audit','approvals'].forEach(p=>{
     const elPane = $('#staff-tab-' + p);
     if(elPane) elPane.classList.toggle('hidden', p !== tabName);
   });
@@ -604,12 +723,9 @@ function switchStaffTab(tabName){
   if(tabName === 'queue') loadStaffQueue();
   if(tabName === 'consistency') initConsistencyWorkspace();
   if(tabName === 'records') loadStaffRecords();
-  if(tabName === 'learn') loadStaffLearn();
   if(tabName === 'audit') loadStaffAudit();
   if(tabName === 'approvals' && typeof loadAiApprovals === 'function') loadAiApprovals();
   if(tabName === 'approvals') loadAiApprovals();
-  if(tabName === 'users') loadStaffUsers();
-  if(tabName === 'account') loadStaffAccount();
 }
 
 async function loadStaffDashboard(){

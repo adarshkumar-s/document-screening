@@ -125,6 +125,7 @@
         </div>
       </div>
       <a href="/map" id="landMapNav" class="btn ghost" style="padding:6px 12px;font-size:12px;text-decoration:none">🗺 Land Records Map</a>
+      <button class="btn ghost hidden" style="padding:6px 12px;font-size:12px" id="administrationOpenBtn" type="button" aria-haspopup="dialog" aria-controls="administrationModal">Administration</button>
       <button class="btn ghost" style="padding:6px 12px;font-size:12px" id="logoutBtn">Logout</button>
     </div>
   </div>
@@ -614,16 +615,7 @@
           </div>
         </div>
 
-        <div id="staff-tab-learn" class="hidden">
-          <div class="card">
-            <div class="card-header"><h3 class="card-title">Learned OCR Corrections &amp; AI Accuracy</h3></div>
-            <p style="font-size:12px;color:var(--muted);margin-top:0">Officer corrections provide helpful context to improve accuracy in future extractions.</p>
-            <table class="gov-table" id="staffLearnTable">
-              <thead><tr><th>Field</th><th>OCR Read</th><th>Corrected Value</th><th>Corrections Count</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
+
 
         <div id="staff-tab-audit" class="hidden">
           <div class="card">
@@ -638,6 +630,28 @@
           </div>
         </div>
 
+
+
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ADMINISTRATION PANEL: existing staff interfaces are mounted here once, not duplicated. -->
+<div id="administrationModal" class="administration-modal hidden" role="dialog" aria-modal="true" aria-labelledby="administrationTitle" aria-hidden="true">
+  <div class="administration-backdrop" data-administration-close="true"></div>
+  <section class="administration-dialog" role="document">
+    <header class="administration-header">
+      <div>
+        <div class="admin-eyebrow">STAFF CONTROLS</div>
+        <h2 id="administrationTitle">Administration</h2>
+        <p>Manage authorised users, account settings, and learned OCR corrections.</p>
+      </div>
+      <button type="button" class="administration-close" id="administrationCloseBtn" aria-label="Close Administration">×</button>
+    </header>
+    <div id="administrationTabs" class="administration-tabs" role="tablist" aria-label="Administration sections"></div>
+    <div id="administrationMount" class="administration-mount">
         <div id="staff-tab-users" class="hidden">
           <div style="display:grid;grid-template-columns:320px 1fr;gap:16px">
             <div class="card">
@@ -665,7 +679,6 @@
             </div>
           </div>
         </div>
-
         <div id="staff-tab-account" class="hidden">
           <div class="card" style="max-width:480px">
             <div class="card-header"><h3 class="card-title">Account Settings</h3></div>
@@ -680,13 +693,22 @@
             <button class="btn saffron" onclick="staffChangePassword()">Update Password</button>
           </div>
         </div>
-      </div>
+        <div id="staff-tab-learn" class="hidden">
+          <div class="card">
+            <div class="card-header"><h3 class="card-title">Learned OCR Corrections &amp; AI Accuracy</h3></div>
+            <p style="font-size:12px;color:var(--muted);margin-top:0">Officer corrections provide helpful context to improve accuracy in future extractions.</p>
+            <table class="gov-table" id="staffLearnTable">
+              <thead><tr><th>Field</th><th>OCR Read</th><th>Corrected Value</th><th>Corrections Count</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
     </div>
-  </div>
+  </section>
 </div>
 
 <!-- Scripts -->
-<script src="js/app.js?v=26"></script>
+<script src="js/app.js?v=27"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->
