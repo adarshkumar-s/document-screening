@@ -496,6 +496,8 @@ def _history_for_property(property_id: str) -> Dict[str, Any]:
     return analyze_ownership_history(records)
 
 
+router = APIRouter(prefix="/api/land", tags=["Land Intelligence"])
+
 def _location_state(row: Any) -> Dict[str, Any]:
     d = dict(row)
     state = d.get("location_status") or "UNRESOLVED"
@@ -710,8 +712,6 @@ def update_property_location(property_id: str, req: LocationUpdate,
     return {"property":_property(updated, True),"location":_location_state(updated)}
 
 
-
-router = APIRouter(prefix="/api/land", tags=["Land Intelligence"])
 
 @router.get("/health")
 def health():
