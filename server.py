@@ -1518,6 +1518,45 @@ async def run_ocr_pipeline(content: bytes, filename: str, lang: str = "auto") ->
         raise ValueError(f"Image exceeds the maximum supported dimension of {max_side}px")
     return await run_ai_assisted_pipeline(image, lang)
 
+
+def apply_ownership_review(document_id: str, property_id: Optional[str], parsed: Dict[str, Any], status_value: str, ai_payload: Dict[str, Any]) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """Attach deterministic ownership evidence and force human review for consequential findings."""
+    if not property_id:
+        return status_value, ai_payload, {"assessment": "INSUFFICIENT_DATA", "findings": [], "relationships": []}
+    try:
+        from land_intelligence import analyze_ownership_history
+        with get_db() as db:
+            rows = db.execute(
+                """SELECT d.* FROM property_documents pd JOIN documents d ON d.id=pd.document_id
+                   WHERE pd.property_id=? AND d.id<>? ORDER BY d.created_at ASC""",
+                (property_id, document_id),
+            ).fetchall()
+        current = {"id": document_id, "filename": parsed.get("filename"), "status": status_value,
+                   "doc_type": parsed.get("doc_type", "Land Record"), "fields": parsed.get("fields", {}),
+                   "ocr_text": parsed.get("ocr_text", "")}
+        records = [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in rows]
+        assessment = analyze_ownership_history(records + [current])
+        findings = assessment.get("findings", [])
+        if findings:
+            status_value = STATUS_PENDING_VERIFICATION
+            flags = list(ai_payload.get("flags") or [])
+            for finding in findings:
+                flags.append(finding["title"] + ": " + finding["reason"])
+            ai_payload = {**ai_payload, "flags": flags, "recommendation": "REVIEW_REQUIRED",
+                          "explanation": "Deterministic ownership reasoning found a review condition. Human verification remains authoritative.",
+                          "ownership_reasoning": assessment}
+            with get_db() as db:
+                db.execute("UPDATE documents SET status=?, ai_decision_support=?, updated_at=? WHERE id=?",
+                           (status_value, json.dumps(ai_payload, ensure_ascii=False), time.time(), document_id))
+                db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",
+                           (uuid.uuid4().hex, property_id, "OWNERSHIP_REVIEW_FLAGGED",
+                            "Ownership reasoning for document " + document_id + ": " + findings[0]["title"] + ". Human verification required.",
+                            "Deterministic ownership reasoning", time.time()))
+        return status_value, ai_payload, assessment
+    except Exception:
+        return status_value, ai_payload, {"assessment": "UNAVAILABLE", "findings": [], "relationships": []}
+
+
 # FastAPI Request Models
 class LoginReq(BaseModel): email: str; password: str
 class SignupReq(BaseModel): full_name: str; email: str; password: str; role: Optional[str] = ROLE_DATA_OFFICER
