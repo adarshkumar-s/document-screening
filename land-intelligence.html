@@ -70,7 +70,16 @@
       <div id="results" class="result-list" aria-live="polite"></div>
     </section>
     <section class="panel">
-      <div class="section-head"><div><span class="eyebrow">PARCELS</span><h2>Demo dataset</h2></div></div>
+      <div class="section-head"><div><span class="eyebrow">GEOGRAPHY</span><h2>District → Taluka → Village</h2></div></div>
+      <div class="geo-cascade">
+        <label>District<select id="districtSelect"><option value="">All districts</option></select></label>
+        <label>Taluka / Tehsil<select id="talukaSelect" disabled><option value="">All talukas</option></select></label>
+        <label>Village<select id="villageSelect" disabled><option value="">All villages</option></select></label>
+      </div>
+      <div id="geoStatus" class="muted" style="margin-top:7px">Synthetic/project-owned geography.</div>
+    </section>
+    <section class="panel">
+      <div class="section-head"><div><span class="eyebrow">PARCELS</span><h2>Project dataset</h2></div></div>
       <div id="parcelList" class="result-list"></div>
     </section>
     <section class="panel boundary">
@@ -82,14 +91,19 @@
   <section class="map-panel panel" aria-label="Interactive parcel map">
     <div class="map-toolbar">
       <span id="mapStatus" role="status">Loading map…</span>
-      <button id="fitBtn" class="map-tool">Fit parcels</button>
+      <div class="map-tools">
+        <button id="villageSheetBtn" class="map-tool" type="button">Village sheet</button>
+        <button id="fitBtn" class="map-tool" type="button">Fit parcels</button>
+      </div>
     </div>
     <div id="map" aria-label="Parcel map"></div>
     <div id="mapNotice" class="map-notice hidden" role="status"></div>
+    <div id="villageSheet" class="village-sheet hidden" aria-label="Village Sheet schematic parcel view"></div>
     <div class="map-legend">
       <span><i class="swatch selected"></i>Selected</span>
-      <span><i class="swatch parcel"></i>Parcel</span>
-      <span><i class="swatch neighbour"></i>Neighbour</span>
+      <span><i class="swatch exact"></i>Exact location</span>
+      <span><i class="swatch approximate"></i>Village-level approximate</span>
+      <span><i class="swatch parcel"></i>Parcel geometry</span>
     </div>
   </section>
 
