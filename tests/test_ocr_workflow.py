@@ -178,3 +178,28 @@ def test_change_password_rehashes_and_revokes_session(tmp_path):
     with server.get_db() as db:
         stored = db.execute("SELECT password_hash FROM users WHERE email=?", ("admin@landrec.gov.in",)).fetchone()["password_hash"]
     assert stored.startswith("$argon2id$")
+
+
+def test_hindi_labels_and_indic_digits_are_extracted_without_losing_original_text():
+    text = "मालिक का नाम: राम बहादुर सिंह\nग्राम: सुंदरपुर\nसर्वे नं.: ४५२\nखसरा नं.: ७७\nक्षेत्रफल: २.५० एकड़\nवर्ष: २०१९-२०"
+    fields = server.extract_fields_from_ocr(text, "record.png")["fields"]
+    assert fields["owner_name"]["value"] == "राम बहादुर सिंह"
+    assert fields["village"]["value"] == "सुंदरपुर"
+    assert fields["survey_number"]["value"] == "४५२"
+    assert fields["khasra_number"]["value"] == "७७"
+    assert fields["khatauni_year"]["value"] == "२०१९-२०"
+
+
+def test_zero_width_characters_do_not_break_ocr_labels():
+    text = "Owner\u200b Name: Alice Sharma\nVillage: Greenfield\nSurvey Number: 452"
+    fields = server.extract_fields_from_ocr(text, "record.png")["fields"]
+    assert fields["owner_name"]["value"] == "Alice Sharma"
+    assert fields["village"]["value"] == "Greenfield"
+    assert fields["survey_number"]["value"] == "452"
+
+
+def test_cadastral_separator_is_preserved_during_document_diff():
+    a = {"survey_number": {"value": "452", "confidence": 0.95}}
+    b = {"survey_number": {"value": "45/2", "confidence": 0.95}}
+    diff = server.compute_document_diff(a, b)
+    assert any(item["field"] == "survey_number" for item in diff["changed"])
