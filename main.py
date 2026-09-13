@@ -16,21 +16,8 @@ app.include_router(land_fast_router)
 LAND_INTELLIGENCE_SCRIPT = b'''<script>
 (function(){
   function tokenHeaders(){try{var t=localStorage.getItem('lrtoken');return t?{Authorization:'Bearer '+t}:{};}catch(_){return {};}}
-  function cacheJson(key,data){try{sessionStorage.setItem(key,JSON.stringify(data));}catch(_){}}
   function prefetchFast(id){
-    var key='li-record-fast-'+id;
-    try{if(sessionStorage.getItem(key))return;}catch(_){ }
-    fetch('/api/land/intelligence/fast-document/'+encodeURIComponent(id),{headers:Object.assign({'Accept':'application/json'},tokenHeaders())})
-      .then(function(r){return r.ok?r.json():null;})
-      .then(function(data){if(data)cacheJson(key,data);})
-      .catch(function(){});
-  }
-  function prefetchFull(id){
-    var key='li-record-'+id;
-    try{if(sessionStorage.getItem(key))return;}catch(_){ }
-    fetch('/api/land/intelligence/document/'+encodeURIComponent(id),{headers:Object.assign({'Accept':'application/json'},tokenHeaders())})
-      .then(function(r){return r.ok?r.json():null;})
-      .then(function(data){if(data)cacheJson(key,data);})
+    fetch('/api/land/intelligence/fast-document/'+encodeURIComponent(id),{headers:Object.assign({'Accept':'application/json'},tokenHeaders()),cache:'no-store'})
       .catch(function(){});
   }
   function addLandActions(){
@@ -45,8 +32,6 @@ LAND_INTELLIGENCE_SCRIPT = b'''<script>
         button.type='button'; button.className='btn ghost'; button.textContent='Land Intelligence';
         button.style.cssText='padding:4px 10px;font-size:11px;margin-left:6px;white-space:nowrap;';
         button.title='Open this saved document in Land Intelligence';
-        button.onmouseenter=function(){prefetchFull(id);};
-        button.ontouchstart=function(){prefetchFull(id);};
         button.onclick=function(){window.location.href='/land-intelligence?document_id='+encodeURIComponent(id);};
         cell.appendChild(button); row.dataset.liAction='1';
         prefetchFast(id);
