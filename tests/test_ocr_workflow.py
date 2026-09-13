@@ -126,7 +126,8 @@ def test_query_string_jwt_is_rejected(tmp_path):
     client = TestClient(server.app)
     admin = login(client)
     token = admin["Authorization"].split(" ", 1)[1]
-    assert client.get("/api/auth/me", params={"token": token}).status_code == 401
+    bare_client = TestClient(server.app)
+    assert bare_client.get("/api/auth/me", params={"token": token}).status_code == 401
     assert client.get("/api/auth/me", headers=admin).status_code == 200
 
 
