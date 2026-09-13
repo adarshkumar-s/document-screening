@@ -1,4 +1,4 @@
-"""Compatibility ASGI entrypoint for the existing application."""
+"""Compatibility ASGI entrypoint for Document Screening."""
 import os
 from fastapi import Request
 from fastapi.responses import FileResponse, Response
