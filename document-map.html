@@ -1,1 +1,50 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Document Screening Map</title><link rel="stylesheet" href="/document-map.css"></head><body><main><header><div class="top"><a href="/">← Document Screening</a><span>PRIVATE • DOCUMENT-DERIVED DATA</span></div><h1>Document Screening Map</h1><p>Search uploaded records, inspect extracted land identifiers, confidence, workflow status and any coordinates/geometry found in the document.</p></header><section id="summary" class="cards"><div><b id="total">—</b><small>Documents</small></div><div><b id="mapped">—</b><small>Mapped</small></div><div><b id="unmapped">—</b><small>No geometry</small></div><div><b id="low">—</b><small>Low confidence</small></div></section><section class="toolbar"><input id="search" placeholder="Search owner, survey, khasra, village, filename…"><select id="status"><option value="">All statuses</option></select><select id="mappedFilter"><option value="">All records</option><option value="true">Mapped</option><option value="false">No map data</option></select><button id="refresh">Refresh</button></section><section class="workspace"><div class="list"><table><thead><tr><th>Document</th><th>Land identifier</th><th>Location</th><th>Status</th><th>Map</th><th></th></tr></thead><tbody id="rows"><tr><td colspan="6" class="empty">Loading documents…</td></tr></tbody></table></div><aside id="detail"><div class="empty">Select a document.</div></aside></section></main><script src="/document-map.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Document Screening Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/document-map.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="top"><a href="/">← Document Screening</a><span>PRIVATE • DOCUMENT-DERIVED DATA</span></div>
+      <h1>Document Screening Map</h1>
+      <p>Visualize locations and land identifiers extracted from uploaded screening documents. Nothing is fabricated when a document has no map data.</p>
+    </header>
+
+    <section id="summary" class="cards">
+      <div><b id="total">—</b><small>Documents</small></div>
+      <div><b id="mapped">—</b><small>Mapped</small></div>
+      <div><b id="unmapped">—</b><small>No geometry</small></div>
+      <div><b id="low">—</b><small>Low confidence</small></div>
+    </section>
+
+    <section class="toolbar">
+      <input id="search" placeholder="Search owner, survey, khasra, village, filename…">
+      <select id="status"><option value="">All statuses</option></select>
+      <select id="mappedFilter"><option value="">All records</option><option value="true">Mapped</option><option value="false">No map data</option></select>
+      <button id="refresh">Refresh</button>
+    </section>
+
+    <section class="workspace">
+      <div class="list">
+        <table>
+          <thead><tr><th>Document</th><th>Land identifier</th><th>Location</th><th>Status</th><th>Map</th><th></th></tr></thead>
+          <tbody id="rows"><tr><td colspan="6" class="empty">Loading documents…</td></tr></tbody>
+        </table>
+      </div>
+      <section class="map-panel">
+        <div class="map-head"><b>Spatial view</b><span id="mapState">Select a mapped document</span></div>
+        <div id="map" aria-label="Document location map"></div>
+      </section>
+      <aside id="detail"><div class="empty">Select a document to inspect screening evidence.</div></aside>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/document-map.js"></script>
+</body>
+</html>
