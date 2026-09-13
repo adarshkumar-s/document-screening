@@ -76,7 +76,7 @@ def test_create_verification_case_requires_admin_approval_and_executes_server_si
     admin = client.post("/api/auth/login", json={"email":"admin@landrec.gov.in","password":"Admin@123"})
     assert admin.status_code == 200
     headers = {"Authorization": f"Bearer {admin.json()['token']}"}
-    proposal = client.post("/api/admin/ai-approval/proposals", headers=headers, json={
+    proposal = client.post("/api/admin/ai-approval/proposals", headers=headers, json={"proposal":{
         "action_type":"CREATE_VERIFICATION_CASE",
         "target_type":"DOCUMENT",
         "target_ids":["CASE-DOC"],
@@ -86,7 +86,7 @@ def test_create_verification_case_requires_admin_approval_and_executes_server_si
         "evidence":[{"kind":"FACT","field":"survey_number","value":"452"}],
         "confidence":0.9,
         "risk":"MEDIUM"
-    })
+    }})
     assert proposal.status_code == 200
     pid=proposal.json()["proposal"]["proposal_id"]
     approved = client.post(f"/api/admin/ai-approval/proposals/{pid}/approve", headers=headers, json={"note":"Approved for verification"})
