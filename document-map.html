@@ -12,7 +12,7 @@
 <section class="toolbar"><input id="search" placeholder="Search owner, survey, khasra, village, filename…"><select id="status"><option value="">All statuses</option></select><select id="mappedFilter"><option value="">All records</option><option value="true">Mapped</option><option value="false">No map data</option></select><button id="refresh">Refresh</button></section>
 <section class="workspace">
 <div class="list"><table><thead><tr><th>Document</th><th>Land identifier</th><th>Location</th><th>Status</th><th>Map</th><th></th></tr></thead><tbody id="rows"><tr><td colspan="6" class="empty">Loading documents…</td></tr></tbody></table></div>
-<section class="map-panel"><div class="map-head"><b>Spatial evidence</b><span id="mapState">Select a mapped document</span></div><div id="map"><div class="map-grid"></div><svg id="mapSvg" viewBox="0 0 800 565" preserveAspectRatio="none" role="img" aria-label="Geographic evidence plot"></svg><div id="mapLegend">SVG evidence plot • no external map dependency</div></div></section>
+<section class="map-panel"><div class="map-head"><div><b>Spatial evidence</b><small>All mapped records • click a marker to inspect</small></div><span id="mapState">Loading mapped records…</span></div><div id="map"><div class="map-grid"></div><svg id="mapSvg" viewBox="0 0 800 565" preserveAspectRatio="none" role="img" aria-label="Document-derived geographic evidence plot"></svg><div id="mapLegend">Document-derived evidence • not a basemap • no external map dependency</div></div></section>
 <aside id="detail"><div class="empty">Select a document to inspect screening evidence.</div></aside>
 </section>
 <section id="insights" class="insights hidden">
