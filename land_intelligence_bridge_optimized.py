@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from server import get_db, get_current_user, log_audit
 from land_intelligence import _field_value, _record_year, _is_transfer_document, analyze_ownership_history
 from land_intelligence_optimized import resolve_indexed
+from land_intelligence_identity import ensure_store, extract_identity, upsert_document
 
 router=APIRouter(prefix="/api/land/intelligence",tags=["Land Intelligence"])
 
@@ -23,24 +24,24 @@ def _v(fields:Dict[str,Any],*keys:str)->str:
     return ""
 
 def _identity_values(d:Dict[str,Any])->Dict[str,str]:
-    f=d.get("fields") or {}
-    return {"survey_number":_v(f,"survey_number"),"gat_number":_v(f,"gat_number"),"khasra_number":_v(f,"khasra_number"),"village":_v(f,"village"),"taluka":_v(f,"taluka","tehsil"),"district":_v(f,"district"),"sub_division":_v(f,"sub_division","subdivision")}
+    f=d.get("fields") or {}; return {"survey_number":_v(f,"survey_number"),"gat_number":_v(f,"gat_number"),"khasra_number":_v(f,"khasra_number"),"village":_v(f,"village"),"taluka":_v(f,"taluka","tehsil"),"district":_v(f,"district"),"sub_division":_v(f,"sub_division","subdivision")}
 
 def _related_docs(source:Dict[str,Any])->List[Dict[str,Any]]:
-    identity=_identity_values(source);rows=[]
+    ensure_store(); identity=_identity_values(source)
+    # Ensure the requested document is represented even if it predates the projection.
+    try: upsert_document(str(source.get("id")), source.get("fields") or {}, source.get("updated_at"))
+    except Exception: pass
+    rows=[]
     with get_db() as db:
         clauses=[];params=[]
         for key in ("survey_number","gat_number","khasra_number","village"):
             value=identity.get(key)
-            if not value:continue
-            if db.is_pg:
-                expr=f"COALESCE((fields::jsonb -> '{key}' ->> 'value'), (fields::jsonb ->> '{key}'))"
-            else:
-                expr=f"COALESCE(json_extract(fields, '$.{key}.value'), json_extract(fields, '$.{key}'))"
-            clauses.append(f"LOWER(TRIM({expr})) = LOWER(TRIM(?))");params.append(value)
+            if value:
+                clauses.append(f"{key}_norm = LOWER(TRIM(?))");params.append(value)
         if clauses:
-            try:rows=db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id<>? AND ("+" OR ".join(clauses)+") ORDER BY created_at ASC LIMIT 100",tuple([source.get("id")]+params)).fetchall()
-            except Exception:rows=[]
+            try:
+                rows=db.execute("SELECT d.id,d.filename,d.doc_type,d.status,d.fields,d.mean_conf,d.created_at FROM document_land_identity i JOIN documents d ON d.id=i.document_id WHERE d.id<>? AND ("+" OR ".join(clauses)+") ORDER BY d.created_at ASC LIMIT 100",tuple([source.get("id")]+params)).fetchall()
+            except Exception: rows=[]
     out=[]
     for row in rows:
         d=_doc(row);dv=_identity_values(d);matches=[k for k in identity if identity[k] and dv[k] and identity[k].strip().lower()==dv[k].strip().lower()];strong=[k for k in ("survey_number","gat_number","khasra_number") if k in matches];same_village=bool(identity["village"] and dv["village"] and identity["village"].strip().lower()==dv["village"].strip().lower())
@@ -49,7 +50,7 @@ def _related_docs(source:Dict[str,Any])->List[Dict[str,Any]]:
     out.sort(key=lambda x:((x.get("year") is None),x.get("year") or 9999,str(x.get("id"))));return out[:50]
 
 def _load(document_id:str):
-    with get_db() as db:row=db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id=?",(document_id,)).fetchone()
+    with get_db() as db:row=db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at,updated_at FROM documents WHERE id=?",(document_id,)).fetchone()
     if not row:raise HTTPException(404,"Document record not found.")
     source=_doc(row);fields=source.get("fields") or {};resolution=resolve_indexed(fields);matches=resolution.get("matches") or [];prop=matches[0].get("property") if matches else None
     return source,fields,resolution,matches,prop,_related_docs(source)
@@ -64,7 +65,7 @@ def investigate_saved_document(document_id:str,user=Depends(get_current_user)):
     source,fields,resolution,matches,prop,related=_load(document_id);docs=[source];ids=[str(x.get("id")) for x in related]
     if ids:
         with get_db() as db:
-            placeholders=",".join("?" for _ in ids);rows=db.execute(f"SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id IN ({placeholders})",tuple(ids)).fetchall()
+            placeholders=",".join("?" for _ in ids);rows=db.execute(f"SELECT id,filename,doc_type,status,fields,mean_conf,created_at,updated_at FROM documents WHERE id IN ({placeholders})",tuple(ids)).fetchall()
         docs.extend(_doc(r) for r in rows)
     history=analyze_ownership_history(docs);linked_now=False
     if prop and prop.get("property_id"):
