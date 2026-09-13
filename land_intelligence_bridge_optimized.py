@@ -27,14 +27,17 @@ def _identity_values(d:Dict[str,Any])->Dict[str,str]:
     return {"survey_number":_v(f,"survey_number"),"gat_number":_v(f,"gat_number"),"khasra_number":_v(f,"khasra_number"),"village":_v(f,"village"),"taluka":_v(f,"taluka","tehsil"),"district":_v(f,"district"),"sub_division":_v(f,"sub_division","subdivision")}
 
 def _related_docs(source:Dict[str,Any])->List[Dict[str,Any]]:
-    identity=_identity_values(source); rows=[]
+    identity=_identity_values(source);rows=[]
     with get_db() as db:
         clauses=[];params=[]
         for key in ("survey_number","gat_number","khasra_number","village"):
             value=identity.get(key)
             if not value:continue
-            clauses.append((f"LOWER(TRIM((fields::jsonb ->> '{key}'))) = LOWER(TRIM(?))") if db.is_pg else (f"LOWER(TRIM(json_extract(fields, '$.{key}'))) = LOWER(TRIM(?))"))
-            params.append(value)
+            if db.is_pg:
+                expr=f"COALESCE((fields::jsonb -> '{key}' ->> 'value'), (fields::jsonb ->> '{key}'))"
+            else:
+                expr=f"COALESCE(json_extract(fields, '$.{key}.value'), json_extract(fields, '$.{key}'))"
+            clauses.append(f"LOWER(TRIM({expr})) = LOWER(TRIM(?))");params.append(value)
         if clauses:
             try:rows=db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id<>? AND ("+" OR ".join(clauses)+") ORDER BY created_at ASC LIMIT 100",tuple([source.get("id")]+params)).fetchall()
             except Exception:rows=[]
