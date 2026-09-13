@@ -29,6 +29,7 @@
     pinMode: false,
     geocodeRunning: false,
     fitted: false,
+    mapUserMoved: false,
   };
 
   const TILE_SOURCES = {
@@ -473,6 +474,7 @@
       state.map = window.L.map('map', { zoomControl: true, preferCanvas: true, worldCopyJump: true }).setView([22.5, 80.2], 5);
       state.markers = window.L.layerGroup().addTo(state.map);
       state.map.on('click', handleMapClick);
+      state.map.on('dragstart', () => { state.mapUserMoved = true; });
       state.mapReady = true;
       state.tileSource = loadTileSource();
       $('mapTileSource').value = state.tileSource;
@@ -517,11 +519,38 @@
     $('mapLoadHint').classList.add('hidden');
   }
 
-  function fitMap() {
+  function regionLabel(records) {
+    const districts = sortedUnique(records.map((record) => record.district));
+    const states = sortedUnique(records.map((record) => record.state));
+    const villages = sortedUnique(records.map((record) => record.village));
+    if (villages.length === 1 && villages[0]) return [villages[0], districts[0], states[0]].filter(Boolean).join(' · ');
+    if (districts.length <= 3 && districts.length) return districts.join(', ') + (states.length === 1 ? ` · ${states[0]}` : '');
+    if (states.length === 1 && states[0]) return states[0];
+    return districts.length ? `${districts.length} districts` : 'record geography pending';
+  }
+
+  function updateMapRegionStatus(records, coordinates) {
+    const status = $('mapRegionStatus');
+    if (!status) return;
+    const mapped = coordinates.length;
+    const geography = regionLabel(records);
+    status.textContent = mapped
+      ? `Showing ${mapped}/${records.length} mapped records · ${geography}`
+      : `Record region pending · ${geography}`;
+  }
+
+  function fitMap(force = false) {
     if (!state.mapReady) return;
-    const coordinates = filteredMapRecords().map(recordCoordinate).filter(Boolean);
+    const records = filteredMapRecords();
+    if (state.mapUserMoved && !force) {
+      updateMapRegionStatus(records, records.map(recordCoordinate).filter(Boolean));
+      return;
+    }
+    const coordinates = records.map(recordCoordinate).filter(Boolean);
+    updateMapRegionStatus(records, coordinates);
     if (!coordinates.length) {
       state.map.setView([22.5, 80.2], 5);
+      state.fitted = false;
       return;
     }
     const bounds = window.L.latLngBounds(coordinates.map((coordinate) => [coordinate.lat, coordinate.lon]));
@@ -551,11 +580,14 @@
           saveCache();
           renderRecordList();
           renderMarkers();
+          // As soon as the first record region resolves, stop showing the
+          // generic India overview. The final fit below expands to all regions.
+          if (state.currentView === 'map' && !state.mapUserMoved) fitMap();
         }
       } catch (_) { /* an unresolved village stays visibly unresolved */ }
     }
     state.geocodeRunning = false;
-    if (!state.fitted) fitMap();
+    if (state.currentView === 'map' && !state.mapUserMoved) fitMap(true);
   }
 
   function switchView(view) {
@@ -721,7 +753,7 @@
   function wireEvents() {
     $('sheetTab').addEventListener('click', () => switchView('sheet'));
     $('realMapTab').addEventListener('click', () => switchView('map'));
-    $('refreshBtn').addEventListener('click', async () => { state.fitted = false; await loadRecords(); setNotice('<strong>Map records refreshed.</strong> Village cache and document locations were preserved.', 'info'); });
+    $('refreshBtn').addEventListener('click', async () => { state.fitted = false; state.mapUserMoved = false; await loadRecords(); setNotice('<strong>Map records refreshed.</strong> Village cache and document locations were preserved.', 'info'); });
     $('backPortalBtn').addEventListener('click', () => { window.location.href = '/'; });
     $('closeHistoryBtn').addEventListener('click', clearHistory);
     $('sheetDistrict').addEventListener('change', rebuildTehsils);
@@ -733,6 +765,7 @@
       renderRecordList(); renderMarkers(); if (state.mapReady) fitMap();
     }));
     $('exportMapBtn').addEventListener('click', exportMapCsv);
+    $('fitRecordsBtn').addEventListener('click', () => { state.mapUserMoved = false; state.fitted = false; fitMap(true); });
     $('mapTileSource').addEventListener('change', (event) => setTileSource(event.target.value));
     $('mapPinMode').addEventListener('change', (event) => {
       state.pinMode = event.target.checked;

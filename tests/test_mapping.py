@@ -66,6 +66,8 @@ def test_map_assets_are_explicit_and_portal_navigation_is_visible():
     assert "tile.openstreetmap.fr/hot" in js.text
     assert "coordinatePair" in js.text
     assert "Number(null)" in js.text
+    assert "mapRegionStatus" in html.text
+    assert "fitRecordsBtn" in js.text
     assert "World_Imagery" in js.text
     assert "World_Street_Map" not in js.text
     assert "basemaps.cartocdn.com" not in js.text
