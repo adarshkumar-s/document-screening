@@ -11,6 +11,7 @@ import re
 import asyncio
 import inspect
 import secrets
+import unicodedata
 from datetime import datetime, date
 from typing import Optional, Dict, Any, List, Tuple
 from dotenv import load_dotenv
@@ -1174,14 +1175,23 @@ async def run_ai_assisted_pipeline(image: Image.Image, requested_lang: str = "au
     }
 
 
+INDIC_DIGIT_TRANSLATION = str.maketrans({
+    "٠":"0","١":"1","٢":"2","٣":"3","٤":"4","٥":"5","٦":"6","٧":"7","٨":"8","٩":"9",
+    "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4","۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
+    "०":"0","१":"1","२":"2","३":"3","४":"4","५":"5","६":"6","७":"7","८":"8","९":"9",
+})
+
 def normalize_field_val(val: Any) -> str:
     if val is None:
         return ""
     if isinstance(val, dict):
         val = val.get("value", "")
-    s = str(val).strip().lower()
+    s = unicodedata.normalize("NFKC", str(val))
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+    s = s.translate(INDIC_DIGIT_TRANSLATION).strip().lower()
     s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"[\.,\-_\/]", "", s)
+    # Preserve cadastral separators: 45/2 must never normalize to 452.
+    s = re.sub(r"[\.,\-_]+", "", s)
     return s
 
 def compute_document_diff(fields_a: Dict[str, Any], fields_b: Dict[str, Any]) -> Dict[str, Any]:
@@ -1253,7 +1263,8 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
         return {
             "overall_status": "INSUFFICIENT_DATA",
             "counts": {"matched": 0, "mismatched": 0, "missing": 0, "uncertain": 0, "total": 0},
-            "fields": []
+            "fields": [],
+            "ownership_reasoning": {"assessment": "INSUFFICIENT_DATA", "findings": [], "relationships": []},
         }
 
     keys_to_audit = [
@@ -1276,78 +1287,49 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
         values_by_doc = []
         confs_by_doc = []
         all_missing = True
-
         for r in records:
             f = r.get("fields", {})
             f_obj = f.get(key, {})
             val = f_obj.get("value", "") if isinstance(f_obj, dict) else str(f_obj or "")
             conf = float(f_obj.get("confidence", 0.0)) if isinstance(f_obj, dict) else 1.0
-            val_clean = val.strip()
-
+            val_clean = str(val).strip()
             values_by_doc.append({"doc_id": r.get("id"), "filename": r.get("filename"), "value": val_clean})
             confs_by_doc.append(conf)
-
             if val_clean and val_clean != "—":
                 all_missing = False
 
         counts["total"] += 1
-
         if all_missing:
             counts["missing"] += 1
-            field_audits.append({
-                "field": key,
-                "label": label,
-                "status": "MISSING",
-                "values": values_by_doc,
-                "message": "Field is empty across all examined records."
-            })
+            field_audits.append({"field":key,"label":label,"status":"MISSING","values":values_by_doc,"message":"Field is empty across all examined records."})
             continue
 
-        normalized_present = [
-            normalize_field_val(item["value"])
-            for item in values_by_doc
-            if item["value"] and item["value"] != "—"
-        ]
-
+        normalized_present = [normalize_field_val(item["value"]) for item in values_by_doc if item["value"] and item["value"] != "—"]
         if any(c < 0.65 for c in confs_by_doc):
             counts["uncertain"] += 1
-            field_audits.append({
-                "field": key,
-                "label": label,
-                "status": "UNCERTAIN",
-                "values": values_by_doc,
-                "message": "Low OCR confidence across records. Officer check advised."
-            })
+            field_audits.append({"field":key,"label":label,"status":"UNCERTAIN","values":values_by_doc,"message":"Low OCR confidence across records. Officer check advised."})
         elif len(set(normalized_present)) == 1:
             if len(normalized_present) == len(records):
                 counts["matched"] += 1
-                field_audits.append({
-                    "field": key,
-                    "label": label,
-                    "status": "MATCH",
-                    "values": values_by_doc,
-                    "message": "Values match across all records."
-                })
+                field_audits.append({"field":key,"label":label,"status":"MATCH","values":values_by_doc,"message":"Values match across all records."})
             else:
                 counts["uncertain"] += 1
-                field_audits.append({
-                    "field": key,
-                    "label": label,
-                    "status": "UNCERTAIN",
-                    "values": values_by_doc,
-                    "message": "Present entries match, but field is missing in some records."
-                })
+                field_audits.append({"field":key,"label":label,"status":"UNCERTAIN","values":values_by_doc,"message":"Present entries match, but field is missing in some records."})
         else:
             counts["mismatched"] += 1
-            field_audits.append({
-                "field": key,
-                "label": label,
-                "status": "MISMATCH",
-                "values": values_by_doc,
-                "message": "Values do not match. Requires officer review."
-            })
+            field_audits.append({"field":key,"label":label,"status":"MISMATCH","values":values_by_doc,"message":"Values do not match. Requires officer review."})
 
-    if counts["mismatched"] > 0:
+    from land_intelligence import analyze_ownership_history
+    ownership_reasoning = analyze_ownership_history(records)
+
+    # Ownership changes are not automatically conflicts. The deterministic ownership
+    # layer classifies them using parcel identity, chronology, and transfer evidence.
+    ownership_types = {f.get("type") for f in ownership_reasoning.get("findings", [])}
+    if ownership_types & {"TRANSFER_SUPPORTED", "TRANSFER_CANDIDATE", "POSSIBLE_DUPLICATE_OCR_VARIATION"}:
+        overall_status = "FLAGGED_FOR_REVIEW"
+    elif "OWNERSHIP_CONFLICT" in ownership_types:
+        overall_status = "MISMATCH_DETECTED"
+    elif counts["mismatched"] > 0:
         overall_status = "MISMATCH_DETECTED"
     elif counts["uncertain"] > 0:
         overall_status = "FLAGGED_FOR_REVIEW"
@@ -1359,7 +1341,8 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
     return {
         "overall_status": overall_status,
         "counts": counts,
-        "fields": field_audits
+        "fields": field_audits,
+        "ownership_reasoning": ownership_reasoning,
     }
 
 async def generate_ai_diff_explanation(doc_a: Dict[str, Any], doc_b: Dict[str, Any], diff: Dict[str, Any]) -> str:
