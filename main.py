@@ -6,10 +6,12 @@ import land_intelligence
 from demo_land import router as demo_land_router
 from ai_governance import router as ai_approval_router
 from land_intelligence_bridge import router as land_bridge_router
+from land_intelligence_fast import router as land_fast_router
 
 app.include_router(demo_land_router)
 app.include_router(ai_approval_router)
 app.include_router(land_bridge_router)
+app.include_router(land_fast_router)
 
 LAND_INTELLIGENCE_SCRIPT = b'''<script>
 (function(){
@@ -17,7 +19,7 @@ LAND_INTELLIGENCE_SCRIPT = b'''<script>
   function prefetch(id){
     var key='li-record-fast-'+id;
     try{if(sessionStorage.getItem(key))return;}catch(_){ }
-    fetch('/api/land/intelligence/document/'+encodeURIComponent(id)+'/fast',{headers:Object.assign({'Accept':'application/json'},tokenHeaders())})
+    fetch('/api/land/intelligence/fast-document/'+encodeURIComponent(id),{headers:Object.assign({'Accept':'application/json'},tokenHeaders())})
       .then(function(r){return r.ok?r.json():null;})
       .then(function(data){if(!data)return;try{sessionStorage.setItem(key,JSON.stringify(data));}catch(_){}})
       .catch(function(){});
