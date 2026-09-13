@@ -760,6 +760,75 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         except Exception:
             return {"response":"Property history is temporarily unavailable; existing document and parcel workflows remain usable.","records":[],"action_card":None}
 
+    # Read-only location intelligence and governed pin proposals.
+    if any(k in lower for k in ["where is", "location", "show on map", "map location"]) and any(k in lower for k in ["property", "parcel", "survey", "record"]):
+        import re
+        match = re.search(r"(?:property|parcel|survey|record|document)\\s*(?:id|number|no\\.?)?\\s*[:#-]?\\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        if not match:
+            return {"response":"Please include a property or parcel identifier, for example: 'Where is property DEMO-PROP-103-A?'","records":[],"action_card":None}
+        identifier=match.group(1)
+        try:
+            with get_db_instance() as db:
+                row=db.execute("""SELECT property_id,parcel_id,district,taluka,village,survey_number,khasra_number,
+                                         latitude,longitude,location_status,location_source,location_updated_at
+                                  FROM properties WHERE property_id=? OR parcel_id=? OR survey_number=? LIMIT 1""",
+                               (identifier,identifier,identifier)).fetchone()
+            if not row:
+                return {"response":f"No property matching '{identifier}' was found.","records":[],"action_card":None}
+            p=dict(row)
+            status=p.get("location_status") or "UNRESOLVED"
+            if status=="EXACT_PIN":
+                meaning="EXACT human-set location"
+            elif status=="VILLAGE_LEVEL":
+                meaning="VILLAGE-LEVEL approximate location; this does not represent the exact parcel."
+            elif status=="PARCEL_GEOMETRY":
+                meaning="PARCEL GEOMETRY location from the project-owned dataset."
+            else:
+                meaning="UNRESOLVED location; no coordinate was fabricated."
+            return {"response":f"Location for {p['property_id']}: {meaning}\\nCoordinates: {p.get('latitude') or '—'}, {p.get('longitude') or '—'}\\nVillage: {p.get('village') or '—'} | Taluka: {p.get('taluka') or '—'} | District: {p.get('district') or '—'}\\nNo authoritative legal conclusion is implied.",
+                    "records":[p],"action_card":None,
+                    "map_context":{"property_id":p["property_id"],"location_status":status,"latitude":p.get("latitude"),"longitude":p.get("longitude")}}
+        except Exception:
+            return {"response":"Property location is temporarily unavailable; no record was changed.","records":[],"action_card":None}
+
+    if "set exact pin" in lower or "pin this property" in lower:
+        import re
+        match = re.search(r"(?:property|parcel|record)\\s*(?:id|number|no\\.?)?\\s*[:#-]?\\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        coords = re.search(r"(-?\\d{1,3}(?:\\.\\d+)?)\\s*[, ]\\s*(-?\\d{1,3}(?:\\.\\d+)?)", prompt)
+        if not match or not coords:
+            return {"response":"To prepare an exact-pin proposal, provide the property/parcel ID and coordinates, for example: 'Set exact pin for DEMO-PROP-103-A at 28.6221, 77.1050'.","records":[],"action_card":None}
+        pid, lat, lon = match.group(1), float(coords.group(1)), float(coords.group(2))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return {"response":"The requested coordinates are outside WGS84 bounds.","records":[],"action_card":None}
+        with get_db_instance() as db:
+            row=db.execute("SELECT property_id,location_status,latitude,longitude,location_updated_at FROM properties WHERE property_id=? OR parcel_id=?",(pid,pid)).fetchone()
+        if not row:
+            return {"response":f"Property '{pid}' was not found.","records":[],"action_card":None}
+        before={"properties":{row["property_id"]:{k:row[k] for k in ("location_status","latitude","longitude","location_updated_at")}}}
+        proposal=_create_ai_proposal("SET_PROPERTY_LOCATION","PROPERTY",[row["property_id"]],before,
+            {"latitude":lat,"longitude":lon,"reason":"Exact pin proposed by the administrator through the AI assistant."},
+            "AI prepared an exact location pin for administrator review.",[{"type":"property","property_id":row["property_id"]},{"type":"coordinates","latitude":lat,"longitude":lon}],0.95,"HIGH")
+        return {"response":"I prepared an exact-pin proposal. It has NOT changed the property. An administrator must approve it in the AI Approval Center.",
+                "records":[dict(row)],"action_card":{"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],
+                "action_type":proposal["action_type"],"action_description":"Set exact property pin","target_display":row["property_id"]}}
+
+    if "clear exact pin" in lower or "remove exact pin" in lower:
+        import re
+        match = re.search(r"(?:property|parcel|record)\\s*(?:id|number|no\\.?)?\\s*[:#-]?\\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        if not match:
+            return {"response":"Please include the property or parcel ID whose exact pin should be cleared.","records":[],"action_card":None}
+        pid=match.group(1)
+        with get_db_instance() as db:
+            row=db.execute("SELECT property_id,location_status,latitude,longitude,location_updated_at FROM properties WHERE property_id=? OR parcel_id=?",(pid,pid)).fetchone()
+        if not row:
+            return {"response":f"Property '{pid}' was not found.","records":[],"action_card":None}
+        before={"properties":{row["property_id"]:{k:row[k] for k in ("location_status","latitude","longitude","location_updated_at")}}}
+        proposal=_create_ai_proposal("CLEAR_PROPERTY_LOCATION","PROPERTY",[row["property_id"]],before,{"reason":"Clear exact pin proposed by the administrator through the AI assistant."},
+            "AI prepared an exact-pin removal proposal for administrator review.",[{"type":"property","property_id":row["property_id"]},{"type":"current_location","status":row["location_status"],"latitude":row["latitude"],"longitude":row["longitude"]}],0.95,"HIGH")
+        return {"response":"I prepared a clear-pin proposal. It has NOT changed the property. An administrator must approve it in the AI Approval Center.",
+                "records":[dict(row)],"action_card":{"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],
+                "action_type":proposal["action_type"],"action_description":"Clear exact property pin","target_display":row["property_id"]}}
+
     # Existing administrative actions
     if any(k in lower for k in ["disable", "deactivate", "change role", "promote", "demote"]):
         return {"response": "For security, the AI assistant cannot prepare or execute account deactivation or role changes. Perform those administrator controls through the existing Users interface; the AI may only report user/workload information.", "records": [], "action_card": None}
