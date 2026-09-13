@@ -1,7 +1,6 @@
 """Production ASGI entrypoint for the existing application plus Land Intelligence."""
-import os
 from fastapi import Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from server import app, BASE_DIR
 import land_intelligence
 from demo_land import router as demo_land_router
@@ -10,17 +9,6 @@ from ai_governance import router as ai_approval_router
 app.include_router(demo_land_router)
 app.include_router(ai_approval_router)
 
-@app.get("/land-intelligence.css", include_in_schema=False)
-def land_intelligence_css():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.css"), media_type="text/css")
-
-@app.get("/land-intelligence.js", include_in_schema=False)
-def land_intelligence_js():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.js"), media_type="application/javascript")
-
-@app.get("/land-intelligence", include_in_schema=False)
-def land_intelligence_ui():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"))
 
 @app.middleware("http")
 async def add_land_intelligence_link(request: Request, call_next):
