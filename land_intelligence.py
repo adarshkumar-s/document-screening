@@ -11,6 +11,9 @@ import os
 import sqlite3
 import time
 import uuid
+import difflib
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -263,6 +266,150 @@ class CaseCreate(BaseModel):
     findings: List[dict] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
+
+_INDIC_DIGITS = str.maketrans({
+    "٠":"0","١":"1","٢":"2","٣":"3","٤":"4","٥":"5","٦":"6","٧":"7","٨":"8","٩":"9",
+    "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4","۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
+    "०":"0","१":"1","२":"2","३":"3","४":"4","५":"5","६":"6","७":"7","८":"8","९":"9",
+})
+
+
+def _clean_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return " ".join(text.strip().split())
+
+
+def _land_number(value: Any) -> str:
+    return _clean_text(value).translate(_INDIC_DIGITS).lower()
+
+
+def _owner_similarity(a: Any, b: Any) -> float:
+    left = re.sub(r"[^a-z0-9\u0900-\u097f]+", " ", _clean_text(a).translate(_INDIC_DIGITS).lower()).strip()
+    right = re.sub(r"[^a-z0-9\u0900-\u097f]+", " ", _clean_text(b).translate(_INDIC_DIGITS).lower()).strip()
+    if not left or not right:
+        return 0.0
+    return difflib.SequenceMatcher(None, left, right).ratio()
+
+
+def _field_value(fields: Dict[str, Any], key: str) -> str:
+    raw = fields.get(key, "")
+    if isinstance(raw, dict):
+        raw = raw.get("value", "")
+    return _clean_text(raw)
+
+
+def _record_year(record: Dict[str, Any]) -> Optional[int]:
+    value = _field_value(record.get("fields", {}), "khatauni_year")
+    if not value:
+        value = _field_value(record.get("fields", {}), "document_date")
+    years = [int(x) for x in re.findall(r"(?:19|20)\d{2}", value)]
+    return min(years) if years else None
+
+
+def _is_transfer_document(record: Dict[str, Any]) -> bool:
+    doc_type = _clean_text(record.get("doc_type")).lower()
+    text = _clean_text(record.get("ocr_text")).lower()
+    return any(term in doc_type or term in text for term in (
+        "mutation", "namantaran", "ferfar", "sale deed", "sale", "transfer", "registered deed"
+    ))
+
+
+def _same_land_identity(a: Dict[str, Any], b: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
+    af, bf = a.get("fields", {}), b.get("fields", {})
+    compared = ("survey_number", "gat_number", "khasra_number", "village", "tehsil", "district")
+    matches, differences = [], []
+    for key in compared:
+        av, bv = _field_value(af, key), _field_value(bf, key)
+        if not av or not bv:
+            continue
+        if _land_number(av) == _land_number(bv):
+            matches.append(key)
+        else:
+            differences.append(key)
+    if _field_value(af, "village") and _field_value(bf, "village") and _land_number(_field_value(af, "village")) != _land_number(_field_value(bf, "village")):
+        return False, matches, differences
+    strong = any(k in matches for k in ("survey_number", "gat_number", "khasra_number"))
+    return strong and bool(matches), matches, differences
+
+
+def analyze_ownership_history(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    ordered = sorted(records or [], key=lambda r: (_record_year(r) or 9999, str(r.get("id") or "")))
+    events, relationships, findings = [], [], []
+    for record in ordered:
+        fields = record.get("fields", {})
+        events.append({
+            "document_id": record.get("id"),
+            "filename": record.get("filename"),
+            "year": _record_year(record),
+            "owner": _field_value(fields, "owner_name"),
+            "survey_number": _field_value(fields, "survey_number"),
+            "khasra_number": _field_value(fields, "khasra_number"),
+            "village": _field_value(fields, "village"),
+            "area": _field_value(fields, "area"),
+            "document_type": record.get("doc_type") or "Land Record",
+            "verification_status": record.get("status"),
+        })
+
+    transfer_docs = [r for r in ordered if _is_transfer_document(r)]
+    for i, current in enumerate(ordered):
+        for previous in reversed(ordered[:i]):
+            same_land, matched_fields, differing_fields = _same_land_identity(previous, current)
+            if not same_land:
+                continue
+            prev_owner = _field_value(previous.get("fields", {}), "owner_name")
+            curr_owner = _field_value(current.get("fields", {}), "owner_name")
+            if not prev_owner or not curr_owner or _land_number(prev_owner) == _land_number(curr_owner):
+                continue
+            similarity = _owner_similarity(prev_owner, curr_owner)
+            prev_year, curr_year = _record_year(previous), _record_year(current)
+            if similarity >= 0.80:
+                classification, title, severity = "POSSIBLE_DUPLICATE_OCR_VARIATION", "Possible duplicate / OCR owner-name variation", "WARNING"
+                reason = "Land identity matches and owner names are only slightly different; this is treated conservatively as a possible OCR variation, not a transfer."
+            elif transfer_docs:
+                classification, title, severity = "TRANSFER_SUPPORTED", "Ownership transfer supported by mutation/sale evidence", "INFO"
+                reason = "Parcel identity is consistent, ownership changed, and a mutation/sale/transfer document is present. Human verification is still required."
+            elif prev_year and curr_year and prev_year != curr_year:
+                classification, title, severity = "TRANSFER_CANDIDATE", "Possible ownership transfer", "WARNING"
+                reason = "Parcel identity is consistent and ownership changed across different record years, but supporting mutation/sale evidence was not found."
+            else:
+                classification, title, severity = "OWNERSHIP_CONFLICT", "Potential same-period ownership conflict", "ERROR"
+                reason = "The same land identity has different owners in the same or unknown period without supporting transfer evidence."
+            evidence = [{"kind":"FACT","field":f,"message":f"{f.replace('_',' ').title()} matched."} for f in matched_fields]
+            evidence += [
+                {"kind":"OBSERVATION","field":"owner_name","previous":prev_owner,"current":curr_owner,"similarity":round(similarity,3)},
+                {"kind":"OBSERVATION","field":"record_year","previous":prev_year,"current":curr_year},
+                {"kind":"INFERENCE","classification":classification,"reason":reason},
+            ]
+            if transfer_docs:
+                evidence.append({"kind":"FACT","field":"supporting_transfer_document","document_ids":[r.get("id") for r in transfer_docs]})
+            relationships.append({
+                "from_document": previous.get("id"), "to_document": current.get("id"),
+                "relationship_type": "TRANSFER_EVIDENCE" if classification == "TRANSFER_SUPPORTED" else "POSSIBLE_PREDECESSOR",
+                "matched_fields": matched_fields, "differing_fields": differing_fields,
+                "confidence": round(min(0.99, 0.55 + 0.08*len(matched_fields) + (0.2 if transfer_docs else 0.1 if prev_year and curr_year and prev_year != curr_year else 0)),3),
+                "reasoning": reason, "human_verified": False, "evidence": evidence,
+            })
+            findings.append({
+                "type":classification,"severity":severity,"title":title,"reason":reason,
+                "evidence":evidence,"from_document":previous.get("id"),"to_document":current.get("id"),
+                "human_action":"Verification required",
+            })
+            break
+    return {"events":events,"relationships":relationships,"findings":findings,
+            "assessment":"REVIEW_REQUIRED" if findings else "NO_OWNERSHIP_CHANGE_DETECTED",
+            "legal_authority":False}
+
+
+def _history_for_property(property_id: str) -> Dict[str, Any]:
+    with get_db() as db:
+        rows = db.execute("""SELECT d.* FROM property_documents pd
+                             JOIN documents d ON d.id=pd.document_id
+                             WHERE pd.property_id=? ORDER BY d.created_at ASC""",(property_id,)).fetchall()
+    records=[{**dict(r),"fields":json.loads(r["fields"] or "{}")} for r in rows]
+    return analyze_ownership_history(records)
+
+
 router = APIRouter(prefix="/api/land", tags=["Land Intelligence"])
 
 @router.get("/health")
@@ -316,7 +463,18 @@ def property_detail(property_id: str, user: dict=Depends(get_current_user)):
     p["neighbors"] = neighbors
     p["provenance"] = [dict(x) for x in prov]
     p["timeline"] = [dict(x) for x in timeline]
+    p["ownership_history"] = _history_for_property(p["property_id"])
     return p
+
+
+@router.get("/properties/{property_id}/history")
+def property_ownership_history(property_id: str, user: dict = Depends(get_current_user)):
+    with get_db() as db:
+        row = db.execute("SELECT property_id FROM properties WHERE property_id=? OR parcel_id=?", (property_id, property_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Property not found")
+    return _history_for_property(row["property_id"])
+
 
 @router.get("/resolve/document/{doc_id}")
 def resolve_document(doc_id: str, user: dict=Depends(get_current_user)):
