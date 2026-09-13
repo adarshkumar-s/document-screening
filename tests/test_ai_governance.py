@@ -9,6 +9,9 @@ import server
 import ai_governance
 
 
+client = TestClient(main.app)
+
+
 @pytest.fixture()
 def client():
     return TestClient(main.app)
