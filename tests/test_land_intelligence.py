@@ -309,3 +309,128 @@ def test_unverified_reference_is_explicit_in_history_event():
     ])
     assert result["events"][0]["verification_status"] == "PENDING_VERIFICATION"
     assert result["findings"][0]["human_action"] == "Verification required"
+
+def _make_user(client, email, role):
+    import server
+    response = client.post("/api/auth/signup", json={
+        "full_name": "GIS Test User", "email": email,
+        "password": "Strong GIS Test Password 123!"
+    })
+    assert response.status_code == 200
+    with server.get_db() as db:
+        db.execute("UPDATE users SET role=? WHERE email=?", (role, email))
+    login = client.post("/api/auth/login", json={"email": email, "password": "Strong GIS Test Password 123!"})
+    assert login.status_code == 200
+    return {"Authorization": "Bearer " + login.json()["token"]}
+
+
+def test_property_location_state_migration_is_present():
+    import server
+    from land_intelligence import _ensure_tables
+    _ensure_tables()
+    with server.get_db() as db:
+        columns = {r["name"] for r in db.execute("PRAGMA table_info(properties)").fetchall()}
+    assert {"location_status","location_source","location_confidence","location_verified_by",
+            "location_verified_at","location_updated_at","location_base_latitude",
+            "location_base_longitude","location_base_source"} <= columns
+
+
+def test_map_records_and_geography_and_village_sheet(client=None):
+    client = client or TestClient(app)
+    headers = _make_user(client, "gis-map@example.test", "VERIFICATION_OFFICER")
+    records = client.get("/api/land/map/records", headers=headers)
+    assert records.status_code == 200
+    assert records.json()["records"]
+    assert records.json()["metadata"]["authoritative"] is False
+    assert all("location" in x for x in records.json()["records"])
+    geography = client.get("/api/land/geography", headers=headers)
+    assert geography.status_code == 200
+    assert "Demo District" in geography.json()["geography"]
+    sheet = client.get("/api/land/village-sheet?district=Demo%20District&taluka=Demo%20Taluka&village=Demo%20Village", headers=headers)
+    assert sheet.status_code == 200
+    assert len(sheet.json()["parcels"]) == 4
+    assert sheet.json()["metadata"]["authoritative"] is False
+
+
+def test_exact_pin_set_clear_rbac_and_audit():
+    import server
+    prop = "DEMO-PROP-103-A"
+    viewer = _make_user(client, "gis-operator@example.test", "DATA_OFFICER")
+    forbidden = client.put("/api/land/properties/" + prop + "/location", headers=viewer,
+                            json={"latitude":28.6222,"longitude":77.1051,"reason":"should be denied"})
+    assert forbidden.status_code == 403
+
+    verifier = _make_user(client, "gis-verifier@example.test", "VERIFICATION_OFFICER")
+    before = client.get("/api/land/properties/" + prop, headers=verifier).json()
+    previous = (before["latitude"], before["longitude"], before["location_status"])
+    updated = client.put("/api/land/properties/" + prop + "/location", headers=verifier,
+                         json={"latitude":28.6222,"longitude":77.1051,"reason":"Field verification"})
+    assert updated.status_code == 200
+    loc = updated.json()["location"]
+    assert loc["status"] == "EXACT_PIN"
+    assert loc["latitude"] == 28.6222 and loc["longitude"] == 77.1051
+    assert loc["verified_by"] == "gis-verifier@example.test"
+    with server.get_db() as db:
+        audit = db.execute("SELECT action,detail FROM audit WHERE username=? ORDER BY id DESC LIMIT 1", ("GIS Test User",)).fetchone()
+        assert audit and audit["action"] == "LOCATION_PIN_SET"
+        assert str(previous[0]) in audit["detail"] and str(previous[1]) in audit["detail"]
+
+    cleared = client.put("/api/land/properties/" + prop + "/location", headers=verifier,
+                         json={"reason":"Verification complete"})
+    assert cleared.status_code == 200
+    assert cleared.json()["location"]["status"] == "PARCEL_GEOMETRY"
+
+
+def test_exact_pin_coordinate_validation_and_pair_requirement():
+    headers = _make_user(client, "gis-admin@example.test", "ADMIN")
+    r = client.put("/api/land/properties/DEMO-PROP-104/location", headers=headers,
+                   json={"latitude":91,"longitude":77})
+    assert r.status_code == 422
+    r = client.put("/api/land/properties/DEMO-PROP-104/location", headers=headers,
+                   json={"latitude":28.62})
+    assert r.status_code == 422
+
+
+def test_geocode_is_cached_throttled_and_has_no_fake_fallback(monkeypatch):
+    import land_intelligence
+    import server
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return b'[{"lat":"28.6205","lon":"77.1065","display_name":"Demo Village, India"}]'
+    calls=[]
+    sleeps=[]
+    def fake_urlopen(request, timeout=8):
+        calls.append((request.full_url, request.headers.get("User-agent") or request.headers.get("User-Agent")))
+        return FakeResponse()
+    monkeypatch.setattr(land_intelligence.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(land_intelligence.time, "sleep", lambda seconds: sleeps.append(seconds))
+    land_intelligence._last_nominatim_request = 0
+    headers = _make_user(client, "geocode@example.test", "VERIFICATION_OFFICER")
+    first = client.post("/api/land/geocode", headers=headers, json={"village":"Test Geocode Village","district":"Test District"})
+    assert first.status_code == 200
+    assert first.json()["status"] == "RESOLVED"
+    assert calls and "User-Agent" in calls[0][1]
+    second = client.post("/api/land/geocode", headers=headers, json={"village":"Test Geocode Village","district":"Test District"})
+    assert second.status_code == 200
+    assert second.json()["cached"] is True
+    assert len(calls) == 1
+    land_intelligence._last_nominatim_request = land_intelligence._now()
+    third = client.post("/api/land/geocode", headers=headers, json={"village":"Another Geocode Village","district":"Test District"})
+    assert third.status_code == 200
+    assert sleeps and sleeps[-1] >= 0
+
+
+def test_unresolved_geocode_does_not_create_coordinates(monkeypatch):
+    import land_intelligence
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return b'[]'
+    monkeypatch.setattr(land_intelligence.urllib.request, "urlopen", lambda request, timeout=8: FakeResponse())
+    land_intelligence._last_nominatim_request = 0
+    headers = _make_user(client, "unresolved@example.test", "VERIFICATION_OFFICER")
+    result = client.post("/api/land/geocode", headers=headers, json={"village":"Definitely Not A Real Village 9981","district":"Nowhere District 9981"})
+    assert result.status_code == 200
+    assert result.json()["status"] == "UNRESOLVED"
+    assert result.json()["latitude"] is None and result.json()["longitude"] is None
