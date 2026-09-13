@@ -359,11 +359,19 @@ def analyze_ownership_history(records: List[Dict[str, Any]]) -> Dict[str, Any]:
                 continue
             prev_owner = _field_value(previous.get("fields", {}), "owner_name")
             curr_owner = _field_value(current.get("fields", {}), "owner_name")
-            if not prev_owner or not curr_owner or _land_number(prev_owner) == _land_number(curr_owner):
+            if not prev_owner or not curr_owner:
                 continue
             similarity = _owner_similarity(prev_owner, curr_owner)
             prev_year, curr_year = _record_year(previous), _record_year(current)
-            if similarity >= 0.80:
+            area_changed = _land_number(_field_value(previous.get("fields", {}), "area")) != _land_number(_field_value(current.get("fields", {}), "area"))
+            khasra_changed = _land_number(_field_value(previous.get("fields", {}), "khasra_number")) != _land_number(_field_value(current.get("fields", {}), "khasra_number"))
+            same_owner = _land_number(prev_owner) == _land_number(curr_owner)
+            if same_owner and (khasra_changed or area_changed) and prev_year and curr_year and prev_year != curr_year:
+                classification, title, severity = "PARTITION_CANDIDATE", "Possible partition / subdivision", "WARNING"
+                reason = "The same owner and parent land identity are retained while the khasra/sub-khasra or area changes across record years; this may represent a partition or subdivision rather than a duplicate."
+            elif same_owner:
+                continue
+            elif similarity >= 0.80:
                 classification, title, severity = "POSSIBLE_DUPLICATE_OCR_VARIATION", "Possible duplicate / OCR owner-name variation", "WARNING"
                 reason = "Land identity matches and owner names are only slightly different; this is treated conservatively as a possible OCR variation, not a transfer."
             elif transfer_docs:
