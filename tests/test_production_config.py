@@ -78,6 +78,7 @@ def test_production_import_succeeds_with_required_configuration():
     result = _import_server(_production_import_env(
         JWT_SECRET="test-only-random-secret",
         ALLOWED_ORIGINS="https://records.example.gov,https://admin.example.gov",
+        ADMIN_ACTION_SECRET="test-only-admin-secret",
         DB_PATH=str(ROOT / "data" / "production-config-test.db"),
     ))
     assert result.returncode == 0, result.stderr
