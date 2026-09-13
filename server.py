@@ -2230,7 +2230,8 @@ def land_intelligence_css():
 @app.get("/land-intelligence.js", include_in_schema=False)
 def land_intelligence_js():
     return FileResponse(os.path.join(BASE_DIR, "land-intelligence.js"), media_type="application/javascript")
-\nos.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
+
+os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
 
