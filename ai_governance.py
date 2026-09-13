@@ -396,11 +396,11 @@ def reject_proposal(pid, admin, note=""):
     return get_proposal(pid)
 
 @router.get("/proposals")
-def proposals(status_filter: Optional[str]=None, limit:int=100, user:dict=Depends(_admin_user)):
+def proposals(status_filter: Optional[str]=None, limit:int=100, user:dict=Depends(_admin_user())):
     return {"proposals":list_proposals(status_filter,limit)}
 
 @router.get("/proposals/{proposal_id}")
-def proposal_detail(proposal_id:str,user:dict=Depends(lambda: _server().require_roles(_server().ROLE_ADMIN))):
+def proposal_detail(proposal_id:str,user:dict=Depends(_admin_user())):
     p=get_proposal(proposal_id)
     if not p: raise HTTPException(404,"Proposal not found.")
     return {"proposal":p}
