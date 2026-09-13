@@ -22,8 +22,9 @@ The existing FastAPI application remains the source of truth for authentication,
 
 - `land_intelligence.py` — property/parcel schema, resolution, provenance, comparison, verification cases and safe GeoJSON import.
 - `demo_land.py` — credential-free synthetic demo API; it contains no real land records.
-- `land-intelligence.html` / `.css` / `.js` — original GIS investigation workspace.
-- `main.py` — production ASGI entrypoint. It imports the existing `server.app` and registers Land Intelligence routes without replacing the original application.
+- `land-intelligence.html` / `.css` / `.js` — GIS investigation workspace with switchable base layers, offline schematic mode, village-level record markers, exact document pins, and a year-wise document passbook.
+- `static/vendor/leaflet/` — locally served Leaflet assets, with a CDN fallback, so the schematic map can still render when external assets are unavailable.
+- `main.py` — production ASGI entrypoint. It imports the existing `server.app` and registers Land Intelligence and document-map routes without replacing the original application.
 - `site.py` — retained compatibility module; deployments use `main:app`.
 - `tests/test_land_intelligence.py` — automated tests for the synthetic GIS/demo workflow.
 
@@ -53,7 +54,7 @@ Base-map configuration is environment-driven:
 - `MAP_ATTRIBUTION`
 - `MAP_MAX_ZOOM` / `MAP_MIN_ZOOM` can be supplied to future UI/provider integrations.
 
-The default demo uses OpenStreetMap-compatible tiles only as a visual enhancement and displays attribution. The application does **not** bulk-download tiles, mirror tiles, or depend on a commercial map SDK. If tiles fail, parcel data and property intelligence remain available.
+The browser can switch among OpenStreetMap, CARTO Voyager, Esri satellite, OpenTopoMap, and a fully offline schematic layer; each external source displays attribution. The application does **not** bulk-download tiles, mirror tiles, or require a commercial map SDK. If tiles or geocoding fail, parcel data, exact pins, cached village markers, and property intelligence remain available.
 
 ## Routes
 
@@ -99,6 +100,10 @@ Consequential AI actions are never executed from model output or legacy action t
 - `POST /api/land/geocode` — rate-limited, cached village-level lookup with no fabricated fallback coordinates.
 - `POST`/`PUT`/`DELETE /api/land/properties/{property_id}/location` — audited exact-pin updates for verification officers and administrators.
 - `POST /api/land/import-geojson` — role-protected local GeoJSON import with size, feature-count and geometry validation.
+- `GET /api/map/records` — authenticated uploaded-document locations and land fields for the record map; viewer access remains limited to approved/verified records.
+- `PUT /api/map/records/{doc_id}/location` — audited verifier/admin exact document pin updates; send `{"lat":null,"lon":null}` to clear a pin.
+- `POST /api/map/geocode` — cached, throttled free-form village/district geocoding for approximate record markers.
+- `GET /api/documents/{doc_id}/history` — survey-and-village passbook containing the current record and older/newer records in year order.
 
 A match is never forced. Resolution statuses are `MATCH`, `POSSIBLE MATCH`, `NO MATCH`, and `INSUFFICIENT DATA`.
 

@@ -42,6 +42,11 @@ from server import (
 
 
 router = APIRouter(prefix="/api/land", tags=["Land Intelligence"])
+# Compatibility/record-map surface ported from the stronger Portfolio map
+# workflow. It maps uploaded document records (exact pins or village-level
+# locations) without replacing the parcel-intelligence API above.
+map_router = APIRouter(prefix="/api/map", tags=["Document Map"])
+document_history_router = APIRouter(prefix="/api", tags=["Document History"])
 
 AREA_TOLERANCE_HA = float(os.getenv("LAND_AREA_TOLERANCE_HA", "0.05"))
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
@@ -49,6 +54,11 @@ MAX_IMPORT_FEATURES = 5000
 NOMINATIM_USER_AGENT = "DILRMP-Land-Intelligence/1.0"
 _last_nominatim_request = 0.0
 _geocode_cache: Dict[str, Dict[str, Any]] = {}
+# The Portfolio-style record map uses a looser free-form query ("Village,
+# District") than the structured land geocoder above. Keep a separate
+# in-process throttle/cache so the existing geocoding contract is unchanged.
+_map_geocode_cache: Dict[str, Dict[str, Any]] = {}
+_map_last_geocode_request = 0.0
 
 IDENTITY_FIELDS = (
     "survey_number",
@@ -370,9 +380,27 @@ def _ensure_column(db: Any, column: str, definition: str) -> None:
         pass
 
 
+def _ensure_document_column(db: Any, column: str, definition: str) -> None:
+    """Add mapping-only document coordinates without touching OCR fields."""
+    try:
+        if db.is_pg:
+            db.execute(f"ALTER TABLE documents ADD COLUMN IF NOT EXISTS {column} {definition}")
+            return
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(documents)").fetchall()}
+        if column not in columns:
+            db.execute(f"ALTER TABLE documents ADD COLUMN {column} {definition}")
+    except Exception:
+        # Startup can race with another worker.  Keep the migration idempotent.
+        pass
+
+
 def _ensure_tables() -> None:
     """Create/migrate the local land schema and seed synthetic parcel geometry."""
     with get_db() as db:
+        # The coordinates belong to the mapping layer only.  Existing OCR,
+        # validation, and audit columns remain untouched.
+        _ensure_document_column(db, "lat", "REAL")
+        _ensure_document_column(db, "lon", "REAL")
         db.execute(
             """CREATE TABLE IF NOT EXISTS properties (
                 property_id TEXT PRIMARY KEY,
@@ -1292,6 +1320,204 @@ def geocode(request: GeocodeRequest, user: Dict[str, Any] = Depends(get_current_
             (cache_key, request.village, request.taluka, request.district, request.state, latitude, longitude, display_name, status_value, _now()),
         )
     return {**result, "cached": False}
+
+
+def _map_document_visible(row: Any, user: Dict[str, Any]) -> bool:
+    """Apply the same document visibility rules as the canonical API."""
+    role = user.get("role")
+    approved = str(row["status"] or "").upper() in {"APPROVED", "VERIFIED", "AUTO_APPROVED"}
+    if role == ROLE_VIEWER:
+        return approved
+    if role == ROLE_DATA_OFFICER:
+        return row["uploaded_by"] == user.get("email")
+    return True
+
+
+def _map_document_item(row: Any) -> Dict[str, Any]:
+    fields = _parse_json(row["fields"], {}) or {}
+    item = {
+        "id": row["id"],
+        "filename": row["filename"],
+        "doc_type": row["doc_type"] or "Land Record",
+        "status": row["status"],
+        "owner": _field_value(fields, "owner_name"),
+        "father": _field_value(fields, "father_name"),
+        "survey": _field_value(fields, "survey_number"),
+        "khasra": _field_value(fields, "khasra_number"),
+        "khata": _field_value(fields, "khata_number"),
+        "plot": _field_value(fields, "plot_number"),
+        "area": _field_value(fields, "area"),
+        "village": _field_value(fields, "village"),
+        "tehsil": _field_value(fields, "tehsil"),
+        "district": _field_value(fields, "district"),
+        "state": _field_value(fields, "state"),
+        "year": _field_value(fields, "khatauni_year", "document_date"),
+        "lat": row["lat"] if "lat" in row.keys() else None,
+        "lon": row["lon"] if "lon" in row.keys() else None,
+        "created_at": row["created_at"],
+    }
+    # Explicit nulls make the response stable for offline/village-level
+    # records and match the reference map contract.
+    item["lat"] = float(item["lat"]) if item["lat"] is not None else None
+    item["lon"] = float(item["lon"]) if item["lon"] is not None else None
+    return item
+
+
+@map_router.get("/records")
+def map_records(user: Dict[str, Any] = Depends(get_current_user)):
+    """Return visible document records for the GIS view.
+
+    Exact coordinates are human-set pins. Records without a pin remain useful
+    to the client because their village/district fields can be geocoded and
+    cached at village level, exactly as in the Portfolio implementation.
+    """
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM documents ORDER BY created_at DESC LIMIT 5000").fetchall()
+    records = [_map_document_item(row) for row in rows if _map_document_visible(row, user)]
+    return {"records": records, "total": len(records)}
+
+
+@map_router.put("/records/{doc_id}/location")
+def map_set_document_location(
+    doc_id: str,
+    payload: Dict[str, Any],
+    user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
+):
+    """Set or clear an exact document pin with an audit event."""
+    raw_lat = payload.get("lat", payload.get("latitude"))
+    raw_lon = payload.get("lon", payload.get("longitude"))
+    if (raw_lat is None) != (raw_lon is None):
+        raise HTTPException(status_code=400, detail="lat and lon must be supplied together (or both be null).")
+    with get_db() as db:
+        row = db.execute("SELECT id, lat, lon FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Record not found.")
+        previous = (row["lat"], row["lon"])
+        if raw_lat is None:
+            db.execute("UPDATE documents SET lat=NULL, lon=NULL, updated_at=? WHERE id=?", (_now(), doc_id))
+            detail = "Document GIS pin cleared; previous coordinates were (%s, %s)." % previous
+            action = "location_cleared"
+            result = {"ok": True, "lat": None, "lon": None}
+        else:
+            try:
+                latitude, longitude = float(raw_lat), float(raw_lon)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="lat/lon must be numbers (or null to clear).")
+            if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+                raise HTTPException(status_code=400, detail="lat must be -90..90 and lon -180..180.")
+            db.execute("UPDATE documents SET lat=?, lon=?, updated_at=? WHERE id=?", (latitude, longitude, _now(), doc_id))
+            detail = "Document GIS pin changed from (%s, %s) to (%.6f, %.6f)." % (previous[0], previous[1], latitude, longitude)
+            action = "location_set"
+            result = {"ok": True, "lat": latitude, "lon": longitude}
+    log_audit(user.get("full_name", user.get("email", "user")), action, detail, doc_id)
+    return result
+
+
+@map_router.post("/geocode")
+def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_current_user)):
+    """Geocode a free-form village query with a cached Nominatim request."""
+    global _map_last_geocode_request
+    query = str(payload.get("query") or "").strip()
+    if not query or len(query) > 200:
+        raise HTTPException(status_code=400, detail="query required (max 200 chars)")
+    key = _normalise(query)
+    cached = _map_geocode_cache.get(key)
+    if cached is not None:
+        return {**cached, "cached": True}
+    # Reuse the persistent land cache where possible, but do not alter its
+    # structured response shape.
+    with get_db() as db:
+        cached_row = db.execute("SELECT latitude, longitude, display_name, status FROM geocode_cache WHERE cache_key=?", (key,)).fetchone()
+    if cached_row:
+        cached_result = {
+            "query": query,
+            "lat": cached_row["latitude"],
+            "lon": cached_row["longitude"],
+            "display_name": cached_row["display_name"],
+        }
+        _map_geocode_cache[key] = cached_result
+        return {**cached_result, "cached": True}
+
+    elapsed = _now() - _map_last_geocode_request
+    if _map_last_geocode_request and elapsed < 1.1:
+        time.sleep(max(0.0, 1.1 - elapsed))
+    params = urllib.parse.urlencode({"format": "jsonv2", "limit": 1, "q": query, "countrycodes": "in"})
+    request_obj = urllib.request.Request(
+        "https://nominatim.openstreetmap.org/search?" + params,
+        headers={"User-Agent": "LandRecordDigitizationSystem/3.5 (government land-records GIS locator)", "Accept": "application/json"},
+    )
+    _map_last_geocode_request = _now()
+    data = []
+    try:
+        with urllib.request.urlopen(request_obj, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {"query": query, "lat": None, "lon": None, "display_name": None,
+                "error": "geocoding unavailable (offline?) - try again later", "cached": False}
+    if not isinstance(data, list) or not data:
+        result = {"query": query, "lat": None, "lon": None, "display_name": None,
+                  "error": "no match found for '%s'" % query}
+    else:
+        latitude, longitude = _number(data[0].get("lat")), _number(data[0].get("lon"))
+        result = {"query": query, "lat": latitude, "lon": longitude,
+                  "display_name": data[0].get("display_name"), "cached": False}
+    _map_geocode_cache[key] = {k: v for k, v in result.items() if k != "cached"}
+    # Persist only valid coordinate results in the shared cache. An unresolved
+    # network response should be retried later rather than frozen indefinitely.
+    if result.get("lat") is not None and result.get("lon") is not None:
+        with get_db() as db:
+            db.execute(
+                """INSERT INTO geocode_cache(cache_key,village,taluka,district,state,latitude,longitude,display_name,status,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET latitude=excluded.latitude,
+                   longitude=excluded.longitude,display_name=excluded.display_name,status=excluded.status,created_at=excluded.created_at""",
+                (key, query, "", "", "", result["lat"], result["lon"], result.get("display_name"), "RESOLVED", _now()),
+            )
+    return result
+
+
+def _history_item(row: Any) -> Dict[str, Any]:
+    item = _map_document_item(row)
+    return {
+        "id": item["id"], "filename": item["filename"], "doc_type": item["doc_type"],
+        "status": item["status"], "owner": item["owner"], "father": item["father"],
+        "survey": item["survey"], "khasra": item["khasra"], "khata": item["khata"],
+        "area": item["area"], "village": item["village"], "tehsil": item["tehsil"],
+        "district": item["district"], "state": item["state"], "year": item["year"],
+        "lat": item["lat"], "lon": item["lon"], "created_at": item["created_at"],
+    }
+
+
+@document_history_router.get("/documents/{doc_id}/history")
+def document_history(doc_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    """Return a complete survey/village passbook, including the current record."""
+    with get_db() as db:
+        current = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        if not _map_document_visible(current, user):
+            raise HTTPException(status_code=403, detail="You do not have access to this record.")
+        current_fields = _parse_json(current["fields"], {}) or {}
+        survey = _field_value(current_fields, "survey_number")
+        village = _field_value(current_fields, "village")
+        rows = db.execute("SELECT * FROM documents ORDER BY created_at ASC").fetchall()
+    if survey:
+        survey_key = _land_number(survey).casefold()
+        village_key = _normalise(village)
+        rows = [
+            row for row in rows
+            if _map_document_visible(row, user)
+            and _land_number(_field_value(_parse_json(row["fields"], {}) or {}, "survey_number")).casefold() == survey_key
+            and (not village_key or _normalise(_field_value(_parse_json(row["fields"], {}) or {}, "village")) == village_key)
+        ]
+    else:
+        rows = [current]
+    items = [_history_item(row) for row in rows]
+    def _history_sort_key(item: Dict[str, Any]) -> Tuple[int, str]:
+        match = re.search(r"\b(19\d{2}|20\d{2})\b", str(item.get("year") or ""))
+        return (int(match.group(1)) if match else 9999, str(item.get("id") or ""))
+    items.sort(key=_history_sort_key)
+    return {"survey": survey, "village": village, "current_id": doc_id,
+            "items": items, "including_current": any(item["id"] == doc_id for item in items)}
 
 
 def _validate_geometry(feature: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:

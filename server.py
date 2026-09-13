@@ -2328,10 +2328,14 @@ def land_intelligence_js():
 os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "static"), exist_ok=True)
 
 app.mount("/css", StaticFiles(directory=os.path.join(BASE_DIR, "css")), name="css")
 app.mount("/js", StaticFiles(directory=os.path.join(BASE_DIR, "js")), name="js")
 app.mount("/assets", StaticFiles(directory=os.path.join(BASE_DIR, "assets")), name="assets")
+# Local Leaflet assets keep the mapping UI usable in the reference repo's
+# offline/schematic mode; the map tile sources themselves remain switchable.
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 # Mount AI Admin Assistant at the end so all functions and models are fully defined
 from admin_assistant import router as assistant_router

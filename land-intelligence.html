@@ -6,7 +6,7 @@
   <meta name="description" content="Synthetic land-intelligence mapping and evidence review workspace">
   <title>LAND INTELLIGENCE · Document and Parcel Verification</title>
   <link rel="stylesheet" href="/land-intelligence.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQ3j2tY1A3sW5F4Y0D4N8QwQ1V6mS8=" crossorigin="">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'">
 </head>
 <body>
   <div class="tricolor-stripe" aria-hidden="true"></div>
@@ -78,6 +78,20 @@
           <div id="parcelList" class="result-list"></div>
         </section>
 
+        <section class="panel scroll-panel record-map-panel">
+          <div class="section-head">
+            <div><span class="eyebrow">RECORD LOCATIONS</span><h2>Document pins</h2></div>
+            <span id="documentMapCount" class="muted">Sign in to load</span>
+          </div>
+          <p class="muted record-map-help">Green markers are exact reviewer pins. Blue markers are cached village-level locations; they are not parcel boundaries.</p>
+          <div class="search-row record-search-row">
+            <label class="sr-only" for="documentMapSearch">Filter document map records</label>
+            <input id="documentMapSearch" type="search" placeholder="Owner, survey, village…" autocomplete="off">
+            <button id="recordPinBtn" class="btn secondary" type="button" disabled title="Select a record first">Pin</button>
+          </div>
+          <div id="documentMapList" class="result-list"></div>
+        </section>
+
         <section class="panel scroll-panel">
           <div class="section-head"><div><span class="eyebrow">SCENARIOS</span><h2>Review paths</h2></div></div>
           <div id="scenarios" class="scenario-list"></div>
@@ -88,11 +102,24 @@
         <div class="map-toolbar">
           <div><span class="eyebrow">PROJECT MAP</span><strong>Parcel geometry and resolved locations</strong></div>
           <div class="map-tools">
+            <select id="mapTileSource" aria-label="Choose map base layer" title="Switch map source or use the fully offline schematic view">
+              <option value="osm">Map · OpenStreetMap</option>
+              <option value="carto">Map · CARTO light</option>
+              <option value="esri">Satellite · Esri</option>
+              <option value="topo">Topographic · OpenTopoMap</option>
+              <option value="schematic">Schematic · offline</option>
+            </select>
             <button type="button" class="btn secondary" id="fitBtn">Fit parcels</button>
             <button type="button" class="btn secondary" id="villageSheetBtn">Village sheet</button>
           </div>
         </div>
         <div id="map" class="map" role="application" aria-label="Parcel map"></div>
+        <div id="mapLoadHint" class="map-overlay map-load-hint"><span class="map-spinner" aria-hidden="true"></span>Loading map tiles…</div>
+        <div id="mapSchematicNote" class="map-overlay map-schematic-note hidden">Schematic view · markers keep their real latitude/longitude · no internet required</div>
+        <div id="mapFallback" class="map-overlay map-fallback hidden" role="status">
+          <strong>Base tiles unavailable.</strong> Parcel geometry and markers are still usable.
+          <button type="button" class="btn secondary" id="schematicBtn">Use offline schematic</button>
+        </div>
         <div class="map-legend" aria-label="Map legend">
           <span><i class="swatch boundary"></i>Parcel geometry</span>
           <span><i class="swatch exact"></i>Exact human pin</span>
@@ -117,7 +144,7 @@
     Demo data boundary: no government portal is scraped and no ownership determination is made. Human verification remains authoritative.
   </footer>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="/static/vendor/leaflet/leaflet.js" onerror="this.onerror=null;var fallback=document.createElement('script');fallback.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';document.head.appendChild(fallback);"></script>
   <script src="/land-intelligence.js"></script>
 </body>
 </html>

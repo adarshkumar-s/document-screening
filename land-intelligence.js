@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const state={map:null,geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,locationMarkers:new Map(),locationRecords:new Map(),scenarios:[],activeScenario:null,loading:false,user:null,pinMode:false,visibleFeatures:[]};
+const state={map:null,tileLayer:null,tileSource:"osm",geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,locationMarkers:new Map(),locationRecords:new Map(),documentRecords:[],documentMarkers:new Map(),selectedDocumentId:null,documentPinMode:false,documentVillageCache:{},scenarios:[],activeScenario:null,loading:false,user:null,pinMode:false,visibleFeatures:[]};
 const API="/api/demo-land";
 const LAND_API="/api/land";
 const $=id=>document.getElementById(id);
@@ -20,6 +20,30 @@ async function api(url){
 function setStatus(text){if($("mapStatus"))$("mapStatus").textContent=text}
 function notice(text){const n=$("mapNotice");if(!n)return;n.textContent=text;n.classList.remove("hidden")}
 function clearNotice(){$("mapNotice")?.classList.add("hidden")}
+const MAP_TILE_SOURCES={
+  osm:{url:"https://tile.openstreetmap.org/{z}/{x}/{y}.png",options:{maxZoom:19},attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'},
+  carto:{url:"https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",options:{maxZoom:19,subdomains:"abcd"},attribution:'© OpenStreetMap contributors © <a href="https://carto.com/" target="_blank" rel="noopener">CARTO</a>'},
+  esri:{url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",options:{maxZoom:18},attribution:"Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics"},
+  topo:{url:"https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",options:{maxZoom:17,subdomains:"abc"},attribution:'© OpenStreetMap contributors · <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a>'}
+};
+function mapSavedTileSource(){try{return localStorage.getItem("landIntelligenceTileSource")||"osm"}catch(_){return "osm"}}
+function mapSaveTileSource(key){try{localStorage.setItem("landIntelligenceTileSource",key)}catch(_){}
+}
+function mapSetTileSource(key){
+  state.tileSource=key||"osm";const select=$("mapTileSource");if(select)select.value=state.tileSource;
+  const note=$("mapSchematicNote"),fallback=$("mapFallback"),hint=$("mapLoadHint");
+  if(state.tileLayer&&state.map){try{state.map.removeLayer(state.tileLayer)}catch(_){}state.tileLayer=null}
+  if(state.tileSource==="schematic"){
+    note?.classList.remove("hidden");fallback?.classList.add("hidden");hint?.classList.add("hidden");mapSaveTileSource("schematic");return;
+  }
+  note?.classList.add("hidden");hint?.classList.remove("hidden");
+  if(!state.map||!window.L)return;
+  const src=MAP_TILE_SOURCES[state.tileSource]||MAP_TILE_SOURCES.osm;
+  state.tileLayer=L.tileLayer(src.url,{...src.options,attribution:src.attribution});
+  state.tileLayer.on("tileerror",()=>fallback?.classList.remove("hidden"));
+  state.tileLayer.once("tileload",()=>{fallback?.classList.add("hidden");hint?.classList.add("hidden");setStatus("Map ready")});
+  state.tileLayer.addTo(state.map);mapSaveTileSource(state.tileSource);
+}
 function locationLabel(status){return {EXACT_PIN:"EXACT LOCATION",VILLAGE_LEVEL:"VILLAGE-LEVEL APPROXIMATE",PARCEL_GEOMETRY:"PARCEL GEOMETRY",UNRESOLVED:"LOCATION UNRESOLVED"}[status]||"LOCATION UNRESOLVED"}
 function locationClass(status){return status==="EXACT_PIN"?"exact":status==="VILLAGE_LEVEL"?"approx":status==="UNRESOLVED"?"unresolved":"verify"}
 function canEditLocation(){return ["VERIFICATION_OFFICER","ADMIN"].includes(state.user?.role)}
@@ -35,6 +59,65 @@ function renderLocationMarkers(records){
 }
 async function loadMapLocations(filters={}){
   if(!state.user)return;try{const qs=new URLSearchParams();Object.entries(filters).forEach(([k,v])=>{if(v)qs.set(k,v)});const r=await api(LAND_API+"/map/records"+(qs.toString()?"?"+qs.toString():""));state.locationRecords.clear();(r.records||[]).forEach(p=>state.locationRecords.set(p.property_id,p));renderLocationMarkers(r.records||[])}catch(_){}
+}
+function documentVillageKey(r){return [r.village,r.district,r.state].filter(Boolean).join("|").toLowerCase()}
+function loadDocumentVillageCache(){try{const cached=JSON.parse(localStorage.getItem("landIntelligenceVillageCache")||"{}");if(cached&&typeof cached==="object")state.documentVillageCache=cached}catch(_){state.documentVillageCache={}}}
+function saveDocumentVillageCache(){try{localStorage.setItem("landIntelligenceVillageCache",JSON.stringify(state.documentVillageCache))}catch(_){}
+}
+function documentFilteredRecords(){
+  const q=($("documentMapSearch")?.value||"").toLowerCase().trim();if(!q)return state.documentRecords;
+  return state.documentRecords.filter(r=>[r.id,r.filename,r.owner,r.survey,r.khasra,r.khata,r.village,r.district,r.state].join(" ").toLowerCase().includes(q));
+}
+function clearDocumentMarkers(){state.documentMarkers.forEach(m=>m.remove());state.documentMarkers.clear()}
+function renderDocumentMarkers(){
+  clearDocumentMarkers();if(!state.map||!window.L)return;
+  documentFilteredRecords().forEach(r=>{
+    let lat=r.lat,lon=r.lon,exact=lat!=null&&lon!=null;
+    if(!exact){const cached=state.documentVillageCache[documentVillageKey(r)];if(cached){lat=cached[0];lon=cached[1]}}
+    if(lat==null||lon==null)return;
+    const marker=L.circleMarker([lat,lon],{radius:exact?7:5,color:exact?"#15803d":"#2563eb",fillColor:exact?"#22c55e":"#60a5fa",fillOpacity:.9,weight:2})
+      .bindPopup("<strong>"+esc(r.owner||r.filename||"Document record")+"</strong><br>"+esc(exact?"Exact reviewer pin":"Village-level location (approximate)")+"<br>Survey: "+esc(r.survey||"—")+"<br>Village: "+esc(r.village||"—"));
+    marker.on("click",()=>selectDocumentRecord(r.id));marker.addTo(state.map);state.documentMarkers.set(r.id,marker);
+  });
+}
+function renderDocumentList(){
+  const root=$("documentMapList"),count=$("documentMapCount");if(!root)return;
+  const rows=documentFilteredRecords();if(count)count.textContent=state.documentRecords.length?rows.length+" / "+state.documentRecords.length:"Sign in to load";
+  const pin=$("recordPinBtn");if(pin){pin.disabled=!state.selectedDocumentId||!canEditLocation();pin.textContent=state.documentPinMode?"Cancel pin":"Pin";pin.title=canEditLocation()?"Select a record, then click the map":"Verification Officer / Admin only"}
+  if(!state.user){root.innerHTML="<div class=\"empty\">Sign in to view uploaded document locations.</div>";return}
+  if(!rows.length){root.innerHTML="<div class=\"empty\">No document records match.</div>";return}
+  root.innerHTML=rows.map(r=>{
+    const exact=r.lat!=null&&r.lon!=null,selected=r.id===state.selectedDocumentId;
+    const loc=exact?"Exact pin · "+Number(r.lat).toFixed(4)+", "+Number(r.lon).toFixed(4):(r.village?"Village · "+r.village:"No location data");
+    return `<div class="document-map-row${selected ? " selected" : ""}" data-document="${esc(r.id)}"><div class="document-map-main"><strong>${esc(r.owner||r.filename||"Unnamed record")}</strong><span>Survey ${esc(r.survey||"—")} · ${esc(loc)}</span></div><button type="button" class="btn secondary document-focus" data-document-focus="${esc(r.id)}">View</button>${exact&&canEditLocation()?`<button type="button" class="btn secondary document-focus" data-document-clear="${esc(r.id)}">Clear</button>`:""}</div>`;
+  }).join("");
+  root.querySelectorAll("[data-document]").forEach(row=>row.addEventListener("click",e=>{if(e.target.closest("button"))return;selectDocumentRecord(row.dataset.document)}));
+  root.querySelectorAll("[data-document-focus]").forEach(btn=>btn.addEventListener("click",()=>selectDocumentRecord(btn.dataset.documentFocus)));
+  root.querySelectorAll("[data-document-clear]").forEach(btn=>btn.addEventListener("click",e=>{e.stopPropagation();clearDocumentPin(btn.dataset.documentClear)}));
+}
+async function selectDocumentRecord(id){
+  const record=state.documentRecords.find(r=>r.id===id);if(!record)return;state.selectedDocumentId=id;state.documentPinMode=false;renderDocumentList();
+  const marker=state.documentMarkers.get(id);if(marker){state.map?.setView(marker.getLatLng(),17);marker.openPopup()}
+  else{const cached=state.documentVillageCache[documentVillageKey(record)];if(cached)state.map?.setView(cached,14)}
+  await loadDocumentHistory(id);
+}
+async function loadDocumentHistory(id){
+  try{const d=await api("/api/documents/"+encodeURIComponent(id)+"/history");const items=d.items||[];const rows=items.map((it,index)=>'<div class="timeline-item"><i class="timeline-dot"></i><div><strong>'+esc(it.year||"Year unavailable")+(it.id===id?' · THIS RECORD':'')+'</strong><div class="muted">Owner: '+esc(it.owner||"—")+' · Survey: '+esc(it.survey||"—")+' · Area: '+esc(it.area||"—")+'</div></div></div>').join("");$("evidencePanel").innerHTML='<div class="section-head"><div><span class="eyebrow">DOCUMENT PASSBOOK</span><h2>'+esc(d.survey||"Record history")+'</h2></div></div><p class="muted">'+esc(d.village?"Village: "+d.village:"Complete survey history")+' · '+items.length+' record(s)</p><div class="timeline">'+(rows||'<div class="empty">No history found.</div>')+'</div>';
+  }catch(e){notice(e.message||"Record history could not be loaded.")}
+}
+async function setDocumentPin(id,lat,lon){
+  try{const r=await fetch("/api/map/records/"+encodeURIComponent(id)+"/location",{method:"PUT",headers:{...authHeaders({"Content-Type":"application/json","Accept":"application/json"})},body:JSON.stringify({lat,lon})});let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Document pin update failed");const record=state.documentRecords.find(x=>x.id===id);if(record){record.lat=d.lat;record.lon=d.lon}state.documentPinMode=false;renderDocumentList();renderDocumentMarkers();notice("Document pin saved and audited.")}catch(e){notice(e.message||"Document pin could not be saved.")}
+}
+async function clearDocumentPin(id){
+  try{const r=await fetch("/api/map/records/"+encodeURIComponent(id)+"/location",{method:"PUT",headers:{...authHeaders({"Content-Type":"application/json","Accept":"application/json"})},body:JSON.stringify({lat:null,lon:null})});if(!r.ok){let d={};try{d=await r.json()}catch(_){}throw new Error(d.detail||"Document pin removal failed")}const record=state.documentRecords.find(x=>x.id===id);if(record){record.lat=null;record.lon=null}renderDocumentList();renderDocumentMarkers();notice("Document pin cleared; village-level location remains available.")}catch(e){notice(e.message||"Document pin could not be cleared.")}
+}
+async function geocodeDocumentVillages(){
+  const pending=new Map();state.documentRecords.forEach(r=>{if(r.lat!=null&&r.lon!=null)return;const key=documentVillageKey(r);if(!key||state.documentVillageCache[key]||pending.has(key))return;const q=[r.village,r.district,r.state,"India"].filter(Boolean).join(", ");if(q)pending.set(key,q)});
+  let failures=0;for(const [key,q] of [...pending.entries()].slice(0,25)){try{const result=await api("/api/map/geocode",{method:"POST",headers:authHeaders({"Content-Type":"application/json","Accept":"application/json"}),body:JSON.stringify({query:q})});if(result?.lat!=null){state.documentVillageCache[key]=[result.lat,result.lon];saveDocumentVillageCache();renderDocumentMarkers();if(!state.selected&&state.documentMarkers.size===1){const marker=[...state.documentMarkers.values()][0];state.map?.fitBounds(L.featureGroup([...state.documentMarkers.values()]).getBounds(),{padding:[28,28],maxZoom:14})}}else failures++}catch(_){failures++}if(failures>=3)break}
+}
+async function loadDocumentRecords(){
+  loadDocumentVillageCache();if(!state.user){renderDocumentList();return}
+  try{const result=await api("/api/map/records");state.documentRecords=result.records||[];renderDocumentList();renderDocumentMarkers();geocodeDocumentVillages()}catch(_){state.documentRecords=[];renderDocumentList()}
 }
 function renderLocationPanel(p){
   const loc=p.location||{};const status=loc.status||p.location_status||"UNRESOLVED";const cls=locationClass(status);
@@ -72,14 +155,12 @@ function initMap(){
   if(!window.L){notice("Interactive map library unavailable. Parcel intelligence remains available.");setStatus("Map library unavailable");return}
   try{
     state.map=L.map("map",{zoomControl:true,preferCanvas:true,attributionControl:true}).setView([28.622,77.106],14);
-    // OpenStreetMap's standard tile service requires the exact canonical hostname.
-    // Browser requests automatically carry the page Referer and browser User-Agent.
-    const tile=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>',minZoom:3,maxZoom:19});
-    tile.on("load",()=>{clearNotice();setStatus("Map ready")});
-    tile.on("tileerror",()=>notice("OpenStreetMap base tiles are unavailable. Parcel geometry and evidence remain usable."));
-    tile.addTo(state.map);
+    mapSetTileSource(mapSavedTileSource());
     window.addEventListener("resize",()=>state.map?.invalidateSize());
-    state.map.on("click",e=>{if(!state.pinMode||!state.selected)return;state.pinMode=false;setExactPin(state.selected.property_id,e.latlng.lat,e.latlng.lng)});
+    state.map.on("click",e=>{
+      if(state.documentPinMode&&state.selectedDocumentId){state.documentPinMode=false;renderDocumentList();setDocumentPin(state.selectedDocumentId,e.latlng.lat,e.latlng.lng);return}
+      if(state.pinMode&&state.selected){state.pinMode=false;setExactPin(state.selected.property_id,e.latlng.lat,e.latlng.lng)}
+    });
   }catch(e){notice("Map could not be initialized. Property intelligence remains available.");setStatus("Map unavailable")}
 }
 function fitAll(){
@@ -152,7 +233,7 @@ async function loadGeo(){
 }
 async function loadAll(){
   if(state.loading)return;state.loading=true;try{
-    const [m,s]=await Promise.all([api(API+"/dashboard"),api(API+"/scenarios")]);state.metrics=m;state.scenarios=s.scenarios||[];renderMetrics(m);renderScenarios();await loadCurrentUser();await loadGeo();await populateGeography();await loadMapLocations();setStatus("Map ready");
+    const [m,s]=await Promise.all([api(API+"/dashboard"),api(API+"/scenarios")]);state.metrics=m;state.scenarios=s.scenarios||[];renderMetrics(m);renderScenarios();await loadCurrentUser();await loadGeo();await populateGeography();await loadMapLocations();await loadDocumentRecords();setStatus("Map ready");
   }catch(e){notice(e.message||"Land Intelligence could not be loaded.")}finally{state.loading=false}
 }
 async function runScenario(id){
@@ -166,7 +247,7 @@ async function clearExactPin(id){
   try{const r=await fetch(LAND_API+"/properties/"+encodeURIComponent(id)+"/location",{method:"DELETE",headers:authHeaders({"Accept":"application/json"})});let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Pin removal failed");state.selected=d.property||state.selected;renderProperty(state.selected);await loadMapLocations();notice("Exact pin cleared and audited.")}catch(e){notice(e.message||"Exact pin could not be cleared.")}
 }
 function wire(){
-  $("searchBtn")?.addEventListener("click",search);$("search")?.addEventListener("keydown",e=>{if(e.key==="Enter")search()});$("fitBtn")?.addEventListener("click",fitAll);$("villageSheetBtn")?.addEventListener("click",()=>$("villageSheet")?.classList.toggle("hidden"));$("demoBtn")?.addEventListener("click",()=>runScenario(state.scenarios[0]?.id||""));$("resetBtn")?.addEventListener("click",()=>location.reload());
+  $("searchBtn")?.addEventListener("click",search);$("search")?.addEventListener("keydown",e=>{if(e.key==="Enter")search()});$("fitBtn")?.addEventListener("click",fitAll);$("villageSheetBtn")?.addEventListener("click",()=>$("villageSheet")?.classList.toggle("hidden"));$("mapTileSource")?.addEventListener("change",e=>mapSetTileSource(e.target.value));$("schematicBtn")?.addEventListener("click",()=>mapSetTileSource("schematic"));$("documentMapSearch")?.addEventListener("input",()=>{renderDocumentList();renderDocumentMarkers()});$("recordPinBtn")?.addEventListener("click",()=>{if(!canEditLocation()){notice("Only a Verification Officer or Administrator can set document pins.");return}if(!state.selectedDocumentId){notice("Select a document record first.");return}state.documentPinMode=!state.documentPinMode;state.pinMode=false;renderDocumentList();notice(state.documentPinMode?"Click the map to set the selected document's exact pin.":"Document pin mode cancelled.")});$("demoBtn")?.addEventListener("click",()=>runScenario(state.scenarios[0]?.id||""));$("resetBtn")?.addEventListener("click",()=>location.reload());
   document.querySelectorAll("[data-font]").forEach(b=>b.addEventListener("click",()=>{const d=Number(b.dataset.font);document.documentElement.style.fontSize=(16+d)+"px"}));$("contrastBtn")?.addEventListener("click",()=>document.body.classList.toggle("high-contrast"));
 }
 document.addEventListener("DOMContentLoaded",()=>{wire();initMap();loadAll();});

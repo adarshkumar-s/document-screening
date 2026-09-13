@@ -982,7 +982,98 @@ textarea {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
+
+.map-tools select {
+  min-width: 160px;
+  padding: 7px 9px;
+  border: 1px solid var(--gov-border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.map-overlay {
+  position: absolute;
+  z-index: 1001;
+  pointer-events: none;
+  border: 1px solid var(--gov-border);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+  background: rgba(255, 255, 255, .94);
+  color: #334155;
+  font-size: 12px;
+}
+
+.map-load-hint {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 9px 15px;
+}
+
+.map-spinner {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 6px;
+  border: 2px solid #cbd5e1;
+  border-top-color: var(--gov-blue-light);
+  border-radius: 50%;
+  animation: map-spin .8s linear infinite;
+}
+
+@keyframes map-spin { to { transform: rotate(360deg); } }
+
+.map-schematic-note {
+  left: 50%;
+  bottom: 54px;
+  transform: translateX(-50%);
+  padding: 7px 12px;
+  white-space: nowrap;
+}
+
+.map-fallback {
+  top: 62px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  color: #92400e;
+  background: rgba(255, 251, 235, .96);
+  border-color: #fde68a;
+  pointer-events: auto;
+}
+
+.map-fallback .btn { margin-left: auto; padding: 5px 9px; font-size: 11px; }
+
+.record-map-help { margin: 8px 0 0; line-height: 1.4; }
+.record-search-row { margin-top: 8px; }
+.record-search-row input { border-right: 1px solid var(--gov-border); border-radius: 6px; }
+.record-search-row .btn { margin-left: 6px; border-radius: 6px; padding: 6px 10px; }
+.document-map-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--gov-border-light);
+  border-radius: 6px;
+  background: #ffffff;
+  cursor: pointer;
+}
+.document-map-row:hover, .document-map-row.selected { background: #eff6ff; border-color: #93c5fd; }
+.document-map-main { min-width: 0; flex: 1; }
+.document-map-main strong, .document-map-main span { display: block; overflow-wrap: anywhere; }
+.document-map-main strong { color: var(--gov-navy); font-size: 12px; }
+.document-map-main span { color: var(--muted); font-size: 10.5px; margin-top: 2px; }
+.document-focus { padding: 5px 7px; font-size: 10px; flex-shrink: 0; }
 
 /* Location State Callouts */
 .location-state {
@@ -1036,13 +1127,18 @@ textarea {
 
 /* Village Sheet Preview */
 .village-sheet {
-  position: relative;
+  position: absolute;
+  z-index: 1002;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
   min-height: 260px;
-  margin-top: 12px;
+  max-height: calc(100% - 110px);
   border: 1px solid var(--gov-border);
   border-radius: 6px;
-  background: #f8fafc;
+  background: rgba(248, 250, 252, .97);
   overflow: hidden;
+  box-shadow: var(--shadow-lg);
 }
 
 .village-sheet.hidden {
