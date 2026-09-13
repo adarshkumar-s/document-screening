@@ -99,7 +99,11 @@ function renderConfirmationCard(actionData) {
   body.append(p1,p2,p3);
   const actions = document.createElement("div"); actions.className = "action-card-actions";
   const open = document.createElement("button"); open.className = "btn-confirm"; open.type = "button"; open.textContent = "Open Approval Center";
-  open.onclick = () => { if (typeof window.switchStaffTab === "function") window.switchStaffTab("approvals"); if (typeof window.loadAiApprovals === "function") window.loadAiApprovals(); };
+  open.onclick = () => {
+    if (typeof window.openAdministration === "function") {
+      window.openAdministration("approvals");
+    }
+  };
   actions.appendChild(open); card.append(header,body,actions); log.appendChild(card); log.scrollTop = log.scrollHeight;
 }
 async function triggerSystemBriefing() {

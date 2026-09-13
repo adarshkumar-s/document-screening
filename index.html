@@ -126,7 +126,6 @@
       </div>
       <a href="/map" id="landMapNav" class="btn ghost" style="padding:6px 12px;font-size:12px;text-decoration:none">🗺 Land Records Map</a>
       <button class="btn ghost hidden" style="padding:6px 12px;font-size:12px" id="administrationOpenBtn" type="button" aria-haspopup="dialog" aria-controls="administrationModal">Administration</button>
-      <button class="btn ghost" style="padding:6px 12px;font-size:12px" id="logoutBtn">Logout</button>
     </div>
   </div>
 
@@ -436,23 +435,6 @@
           </div>
           <!-- ========================================== -->
 
-          <div id="staff-tab-approvals" class="hidden">
-            <div class="card ai-approval-center">
-              <div class="card-header">
-                <div>
-                  <h3 class="card-title">AI Approval Center</h3>
-                  <p style="margin:2px 0 0;font-size:12px;color:var(--muted)">AI recommendations are proposals only. Nothing consequential executes until an Administrator approves it.</p>
-                </div>
-                <button class="btn ghost" type="button" onclick="loadAiApprovals()">↻ Refresh</button>
-              </div>
-              <div class="approval-policy-banner">
-                <strong>Administrator remains the final authority.</strong>
-                <span>Every proposal is re-authorized server-side, checked against its before-state, executed only once, and written to the audit trail.</span>
-              </div>
-              <div id="aiApprovalList" class="ai-approval-list"><div class="muted">Loading proposals…</div></div>
-            </div>
-          </div>
-
           <!-- Existing Dashboard Stats Grid -->
           <div id="staffStatsRow"></div>
         </div>
@@ -724,12 +706,31 @@
             </table>
           </div>
         </div>
+          <div id="staff-tab-approvals" class="hidden">
+            <div class="card ai-approval-center">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">AI Approval Center</h3>
+                  <p style="margin:2px 0 0;font-size:12px;color:var(--muted)">AI recommendations are proposals only. Nothing consequential executes until an Administrator approves it.</p>
+                </div>
+                <button class="btn ghost" type="button" onclick="loadAiApprovals()">↻ Refresh</button>
+              </div>
+              <div class="approval-policy-banner">
+                <strong>Administrator remains the final authority.</strong>
+                <span>Every proposal is re-authorized server-side, checked against its before-state, executed only once, and written to the audit trail.</span>
+              </div>
+              <div id="aiApprovalList" class="ai-approval-list"><div class="muted">Loading proposals…</div></div>
+            </div>
+          </div>
     </div>
+    <footer class="administration-footer">
+      <button class="administration-logout" id="logoutBtn" type="button">🚪 Logout</button>
+    </footer>
   </section>
 </div>
 
 <!-- Scripts -->
-<script src="js/app.js?v=29"></script>
+<script src="js/app.js?v=30"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->
