@@ -7,7 +7,7 @@ investigation view without requiring a second upload.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException, Depends
 from server import get_db, get_current_user, log_audit
 from land_intelligence import _resolve, _field_value, analyze_ownership_history, _record_year, _is_transfer_document
@@ -38,7 +38,6 @@ def _field(fields: Dict[str, Any], *keys: str) -> str:
 
 def _identity_values(d: Dict[str, Any]) -> Dict[str, str]:
     f = d.get("fields") or {}
-    # tehsil is accepted as an input alias; taluka is the canonical Land Intelligence field.
     return {
         "survey_number": _field(f, "survey_number"),
         "gat_number": _field(f, "gat_number"),
@@ -102,31 +101,73 @@ def _property_from_match(match: Dict[str, Any] | None) -> Dict[str, Any] | None:
     return p
 
 
-@router.get("/document/{document_id}")
-def investigate_saved_document(document_id: str, user=Depends(get_current_user)):
+def _resolve_saved_document(document_id: str):
+    """Shared lightweight resolution used by the fast page load and full investigation."""
     with get_db() as db:
-        row = db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+        row = db.execute(
+            "SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents WHERE id=?",
+            (document_id,),
+        ).fetchone()
         if not row:
             raise HTTPException(404, "Document record not found.")
-        all_rows = db.execute("SELECT id,filename,doc_type,status,fields,mean_conf,created_at,ocr_text FROM documents ORDER BY created_at ASC").fetchall()
+        all_rows = db.execute(
+            "SELECT id,filename,doc_type,status,fields,mean_conf,created_at FROM documents ORDER BY created_at ASC"
+        ).fetchall()
     source = _doc(row)
     all_docs = [_doc(r) for r in all_rows]
     fields = source.get("fields") or {}
     resolution = _resolve(fields)
     matches = resolution.get("matches") or []
-    top_match = matches[0] if matches else None
-    prop = _property_from_match(top_match)
+    prop = _property_from_match(matches[0] if matches else None)
     related = _related_docs(source, all_docs)
+    return source, all_docs, fields, resolution, matches, prop, related
 
-    # Build the investigation set from the same saved screening records. This is deliberately
-    # independent of the synthetic property table, so the investigation remains document-grounded.
+
+@router.get("/document/{document_id}/fast")
+def investigate_saved_document_fast(document_id: str, user=Depends(get_current_user)):
+    """Fast first-paint payload: source record, parcel resolution and related-record summary only."""
+    source, _all_docs, fields, resolution, matches, prop, related = _resolve_saved_document(document_id)
+    return {
+        "document": {
+            "id": source.get("id"), "filename": source.get("filename"),
+            "doc_type": source.get("doc_type") or "Land Record", "status": source.get("status"),
+            "fields": fields, "owner": _v(fields, "owner_name", "owner"),
+            "survey": _v(fields, "survey_number", "gat_number", "khasra_number"),
+            "village": _v(fields, "village"), "taluka": _v(fields, "taluka", "tehsil"),
+            "district": _v(fields, "district"), "area": _v(fields, "area"),
+            "confidence": source.get("mean_conf"), "year": _record_year(source),
+        },
+        "resolution": resolution,
+        "matches": matches,
+        "property": prop,
+        "related_documents": related,
+        "related_count": len(related),
+        "timeline": [],
+        "ownership_history": {},
+        "findings": [],
+        "investigation": {
+            "source_of_truth": "saved_document_record",
+            "second_upload_required": False,
+            "human_verification_required": resolution.get("status") != "MATCH",
+            "property_link_persisted": bool(prop and prop.get("property_id")),
+            "legal_authority": False,
+            "data_semantics": "Document evidence and project property candidates; not authoritative cadastral/legal proof.",
+        },
+    }
+
+
+@router.get("/document/{document_id}")
+def investigate_saved_document(document_id: str, user=Depends(get_current_user)):
+    source, all_docs, fields, resolution, matches, prop, related = _resolve_saved_document(document_id)
+
     investigation_records = [source]
+    docs_by_id = {str(d.get("id")): d for d in all_docs}
     seen = {str(source.get("id"))}
     for item in related:
         did = str(item.get("id"))
         if did in seen:
             continue
-        match = next((d for d in all_docs if str(d.get("id")) == did), None)
+        match = docs_by_id.get(did)
         if match:
             investigation_records.append(match)
             seen.add(did)
@@ -134,21 +175,18 @@ def investigate_saved_document(document_id: str, user=Depends(get_current_user))
 
     linked_now = False
     if prop and prop.get("property_id"):
+        source_identity = _identity_values(source)
         with get_db() as db:
             linked_now = _ensure_link(db, str(prop["property_id"]), str(document_id))
-            # Persist the other related documents to the same resolved property when they
-            # independently share the same strong land identity.
             for item in related:
-                if item.get("id") is None:
-                    continue
-                rd = next((d for d in all_docs if str(d.get("id")) == str(item["id"])), None)
+                did = item.get("id")
+                rd = docs_by_id.get(str(did))
                 if not rd:
                     continue
                 rv = _identity_values(rd)
-                pv = _identity_values(source)
-                strong = any(pv[k] and rv[k] and _norm(pv[k]) == _norm(rv[k]) for k in ("survey_number", "gat_number", "khasra_number"))
+                strong = any(source_identity[k] and rv[k] and _norm(source_identity[k]) == _norm(rv[k]) for k in ("survey_number", "gat_number", "khasra_number"))
                 if strong:
-                    _ensure_link(db, str(prop["property_id"]), str(item["id"]))
+                    _ensure_link(db, str(prop["property_id"]), str(did))
         if linked_now:
             try:
                 log_audit(user.get("full_name", user.get("email", "user")), "DOCUMENT_PROPERTY_LINKED",
@@ -184,8 +222,7 @@ def investigate_saved_document(document_id: str, user=Depends(get_current_user))
             "survey": _v(fields, "survey_number", "gat_number", "khasra_number"),
             "village": _v(fields, "village"), "taluka": _v(fields, "taluka", "tehsil"),
             "district": _v(fields, "district"), "area": _v(fields, "area"),
-            "confidence": source.get("mean_conf") if source.get("mean_conf") is not None else source.get("ocr_confidence"),
-            "year": _record_year(source),
+            "confidence": source.get("mean_conf"), "year": _record_year(source),
         },
         "resolution": resolution,
         "matches": matches,
