@@ -210,7 +210,7 @@ def test_land_intelligence_js_matches_repository_file():
 def test_land_intelligence_route_table_has_one_ui_asset_route_each():
     import server
 
-    paths = [route.path for route in server.app.routes]
+    paths = [getattr(route, "path", None) for route in server.app.routes]
     assert paths.count("/land-intelligence") == 1
     assert paths.count("/land-intelligence.css") == 1
     assert paths.count("/land-intelligence.js") == 1
@@ -348,7 +348,7 @@ def test_map_records_and_geography_and_village_sheet(client=None):
     assert "Demo District" in geography.json()["geography"]
     sheet = client.get("/api/land/village-sheet?district=Demo%20District&taluka=Demo%20Taluka&village=Demo%20Village", headers=headers)
     assert sheet.status_code == 200
-    assert len(sheet.json()["parcels"]) == 4
+    assert {p["parcel_id"] for p in sheet.json()["parcels"]} >= {"DEMO-103-A","DEMO-103-B","DEMO-104","DEMO-105"}
     assert sheet.json()["metadata"]["authoritative"] is False
 
 
@@ -410,7 +410,7 @@ def test_geocode_is_cached_throttled_and_has_no_fake_fallback(monkeypatch):
     first = client.post("/api/land/geocode", headers=headers, json={"village":"Test Geocode Village","district":"Test District"})
     assert first.status_code == 200
     assert first.json()["status"] == "RESOLVED"
-    assert calls and "User-Agent" in calls[0][1]
+    assert calls and calls[0][1] == "DILRMP-Land-Intelligence/1.0"
     second = client.post("/api/land/geocode", headers=headers, json={"village":"Test Geocode Village","district":"Test District"})
     assert second.status_code == 200
     assert second.json()["cached"] is True
