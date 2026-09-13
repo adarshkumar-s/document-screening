@@ -561,8 +561,12 @@ def _geocode_village(village: Optional[str], taluka: Optional[str], district: Op
         except (KeyError, TypeError, ValueError):
             lat = lon = display_name = None
     with get_db() as db:
-        db.execute("INSERT OR REPLACE INTO geocode_cache(query,latitude,longitude,display_name,fetched_at) VALUES (?,?,?,?,?)",
-                   (query, lat, lon, display_name, _now()))
+        now = _now()
+        cur = db.execute("UPDATE geocode_cache SET latitude=?,longitude=?,display_name=?,fetched_at=? WHERE query=?",
+                         (lat, lon, display_name, now, query))
+        if getattr(cur, "rowcount", 0) == 0:
+            db.execute("INSERT INTO geocode_cache(query,latitude,longitude,display_name,fetched_at) VALUES (?,?,?,?,?)",
+                       (query, lat, lon, display_name, now))
     return {"status": "RESOLVED" if lat is not None else "UNRESOLVED",
             "latitude": lat, "longitude": lon, "display_name": display_name,
             "cached": False, "query": query}
