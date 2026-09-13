@@ -1,11 +1,12 @@
 """Fast candidate retrieval for Land Intelligence.
 
-The request path must never perform DDL. Database indexes are deployment/startup
-concerns; creating them while a user is opening a document can block the request
-for a long time on large property tables.
+Indexes are prepared once when the application imports this module. The document
+request path never performs DDL, so opening a document cannot be blocked by index
+creation on a large parcel table.
 """
 from __future__ import annotations
 
+import threading
 from typing import Any, Dict, List
 
 from land_intelligence import _field, _normal, _property
@@ -14,27 +15,48 @@ from server import get_db
 IDENTIFIER_KEYS = ("survey_number", "gat_number", "khasra_number", "sub_division", "village", "taluka", "district")
 STRONG_KEYS = ("survey_number", "gat_number", "khasra_number")
 WEIGHTS = {"survey_number":3,"gat_number":3,"khasra_number":3,"sub_division":2,"village":1,"taluka":1,"district":1}
+_index_lock = threading.Lock()
+_indexes_ready = False
+
+
+def _ensure_indexes() -> None:
+    """Create lookup indexes once during application startup, never on a request."""
+    global _indexes_ready
+    if _indexes_ready:
+        return
+    with _index_lock:
+        if _indexes_ready:
+            return
+        with get_db() as db:
+            for name, column in (
+                ("idx_properties_survey_norm", "survey_number"),
+                ("idx_properties_gat_norm", "gat_number"),
+                ("idx_properties_khasra_norm", "khasra_number"),
+                ("idx_properties_subdivision_norm", "sub_division"),
+                ("idx_properties_village_norm", "village"),
+                ("idx_properties_taluka_norm", "taluka"),
+                ("idx_properties_district_norm", "district"),
+            ):
+                db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON properties (LOWER(TRIM({column})))")
+        _indexes_ready = True
 
 
 def _candidate_rows(fields: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Retrieve a small candidate set without creating indexes in the request path."""
     supplied = {k: _field(fields, k) for k in IDENTIFIER_KEYS if _field(fields, k)}
     if not supplied:
         return []
     clauses: List[str] = []
     params: List[Any] = []
-    # Exact SQL lookup avoids function-wrapped predicates and can use ordinary
-    # indexes when present. Matching is normalized again during scoring.
     for key in STRONG_KEYS:
         value = supplied.get(key)
         if value:
-            clauses.append(f"{key} = ?")
+            clauses.append(f"LOWER(TRIM({key})) = LOWER(TRIM(?))")
             params.append(value)
     if not any(k in supplied for k in STRONG_KEYS):
         for key in ("village", "taluka", "district"):
             value = supplied.get(key)
             if value:
-                clauses.append(f"{key} = ?")
+                clauses.append(f"LOWER(TRIM({key})) = LOWER(TRIM(?))")
                 params.append(value)
     if not clauses:
         return []
@@ -87,3 +109,7 @@ def resolve_indexed(fields: Dict[str, Any]) -> Dict[str, Any]:
     top_pct,_,top_reasons,top_missing,top_conflicts,top_strong_conflict=scored[0]
     status="MATCH" if top_pct>=95 and not top_strong_conflict and not top_conflicts else ("POSSIBLE MATCH" if top_pct>=50 and not top_strong_conflict else "NO MATCH")
     return {"status":status,"confidence":top_pct/100,"matches":matches,"reasons":top_reasons,"missing_fields":top_missing,"conflicting_fields":top_conflicts}
+
+# land_intelligence initializes the properties table before this module is imported
+# by main.py, so index creation happens here during application startup.
+_ensure_indexes()
