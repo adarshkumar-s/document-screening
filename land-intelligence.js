@@ -14,7 +14,7 @@ function authHeaders(extra={}){
 async function api(url){
   const r=await fetch(url,{headers:authHeaders({"Accept":"application/json"})});
   let data={}; try{data=await r.json()}catch(_){}
-  if(!r.ok) throw new Error(data.detail||data.error||("Request failed ("+r.status+")"));
+  if(!r.ok) throw new Error(data.detail||data.error||(\"Request failed (\"+r.status+\")\"));
   return data;
 }
 function setStatus(text){if($("mapStatus"))$("mapStatus").textContent=text}
@@ -72,9 +72,11 @@ function initMap(){
   if(!window.L){notice("Interactive map library unavailable. Parcel intelligence remains available.");setStatus("Map library unavailable");return}
   try{
     state.map=L.map("map",{zoomControl:true,preferCanvas:true,attributionControl:true}).setView([28.622,77.106],14);
-    const tile=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OpenStreetMap contributors",minZoom:3,maxZoom:19});
+    // OpenStreetMap's standard tile service requires the exact canonical hostname.
+    // Browser requests automatically carry the page Referer and browser User-Agent.
+    const tile=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>',minZoom:3,maxZoom:19});
     tile.on("load",()=>{clearNotice();setStatus("Map ready")});
-    tile.on("tileerror",()=>notice("Base map unavailable. Parcel geometry and evidence remain usable."));
+    tile.on("tileerror",()=>notice("OpenStreetMap base tiles are unavailable. Parcel geometry and evidence remain usable."));
     tile.addTo(state.map);
     window.addEventListener("resize",()=>state.map?.invalidateSize());
     state.map.on("click",e=>{if(!state.pinMode||!state.selected)return;state.pinMode=false;setExactPin(state.selected.property_id,e.latlng.lat,e.latlng.lng)});
@@ -125,98 +127,44 @@ function renderProperty(p){
   const history=p.ownership_history||{events:[],findings:[],relationships:[]};
   const historyRows=(history.events||[]).map(e=>'<div class="timeline-item"><i class="timeline-dot"></i><div><strong>'+esc(e.year||"Year unavailable")+' · '+esc(e.document_type)+'</strong><div class="muted">Owner: '+esc(valueOrDash(e.owner))+' · Survey: '+esc(valueOrDash(e.survey_number))+' · Khasra: '+esc(valueOrDash(e.khasra_number))+' · Area: '+esc(valueOrDash(e.area))+'</div></div></div>').join("");
   const findingRows=(history.findings||[]).map(f=>'<div class="finding"><strong>'+esc(f.title)+'</strong><br><span class="muted">'+esc(f.reason)+'</span><br><b>Human action:</b> '+esc(f.human_action)+'</div>').join("");
-  $("propertyPanel").innerHTML='<div class="property-head"><div><span class="eyebrow">PROPERTY INTELLIGENCE</span><h3>'+esc(p.property_id)+'</h3></div>'+badge("DEMO / SYNTHETIC")+'</div>'+
-    '<div class="intel-grid">'+fields.map(([a,b])=>'<div class="kv"><small>'+esc(a)+'</small><b>'+esc(valueOrDash(b))+'</b></div>').join("")+'</div>'+
-    '<div class="subhead">Ownership history</div>'+
-    '<div class="timeline">'+(historyRows||'<span class="muted">No ownership events detected.</span>')+'</div>'+
-    (findingRows?'<div class="subhead">Ownership assessment</div>'+findingRows:'')+
-    '<div class="subhead">Linked documents</div>'+
-    (docs.length?docs.map(d=>'<button type="button" class="result" data-doc="'+esc(d.id)+'"><strong>'+esc(d.filename)+'</strong><span class="muted">'+esc(d.doc_type)+' · OCR '+Math.round((d.ocr_confidence||0)*100)+'% · '+esc(d.verification_status)+'</span></button>').join(""):'<span class="muted">No linked document is available.</span>')+
-    '<div class="subhead">Neighbouring parcels</div>'+
-    (neighbours.length?neighbours.map(n=>'<button type="button" class="result" data-neighbor="'+esc(n.property_id)+'"><strong>'+esc(n.parcel_id)+'</strong><span class="muted">Survey '+esc(n.survey_number)+' · '+esc(n.area)+' '+esc(n.area_unit)+'</span></button>').join(""):'<span class="muted">No adjacent parcels detected.</span>');
-  $("propertyPanel").querySelectorAll("[data-doc]").forEach(b=>b.addEventListener("click",()=>compareDoc(b.dataset.doc,p.property_id)));
-  $("propertyPanel").querySelectorAll("[data-neighbor]").forEach(b=>b.addEventListener("click",()=>selectParcel(b.dataset.neighbor)));
-  $("propertyPanel").insertAdjacentHTML("beforeend",renderLocationPanel(p)+'<div class="location-actions"><button type="button" class="btn secondary" id="showMapBtn">Show on map</button></div>');
-  $("showMapBtn").onclick=()=>focusMapProperty(p.property_id);
-  if(canEditLocation()){const sb=$("setPinBtn");if(sb)sb.onclick=()=>{state.pinMode=true;notice("Exact-pin mode: click the map to place the selected property. The server validates and audits the change.");setStatus("Click the map to set exact pin")};const cb=$("clearPinBtn");if(cb)cb.onclick=()=>clearExactPin(p.property_id)}
-
+  const relRows=(history.relationships||[]).map(r=>'<div class="relationship"><strong>'+esc(r.relation_type)+'</strong><span>'+esc(r.from_property_id)+' → '+esc(r.to_property_id)+'</span></div>').join("");
+  const docRows=docs.map(d=>'<div class="doc-row"><div><strong>'+esc(d.document_type||d.filename)+'</strong><div class="muted">'+esc(d.filename||d.document_id||"")+'</div></div><div>'+badge(d.status||d.verification_status||"UNKNOWN")+'</div></div>').join("");
+  const neighbourRows=neighbours.map(n=>'<div class="doc-row"><div><strong>'+esc(n.parcel_id||n.property_id)+'</strong><div class="muted">'+esc(n.village||"")+' · '+esc(n.survey_number||"")+'</div></div><button class="btn secondary" type="button" data-neighbour="'+esc(n.property_id)+'">Inspect</button></div>').join("");
+  $("propertyPanel").innerHTML='<div class="section-head"><div><span class="eyebrow">PROPERTY INTELLIGENCE</span><h2>'+esc(p.parcel_id||p.property_id)+'</h2></div>'+badge(p.resolution_status||"DEMO / SYNTHETIC")+'</div><div class="intel-grid">'+fields.map(x=>'<div><span>'+esc(x[0])+'</span><strong>'+esc(valueOrDash(x[1]))+'</strong></div>').join("")+'</div>'+renderLocationPanel(p)+'<div class="subhead">Documents</div>'+docRows+'<div class="subhead">Ownership timeline</div><div class="timeline">'+(historyRows||'<div class="muted">No timeline events.</div>')+'</div><div class="subhead">Derived findings</div>'+(findingRows||'<div class="muted">No derived findings.</div>')+'<div class="subhead">Property relationships</div>'+(relRows||'<div class="muted">No linked property relationships.</div>')+'<div class="subhead">Nearby project parcels</div>'+(neighbourRows||'<div class="muted">No nearby parcels.</div>');
+  $("propertyPanel").querySelectorAll("[data-neighbour]").forEach(b=>b.addEventListener("click",()=>selectParcel(b.dataset.neighbour)));
+  $("propertyPanel").querySelector("#setPinBtn")?.addEventListener("click",()=>{state.pinMode=true;notice("Click the map to set an exact pin. This requires authorized verification and is audited.")});
+  $("propertyPanel").querySelector("#clearPinBtn")?.addEventListener("click",()=>clearExactPin(p.property_id));
 }
-function setExactPin(propertyId,lat,lon){
-  if(!canEditLocation()){notice("Only Verification Officers or Administrators may set an exact pin.");return}
-  const current=state.locationRecords.get(propertyId);
-  fetch(LAND_API+"/properties/"+encodeURIComponent(propertyId)+"/location",{method:"PUT",headers:authHeaders({"Content-Type":"application/json","Accept":"application/json"}),body:JSON.stringify({latitude:lat,longitude:lon,reason:"Placed from Land Intelligence map.",expected_location_updated_at:current?.location?.updated_at})})
-    .then(async r=>{let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Location update failed");return d})
-    .then(async()=>{await loadMapLocations();await selectParcel(propertyId);setStatus("Exact location saved and audited")})
-    .catch(e=>{notice("Exact pin was not saved: "+e.message);setStatus("Pin update failed")});
-}
-function clearExactPin(propertyId){
-  if(!canEditLocation()||!window.confirm("Clear the exact pin for this property?"))return;
-  const current=state.locationRecords.get(propertyId);
-  fetch(LAND_API+"/properties/"+encodeURIComponent(propertyId)+"/location",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({reason:"Cleared from Land Intelligence.",expected_location_updated_at:current?.location?.updated_at})})
-    .then(async r=>{let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Location update failed");return d})
-    .then(async()=>{await loadMapLocations();await selectParcel(propertyId);setStatus("Exact location cleared")})
-    .catch(e=>notice("Exact pin was not cleared: "+e.message));
-}
-function renderEvidence(p){
-  const doc=(p.documents||[])[0];
-  $("evidencePanel").innerHTML='<span class="eyebrow">EVIDENCE & VERIFICATION</span><h3 style="margin:3px 0;font-size:16px">'+esc(doc?doc.filename:"Evidence trail")+'</h3>'+
-    (doc?'<div class="evidence-section"><div class="finding"><strong>Verification state:</strong> '+esc(doc.verification_status)+'<br><span class="muted">Human review remains authoritative.</span></div><button type="button" class="btn secondary" id="comparePrimary" style="margin-top:8px">Run document ↔ parcel comparison</button></div>':'<p class="muted">No linked document is available for this parcel.</p>')+
-    '<div class="evidence-section"><div class="subhead">Provenance</div>'+((p.provenance||[]).slice(0,8).map(x=>'<div class="kv" style="margin-top:6px"><small>'+esc(x.field_name)+' · '+esc(x.source)+'</small><b>'+esc(x.value)+' · '+Math.round((x.confidence||0)*100)+'% confidence</b></div>').join("")||'<span class="muted">No provenance entries.</span>')+'</div>'+
-    '<div class="evidence-section"><div class="subhead">Timeline</div><div class="timeline">'+((p.timeline||[]).map(x=>'<div class="timeline-item"><i class="timeline-dot"></i><div><strong>'+esc(x.event_type)+'</strong><div class="muted">'+esc(x.description)+'</div></div></div>').join("")||'<span class="muted">No recorded events.</span>')+'</div></div>'+
-    '<div class="evidence-section"><div class="subhead">Ownership reasoning</div>'+(((p.ownership_history||{}).findings||[]).map(f=>'<div class="finding"><strong>'+esc(f.title)+'</strong><br>'+esc(f.reason)+'<br><b>Recommendation:</b> '+esc(f.human_action)+'</div>').join("")||'<span class="muted">No ownership-change finding.</span>')+'</div>'+
-    '<div class="evidence-section"><div class="finding"><strong>Human verification:</strong> Evidence is decision support only. Do not treat confidence as legal truth.</div></div>';
-  if(doc)$("comparePrimary").onclick=()=>compareDoc(doc.id,p.property_id);
-}
-async function compareDoc(docId,propertyId){
-  loadingPanel("evidencePanel","Comparing document and parcel…");
-  try{
-    const r=await api(API+"/compare/"+encodeURIComponent(docId)+"/"+encodeURIComponent(propertyId));
-    const rows=(r.checks||[]).map(c=>'<tr><td>'+esc(c.label)+'</td><td>'+esc(valueOrDash(c.document))+'</td><td>'+esc(valueOrDash(c.parcel))+'</td><td>'+badge(c.status)+(c.difference!==undefined?'<div class="muted">Δ '+esc(c.difference)+' · tolerance '+esc(c.tolerance)+'</div>':"")+'</td><td>'+esc(c.source||"Evidence comparison")+'</td><td>'+esc(Math.round(((c.confidence?.document)||0)*100))+'% / '+esc(Math.round(((c.confidence?.parcel)||0)*100))+'%</td></tr>').join("");
-    $("evidencePanel").innerHTML='<span class="eyebrow">DOCUMENT ↔ PARCEL</span><div class="property-head"><h3>Comparison result</h3>'+badge(r.overall_status)+'</div>'+
-      '<div style="overflow:auto"><table class="comparison"><thead><tr><th>Field</th><th>Document</th><th>Property / Parcel</th><th>Result</th><th>Source</th><th>Confidence</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-      '<div class="evidence-section"><div class="finding"><strong>What matters:</strong> '+esc(r.explanation)+'</div></div>'+
-      '<div class="evidence-section"><div class="subhead">Human verification task</div><p class="muted">Review conflicting or uncertain fields against the source document and authorized land records. No demo action changes authoritative records.</p></div>';
-  }catch(e){$("evidencePanel").innerHTML='<div class="empty"><strong>Comparison unavailable</strong><p>'+esc(e.message)+'</p></div>'}
+function renderEvidence(data){
+  const docs=data.documents||[],findings=data.findings||[],tasks=data.tasks||[],compare=data.comparison||null;
+  const compareHtml=compare?'<div class="comparison"><div><span>Identity match</span><strong>'+badge(compare.identity_match)+'</strong></div><div><span>Area difference</span><strong>'+esc(compare.area_difference??"—")+'</strong></div><div><span>Transfer risk</span><strong>'+badge(compare.transfer_risk||"UNKNOWN")+'</strong></div></div>':'';
+  const findingHtml=findings.map(f=>'<div class="finding"><strong>'+esc(f.title)+'</strong><div>'+badge(f.severity||f.status||"OPEN")+'</div><p>'+esc(f.reason||f.description||"")+'</p><small>Action: '+esc(f.human_action||"Human review")+'</small></div>').join("");
+  const taskHtml=tasks.map(t=>'<div class="doc-row"><div><strong>'+esc(t.title)+'</strong><div class="muted">'+esc(t.assignee||"Unassigned")+'</div></div>'+badge(t.status||"OPEN")+'</div>').join("");
+  const docHtml=docs.map(d=>'<div class="doc-row"><div><strong>'+esc(d.document_type||d.filename)+'</strong><div class="muted">'+esc(d.filename||d.document_id||"")+'</div></div>'+badge(d.status||d.verification_status||"UNKNOWN")+'</div>').join("");
+  $("evidencePanel").innerHTML='<div class="section-head"><div><span class="eyebrow">EVIDENCE & VERIFICATION</span><h2>Defensible review</h2></div></div>'+compareHtml+'<div class="subhead">Findings</div>'+(findingHtml||'<div class="muted">No findings.</div>')+'<div class="subhead">Verification tasks</div>'+(taskHtml||'<div class="muted">No tasks.</div>')+'<div class="subhead">Evidence</div>'+(docHtml||'<div class="muted">No linked evidence.</div>');
 }
 async function selectParcel(id){
-  setStatus("Loading property intelligence…");loadingPanel("propertyPanel","Loading property intelligence…");loadingPanel("evidencePanel","Loading evidence…");
-  try{const p=await api(API+"/properties/"+encodeURIComponent(id));if(p.error)throw new Error(p.error);if(state.user){try{const live=await api(LAND_API+"/properties/"+encodeURIComponent(id));p.location={status:live.location_status||"UNRESOLVED",source:live.location_source,confidence:live.location_confidence,verified_by:live.location_verified_by,verified_at:live.location_verified_at,updated_at:live.location_updated_at,latitude:live.latitude,longitude:live.longitude};}catch(_){}}state.selected=p;selectMapLayer(p.property_id);renderProperty(p);renderEvidence(p);renderVillageSheet(state.visibleFeatures?.length?state.visibleFeatures:(state.geo?.features||[]));setStatus("Selected "+(p.parcel_id||p.property_id))}
-  catch(e){$("propertyPanel").innerHTML='<div class="empty"><strong>Unable to load property</strong><p>'+esc(e.message)+'</p></div>';$("evidencePanel").innerHTML='<div class="empty"><strong>Evidence unavailable</strong><p>'+esc(e.message)+'</p></div>';setStatus("Property unavailable")}
+  try{loadingPanel("propertyPanel","Loading property intelligence…");const p=await api(API+"/properties/"+encodeURIComponent(id));state.selected=p;renderProperty(p);selectMapLayer(id);await focusMapProperty(id);const cmp=await api(API+"/compare/"+encodeURIComponent((p.documents||[])[0]?.document_id||"NONE")+"/"+encodeURIComponent(id)).catch(()=>({}));renderEvidence({documents:p.documents||[],findings:p.findings||[],tasks:p.tasks||[],comparison:cmp});}catch(e){notice(e.message||"Property could not be loaded.")}
 }
-async function search(){
-  const q=$("search").value.trim();if(!q){$("results").innerHTML="";return}
-  $("results").innerHTML='<div class="muted">Searching parcels…</div>';
-  try{const r=await api(API+"/properties?q="+encodeURIComponent(q));const rows=r.properties||[];$("results").innerHTML=rows.map(p=>'<button type="button" class="result" data-result="'+esc(p.property_id)+'"><strong>'+esc(p.parcel_id)+'</strong><span class="muted">'+esc(p.survey_number)+' · '+esc(p.village)+'</span></button>').join("")||'<span class="muted">No candidate parcels.</span>';$("results").querySelectorAll("[data-result]").forEach(b=>b.addEventListener("click",()=>selectParcel(b.dataset.result)))}catch(e){$("results").textContent=e.message}
+async function loadGeo(){state.geo=await api(LAND_API+"/geojson");state.visibleFeatures=state.geo.features||[];renderParcels(state.visibleFeatures);renderVillageSheet(state.visibleFeatures)}
+async function loadAll(){
+  if(state.loading)return;state.loading=true;try{
+    const [m,s]=await Promise.all([api(API+"/dashboard"),api(API+"/scenarios")]);state.metrics=m;state.scenarios=s.scenarios||[];renderMetrics(m);renderScenarios();await loadGeo();await populateGeography();await loadCurrentUser();await loadMapLocations();setStatus("Map ready");
+  }catch(e){notice(e.message||"Land Intelligence could not be loaded.")}finally{state.loading=false}
 }
 async function runScenario(id){
-  state.activeScenario=id;renderScenarios();loadingPanel("propertyPanel","Loading scenario…");loadingPanel("evidencePanel","Loading scenario evidence…");
-  try{const d=await api(API+"/scenario/"+encodeURIComponent(id));if(d.error)throw new Error(d.error);if(d.property){await selectParcel(d.property.property_id);if(d.comparison&&d.document)await compareDoc(d.document.id,d.property.property_id)}else{$("propertyPanel").innerHTML='<div class="property-head"><div><span class="eyebrow">PROPERTY RESOLUTION</span><h3>No parcel match</h3></div>'+badge("NO MATCH")+'</div><div class="finding"><strong>'+esc(d.document.filename)+'</strong><br>Survey '+esc(d.document.fields?.survey_number)+' did not resolve to a demo parcel. No coordinates were fabricated.</div>';$("evidencePanel").innerHTML='<span class="eyebrow">DOCUMENT EVIDENCE</span><h3 style="font-size:16px">'+esc(d.document.doc_type)+'</h3><div class="intel-grid">'+Object.entries(d.document.fields||{}).map(([k,v])=>'<div class="kv"><small>'+esc(k)+'</small><b>'+esc(v)+'</b></div>').join("")+'</div><div class="evidence-section"><div class="subhead">Provenance</div><p class="muted">'+esc(d.document.provenance)+'</p></div>'}}
-  catch(e){$("propertyPanel").innerHTML='<div class="empty"><strong>Scenario failed</strong><p>'+esc(e.message)+'</p></div>';$("evidencePanel").innerHTML='<div class="empty"><strong>Evidence unavailable</strong><p>'+esc(e.message)+'</p></div>'}
+  state.activeScenario=id;renderScenarios();try{const d=await api(API+"/scenario/"+encodeURIComponent(id));if(d.property_id)await selectParcel(d.property_id);renderEvidence(d);}catch(e){notice(e.message||"Scenario could not be loaded.")}
 }
-function reset(){
-  state.activeScenario=null;renderScenarios();$("search").value="";$("results").innerHTML="";clearNotice();
-  if(state.geo?.features?.length)selectParcel(state.geo.features[0].properties.property_id);else{loadingPanel("propertyPanel","No property selected");loadingPanel("evidencePanel","No evidence selected")}
-  setStatus("Workspace reset");
+async function search(){const q=$("search")?.value.trim();if(!q)return;try{const d=await api(API+"/properties?q="+encodeURIComponent(q));const root=$("results");root.innerHTML=(d.properties||[]).map(p=>'<button type="button" class="result-item" data-property="'+esc(p.property_id)+'"><strong>'+esc(p.parcel_id||p.property_id)+'</strong><span>'+esc(p.village||"")+' · '+esc(p.survey_number||"")+'</span></button>').join("")||'<div class="empty">No properties found.</div>';root.querySelectorAll("[data-property]").forEach(b=>b.addEventListener("click",()=>selectParcel(b.dataset.property)));}catch(e){notice(e.message||"Search failed.")}}
+async function setExactPin(id,lat,lon){
+  try{const r=await fetch(LAND_API+"/properties/"+encodeURIComponent(id)+"/location",{method:"POST",headers:{...authHeaders({"Content-Type":"application/json","Accept":"application/json"})},body:JSON.stringify({latitude:lat,longitude:lon})});let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Pin update failed");state.selected=d.property||state.selected;renderProperty(state.selected);await loadMapLocations();notice("Exact pin saved and audited.")}catch(e){notice(e.message||"Exact pin could not be saved.")}
 }
-async function load(){
-  if(state.loading)return;state.loading=true;setStatus("Loading parcel dataset…");
-  try{
-    initMap();
-    await loadCurrentUser();
-    const [geo,metrics,scenarios]=await Promise.all([api(API+"/geojson"),api(API+"/dashboard"),api(API+"/scenarios")]);
-    state.geo=geo;state.visibleFeatures=geo.features||[];state.metrics=metrics;state.scenarios=scenarios.scenarios||[];
-    renderMetrics(metrics);renderScenarios();renderParcels(geo.features||[]);renderVillageSheet(geo.features||[]);if(state.user)await loadMapLocations();if(state.user)await populateGeography();
-    if(state.map&&state.parcelLayers.size)fitAll();
-    if(geo.features?.length)await selectParcel(geo.features[0].properties.property_id);else{notice("No parcel data is available.");loadingPanel("propertyPanel","No parcel data");loadingPanel("evidencePanel","No evidence data")}
-  }catch(e){notice("Land Intelligence data is unavailable: "+e.message);setStatus("Data unavailable");$("metrics").innerHTML="";$("scenarios").innerHTML="";loadingPanel("propertyPanel","Land Intelligence unavailable");loadingPanel("evidencePanel","Evidence unavailable")}
-  finally{state.loading=false}
+async function clearExactPin(id){
+  try{const r=await fetch(LAND_API+"/properties/"+encodeURIComponent(id)+"/location",{method:"DELETE",headers:authHeaders({"Accept":"application/json"})});let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Pin removal failed");state.selected=d.property||state.selected;renderProperty(state.selected);await loadMapLocations();notice("Exact pin cleared and audited.")}catch(e){notice(e.message||"Exact pin could not be cleared.")}
 }
-$("searchBtn").addEventListener("click",search);
-$("search").addEventListener("keydown",e=>{if(e.key==="Enter")search()});
-$("demoBtn").addEventListener("click",()=>runScenario("area-review"));
-$("resetBtn").addEventListener("click",reset);
-$("fitBtn").addEventListener("click",fitAll);$("villageSheetBtn")?.addEventListener("click",()=>{$("villageSheet")?.classList.toggle("hidden")});
-document.querySelectorAll("[data-font]").forEach(b=>b.addEventListener("click",()=>{const v=Number(b.dataset.font);const current=parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--font-scale"))||14;document.documentElement.style.setProperty("--font-scale",(v===0?14:Math.max(12,Math.min(18,current+v)))+"px")}));
-$("contrastBtn").addEventListener("click",()=>document.body.classList.toggle("high-contrast"));
-window.addEventListener("load",load);
+function wire(){
+  $("searchBtn")?.addEventListener("click",search);$("search")?.addEventListener("keydown",e=>{if(e.key==="Enter")search()});$("fitBtn")?.addEventListener("click",fitAll);$("villageSheetBtn")?.addEventListener("click",()=>$("villageSheet")?.classList.toggle("hidden"));$("demoBtn")?.addEventListener("click",()=>runScenario(state.scenarios[0]?.id||""));$("resetBtn")?.addEventListener("click",()=>location.reload());
+  document.querySelectorAll("[data-font]").forEach(b=>b.addEventListener("click",()=>{const d=Number(b.dataset.font);document.documentElement.style.fontSize=(16+d)+"px"}));$("contrastBtn")?.addEventListener("click",()=>document.body.classList.toggle("high-contrast"));
+}
+document.addEventListener("DOMContentLoaded",()=>{wire();initMap();loadAll();});
 })();
