@@ -15,9 +15,9 @@ LAND_INTELLIGENCE_SCRIPT = b'''<script>
 (function(){
   function tokenHeaders(){try{var t=localStorage.getItem('lrtoken');return t?{Authorization:'Bearer '+t}:{};}catch(_){return {};}}
   function prefetch(id){
-    var key='li-record-'+id;
+    var key='li-record-fast-'+id;
     try{if(sessionStorage.getItem(key))return;}catch(_){ }
-    fetch('/api/land/intelligence/document/'+encodeURIComponent(id),{headers:Object.assign({'Accept':'application/json'},tokenHeaders())})
+    fetch('/api/land/intelligence/document/'+encodeURIComponent(id)+'/fast',{headers:Object.assign({'Accept':'application/json'},tokenHeaders())})
       .then(function(r){return r.ok?r.json():null;})
       .then(function(data){if(!data)return;try{sessionStorage.setItem(key,JSON.stringify(data));}catch(_){}})
       .catch(function(){});
