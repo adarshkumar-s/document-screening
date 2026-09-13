@@ -3,38 +3,23 @@
   const esc = v => String(v ?? "—").replace(/[&<>\"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;","'":"&#39;"}[c]));
   const tokenHeaders = () => { const h={Accept:"application/json"}; try { const t=localStorage.getItem("lrtoken"); if(t) h.Authorization="Bearer "+t; } catch(_){} return h; };
   const api = async (url, options={}) => { const r=await fetch(url,{...options,headers:{...tokenHeaders(),...(options.headers||{})}}); let d={}; try{d=await r.json()}catch(_){} if(!r.ok) throw new Error(d.detail||d.error||`Request failed (${r.status})`); return d; };
-  function landUrl(id){ return `/land-intelligence?document_id=${encodeURIComponent(id)}`; }
+  const landUrl=id=>`/land-intelligence?document_id=${encodeURIComponent(id)}`;
 
   function addRecordButtons(){
-    const table=document.querySelector("#simpleDocTable");
-    if(!table) return;
+    const table=document.querySelector("#simpleDocTable"); if(!table) return;
     table.querySelectorAll("tbody tr").forEach(row=>{
       if(row.querySelector(".land-intel-action")) return;
-      const cells=row.querySelectorAll("td");
-      if(cells.length<7) return;
-      const id=(cells[0].textContent||"").trim();
-      if(!id) return;
-      const a=document.createElement("a");
-      a.className="btn ghost land-intel-action";
-      a.href=landUrl(id);
-      a.textContent="Land Intelligence →";
-      a.title="Investigate this saved document in Land Intelligence";
-      a.style.cssText="display:inline-block;padding:5px 9px;font-size:11px;text-decoration:none;margin-left:5px";
-      cells[6].appendChild(a);
+      const cells=row.querySelectorAll("td"); if(cells.length<7) return;
+      const m=(cells[0].textContent||"").match(/\d+/); if(!m) return;
+      const a=document.createElement("a"); a.className="btn ghost land-intel-action"; a.href=landUrl(m[0]); a.textContent="Land Intelligence →"; a.title="Investigate this saved document in Land Intelligence"; a.style.cssText="display:inline-block;padding:5px 9px;font-size:11px;text-decoration:none;margin-left:5px;white-space:nowrap"; cells[6].appendChild(a);
     });
   }
-
-  function observeRecords(){
-    addRecordButtons();
-    const table=document.querySelector("#simpleDocTable");
-    if(table) new MutationObserver(addRecordButtons).observe(table,{subtree:true,childList:true});
-  }
+  function observeRecords(){ addRecordButtons(); const table=document.querySelector("#simpleDocTable"); if(table)new MutationObserver(addRecordButtons).observe(table,{subtree:true,childList:true}); }
 
   function investigationPanel(d){
-    const root=document.querySelector(".scenario-panel");
-    if(!root) return;
+    const root=document.getElementById("scenarios")||document.querySelector(".scenario-panel"); if(!root) return;
     let panel=document.getElementById("savedDocumentInvestigation");
-    if(!panel){ panel=document.createElement("section"); panel.id="savedDocumentInvestigation"; panel.className="panel"; root.insertAdjacentElement("afterend",panel); }
+    if(!panel){ panel=document.createElement("section"); panel.id="savedDocumentInvestigation"; panel.className="panel"; if(root.id==="scenarios") root.insertAdjacentElement("beforebegin",panel); else root.insertAdjacentElement("afterend",panel); }
     const s=d.document||{}, r=d.resolution||{}, p=d.property, related=d.related_documents||[], match=r.matches?.[0];
     const status=match?`PROPERTY MATCH · ${Math.round((match.confidence||0)*100)}%`:`PROPERTY RESOLUTION · ${esc(r.status||"REVIEW REQUIRED")}`;
     const relHtml=related.length?related.map(x=>`<div class="record-card"><div class="record-main"><strong>#${esc(x.id)} · ${esc(x.filename)}</strong><span>${esc(x.doc_type)} · ${esc(x.owner)} · Survey ${esc(x.survey)}</span><small>${esc(x.village)}, ${esc(x.district)} · matched: ${esc((x.matched_fields||[]).join(", "))}</small></div><div class="record-meta"><span class="status neutral">${esc(x.status||"UNKNOWN")}</span><a class="btn ghost" style="padding:4px 8px;font-size:11px;text-decoration:none" href="${landUrl(x.id)}">Investigate →</a></div></div>`).join(""):`<div class="empty">No other saved record shares enough land-identity fields yet.</div>`;
@@ -43,29 +28,15 @@
   }
 
   async function hydrateLandPage(){
-    const id=new URLSearchParams(location.search).get("document_id");
-    if(!id) return;
+    const id=new URLSearchParams(location.search).get("document_id"); if(!id)return;
     try{
-      const d=await api(`/api/land/intelligence/document/${encodeURIComponent(id)}`);
-      const source=d.document||{};
-      const root=document.querySelector(".hero p");
-      if(root) root.innerHTML=`Investigating saved source record <strong>#${esc(source.id)}</strong> · ${esc(source.filename)}. OCR evidence remains the source; property and parcel conclusions are reviewable.`;
+      const d=await api(`/api/land/intelligence/document/${encodeURIComponent(id)}`), source=d.document||{};
+      const root=document.querySelector(".hero p"); if(root)root.innerHTML=`Investigating saved source record <strong>#${esc(source.id)}</strong> · ${esc(source.filename)}. OCR evidence remains the source; property and parcel conclusions are reviewable.`;
       investigationPanel(d);
-      if(d.matches?.[0]?.property){
-        const p=d.matches[0].property, search=document.getElementById("search"), btn=document.getElementById("searchBtn"), key=p.survey_number||p.parcel_id||p.village||"";
-        if(search&&btn&&key){ search.value=key; btn.click(); }
-        const status=document.getElementById("mapStatus");
-        if(status) status.textContent=`Source #${source.id} · property match ${Math.round((d.matches[0].confidence||0)*100)}%`;
-      } else {
-        const status=document.getElementById("mapStatus");
-        if(status) status.textContent=`Source #${source.id} · property match requires review`;
-      }
-    }catch(e){
-      const status=document.getElementById("mapStatus");
-      if(status) status.textContent="Source record could not be resolved; manual property search is available.";
-    }
+      if(d.matches?.[0]?.property){ const p=d.matches[0].property, search=document.getElementById("search"), btn=document.getElementById("searchBtn"), key=p.survey_number||p.parcel_id||p.village||""; if(search&&btn&&key){search.value=key;btn.click();} const status=document.getElementById("mapStatus"); if(status)status.textContent=`Source #${source.id} · property match ${Math.round((d.matches[0].confidence||0)*100)}%`; }
+      else {const status=document.getElementById("mapStatus");if(status)status.textContent=`Source #${source.id} · property match requires review`;}
+    }catch(e){const status=document.getElementById("mapStatus");if(status)status.textContent="Source record could not be resolved; manual property search is available.";}
   }
-
-  function start(){ if(location.pathname==="/land-intelligence") hydrateLandPage(); else observeRecords(); }
-  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",start,{once:true}); else start();
+  function start(){if(location.pathname==="/land-intelligence")hydrateLandPage();else observeRecords();}
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",start,{once:true});else start();
 })();
