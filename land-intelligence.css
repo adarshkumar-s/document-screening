@@ -1,4 +1,4 @@
-:root {
+:root{
   --gov-navy: #0f2b48;
   --gov-navy-dark: #091a2c;
   --gov-blue: #1b4965;
@@ -474,7 +474,7 @@ textarea {
 }
 
 /* Workspace 3-Column Layout */
-.workspace {
+.workspace{
   display: grid;
   grid-template-columns: 320px minmax(440px, 1fr) 420px;
   gap: 16px;

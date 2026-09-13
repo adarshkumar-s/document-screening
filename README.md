@@ -85,14 +85,19 @@ Consequential AI actions are never executed from model output or legacy action t
 
 ### Authenticated production API
 
-- `GET /api/land/properties` — filtered/paginated property search.
+- `GET /api/land/properties` — authenticated filtered/paginated property search.
 - `GET /api/land/properties/{property_id}` — property intelligence, linked documents, neighbours, provenance and timeline.
+- `GET /api/land/search` — authenticated parcel search used by the investigation workspace.
 - `GET /api/land/geojson` — bounded parcel GeoJSON.
+- `GET /api/land/map/records` — map-ready property locations with explicit location status.
+- `GET /api/land/geography` and `GET /api/land/village-sheet` — district/taluka/village navigation and schematic village sheets.
 - `GET /api/land/resolve/document/{doc_id}` — resolve an existing uploaded document against controlled parcel data.
 - `GET /api/land/compare/{doc_id}/{property_id}` — neutral document/parcel comparison.
 - `GET /api/land/dashboard` — property intelligence metrics.
 - `GET /api/land/cases` and `GET /api/land/cases/{case_id}` — verification cases.
 - `POST /api/land/cases` — create a human verification case.
+- `POST /api/land/geocode` — rate-limited, cached village-level lookup with no fabricated fallback coordinates.
+- `POST`/`PUT`/`DELETE /api/land/properties/{property_id}/location` — audited exact-pin updates for verification officers and administrators.
 - `POST /api/land/import-geojson` — role-protected local GeoJSON import with size, feature-count and geometry validation.
 
 A match is never forced. Resolution statuses are `MATCH`, `POSSIBLE MATCH`, `NO MATCH`, and `INSUFFICIENT DATA`.

@@ -14,7 +14,7 @@ function authHeaders(extra={}){
 async function api(url){
   const r=await fetch(url,{headers:authHeaders({"Accept":"application/json"})});
   let data={}; try{data=await r.json()}catch(_){}
-  if(!r.ok) throw new Error(data.detail||data.error||(\"Request failed (\"+r.status+\")\"));
+  if(!r.ok) throw new Error(data.detail||data.error||("Request failed ("+r.status+")"));
   return data;
 }
 function setStatus(text){if($("mapStatus"))$("mapStatus").textContent=text}
@@ -146,10 +146,13 @@ function renderEvidence(data){
 async function selectParcel(id){
   try{loadingPanel("propertyPanel","Loading property intelligence…");const p=await api(API+"/properties/"+encodeURIComponent(id));state.selected=p;renderProperty(p);selectMapLayer(id);await focusMapProperty(id);const cmp=await api(API+"/compare/"+encodeURIComponent((p.documents||[])[0]?.document_id||"NONE")+"/"+encodeURIComponent(id)).catch(()=>({}));renderEvidence({documents:p.documents||[],findings:p.findings||[],tasks:p.tasks||[],comparison:cmp});}catch(e){notice(e.message||"Property could not be loaded.")}
 }
-async function loadGeo(){state.geo=await api(LAND_API+"/geojson");state.visibleFeatures=state.geo.features||[];renderParcels(state.visibleFeatures);renderVillageSheet(state.visibleFeatures)}
+async function loadGeo(){
+  try{state.geo=await api(LAND_API+"/geojson")}catch(_){state.geo=await api(API+"/geojson")}
+  state.visibleFeatures=state.geo.features||[];renderParcels(state.visibleFeatures);renderVillageSheet(state.visibleFeatures)
+}
 async function loadAll(){
   if(state.loading)return;state.loading=true;try{
-    const [m,s]=await Promise.all([api(API+"/dashboard"),api(API+"/scenarios")]);state.metrics=m;state.scenarios=s.scenarios||[];renderMetrics(m);renderScenarios();await loadGeo();await populateGeography();await loadCurrentUser();await loadMapLocations();setStatus("Map ready");
+    const [m,s]=await Promise.all([api(API+"/dashboard"),api(API+"/scenarios")]);state.metrics=m;state.scenarios=s.scenarios||[];renderMetrics(m);renderScenarios();await loadCurrentUser();await loadGeo();await populateGeography();await loadMapLocations();setStatus("Map ready");
   }catch(e){notice(e.message||"Land Intelligence could not be loaded.")}finally{state.loading=false}
 }
 async function runScenario(id){
