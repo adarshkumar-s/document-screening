@@ -16,14 +16,15 @@ app.include_router(ai_approval_router)
 app.include_router(land_bridge_router)
 app.include_router(land_fast_router)
 
-# Database/index setup happens before serving requests, never inside the hot path.
-ensure_property_indexes()
-ensure_store()
-threading.Thread(target=backfill, kwargs={"limit": 500}, daemon=True, name="land-identity-backfill").start()
+@app.on_event("startup")
+def initialize_land_intelligence():
+    # DDL is performed once before serving requests; HTTP handlers stay read/query only.
+    ensure_property_indexes()
+    ensure_store()
+    threading.Thread(target=backfill, kwargs={"limit": 500}, daemon=True, name="land-identity-backfill").start()
 
 LAND_INTELLIGENCE_SCRIPT = b'''<script>
 (function(){
-  function tokenHeaders(){try{var t=localStorage.getItem('lrtoken');return t?{Authorization:'Bearer '+t}:{};}catch(_){return {};}}
   function addLandActions(){
     ['#simpleDocTable','#simpleSubmissionsTable','#staffRecordsTable'].forEach(function(selector){
       var table=document.querySelector(selector); if(!table)return;
