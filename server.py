@@ -2214,7 +2214,23 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
 
         return doc_dict
 
-os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
+
+
+# Land Intelligence UI assets are served explicitly from the application root.
+# Keep these routes on the canonical server app so both main:app and server:app
+# resolve the same files without relying on static mounts or a fallback route.
+@app.get("/land-intelligence", include_in_schema=False)
+def land_intelligence_ui():
+    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"), media_type="text/html")
+
+@app.get("/land-intelligence.css", include_in_schema=False)
+def land_intelligence_css():
+    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.css"), media_type="text/css")
+
+@app.get("/land-intelligence.js", include_in_schema=False)
+def land_intelligence_js():
+    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.js"), media_type="application/javascript")
+\nos.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
 
