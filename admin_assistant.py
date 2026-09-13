@@ -742,7 +742,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
             return {"response":"Please include a property or parcel identifier, for example: 'Show property history for DEMO-PROP-103-A'.","records":[],"action_card":None}
         identifier=match.group(1)
         try:
-            from land_intelligence import _history_for_property
+            from mapping import _history_for_property
             with get_db_instance() as db:
                 row=db.execute("SELECT property_id FROM properties WHERE property_id=? OR parcel_id=? OR survey_number=?", (identifier,identifier,identifier)).fetchone()
             if not row:

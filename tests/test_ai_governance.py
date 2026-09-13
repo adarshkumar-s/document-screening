@@ -12,27 +12,6 @@ import ai_governance
 client = TestClient(main.app)
 
 
-def test_land_intelligence_assets_and_types():
-    checks = [
-        ("/land-intelligence", 200, "text/html"),
-        ("/land-intelligence.css", 200, "text/css"),
-        ("/land-intelligence.js", 200, "javascript"),
-    ]
-    for path, status, content_type in checks:
-        response = client.get(path)
-        assert response.status_code == status
-        assert content_type in response.headers.get("content-type", "").lower()
-    assert client.get("/land-intelligence.css").text.startswith(":root")
-    assert "LAND INTELLIGENCE" in client.get("/land-intelligence").text
-
-
-def test_demo_land_endpoints_are_available():
-    assert client.get("/api/demo-land/health").status_code == 200
-    properties = client.get("/api/demo-land/properties")
-    assert properties.status_code == 200
-    assert "properties" in properties.json()
-
-
 def test_ai_action_registry_is_closed():
     assert "REQUEST_REPROCESSING" in ai_governance.ACTION_REGISTRY
     assert "DROP_DATABASE" not in ai_governance.ACTION_REGISTRY
@@ -64,7 +43,7 @@ def test_create_verification_case_requires_admin_approval_and_executes_server_si
     old_db_path = server.DB_PATH
     server.DB_PATH = str(tmp_path / "governed-case.db")
     server.init_db()
-    from land_intelligence import _ensure_tables
+    from mapping import _ensure_tables
     _ensure_tables()
     with server.get_db() as db:
         db.execute(
@@ -113,12 +92,12 @@ def test_location_actions_are_registered_and_admin_governed():
 
 
 def test_location_proposal_requires_approval_before_execution(tmp_path):
-    import land_intelligence
+    import mapping
     import server
     old_db_path = server.DB_PATH
     server.DB_PATH = str(tmp_path / "ai-location-test.db")
     server.init_db()
-    land_intelligence._ensure_tables()
+    mapping._ensure_tables()
     with server.get_db() as db:
         admin = db.execute("SELECT id,full_name,email FROM users WHERE role='ADMIN' AND is_active=1 ORDER BY id LIMIT 1").fetchone()
     if not admin:
@@ -143,12 +122,12 @@ def test_location_proposal_requires_approval_before_execution(tmp_path):
 
 
 def test_ai_location_pin_command_creates_proposal_without_mutating_property(tmp_path):
-    import land_intelligence
+    import mapping
     import server
     old_db_path = server.DB_PATH
     server.DB_PATH = str(tmp_path / "assistant-location.db")
     server.init_db()
-    land_intelligence._ensure_tables()
+    mapping._ensure_tables()
     before = server.get_db()
     with before as db:
         row = db.execute("SELECT location_status,latitude,longitude FROM properties WHERE property_id='DEMO-PROP-103-A'").fetchone()

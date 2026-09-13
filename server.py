@@ -1373,7 +1373,7 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
             counts["mismatched"] += 1
             field_audits.append({"field":key,"label":label,"status":"MISMATCH","values":values_by_doc,"message":"Values do not match. Requires officer review."})
 
-    from land_intelligence import analyze_ownership_history
+    from mapping import analyze_ownership_history
     ownership_reasoning = analyze_ownership_history(records)
 
     # Ownership changes are not automatically conflicts. The deterministic ownership
@@ -1578,7 +1578,7 @@ def apply_ownership_review(document_id: str, property_id: Optional[str], parsed:
     if not property_id:
         return status_value, ai_payload, {"assessment": "INSUFFICIENT_DATA", "findings": [], "relationships": []}
     try:
-        from land_intelligence import analyze_ownership_history
+        from mapping import analyze_ownership_history
         with get_db() as db:
             rows = db.execute(
                 """SELECT d.* FROM property_documents pd JOIN documents d ON d.id=pd.document_id
@@ -1806,7 +1806,7 @@ async def process_sample(
 
     property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
     try:
-        from land_intelligence import _resolve
+        from mapping import _resolve
         property_resolution = _resolve(parsed["fields"])
         if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
             match_property = property_resolution["matches"][0]["property"]["property_id"]
@@ -1896,7 +1896,7 @@ async def process_upload(
 
     property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
     try:
-        from land_intelligence import _resolve
+        from mapping import _resolve
         property_resolution = _resolve(parsed["fields"])
         if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
             match_property = property_resolution["matches"][0]["property"]["property_id"]
@@ -2310,20 +2310,23 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
 
 
 
-# Land Intelligence UI assets are served explicitly from the application root.
-# Keep these routes on the canonical server app so both main:app and server:app
-# resolve the same files without relying on static mounts or a fallback route.
-@app.get("/land-intelligence", include_in_schema=False)
-def land_intelligence_ui():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"), media_type="text/html")
+# The map is a narrow, explicit UI surface on the canonical app. The rest of
+# the document-screening frontend remains owned by server.py and is unchanged.
+@app.get("/map", include_in_schema=False)
+def map_ui():
+    return FileResponse(os.path.join(BASE_DIR, "map.html"), media_type="text/html")
 
-@app.get("/land-intelligence.css", include_in_schema=False)
-def land_intelligence_css():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.css"), media_type="text/css")
+@app.get("/map.css", include_in_schema=False)
+def map_css():
+    return FileResponse(os.path.join(BASE_DIR, "map.css"), media_type="text/css")
 
-@app.get("/land-intelligence.js", include_in_schema=False)
-def land_intelligence_js():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.js"), media_type="application/javascript")
+@app.get("/map.js", include_in_schema=False)
+def map_js():
+    return FileResponse(os.path.join(BASE_DIR, "map.js"), media_type="application/javascript")
+
+@app.get("/portal-ui.js", include_in_schema=False)
+def portal_ui_js():
+    return FileResponse(os.path.join(BASE_DIR, "portal-ui.js"), media_type="application/javascript")
 
 os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
