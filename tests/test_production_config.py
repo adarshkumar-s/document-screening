@@ -13,6 +13,7 @@ def _production_import_env(**overrides):
     env["APP_ENV"] = "production"
     env.pop("JWT_SECRET", None)
     env.pop("ALLOWED_ORIGINS", None)
+    env.pop("ADMIN_ACTION_SECRET", None)
     env.update(overrides)
     return env
 
@@ -29,13 +30,13 @@ def _import_server(env):
 
 
 def test_production_import_requires_jwt_secret():
-    result = _import_server(_production_import_env(ALLOWED_ORIGINS="https://example.gov"))
+    result = _import_server(_production_import_env(ALLOWED_ORIGINS="https://example.gov", ADMIN_ACTION_SECRET="test-only-admin-secret"))
     assert result.returncode != 0
     assert "JWT_SECRET must be configured in production." in result.stderr
 
 
 def test_production_import_requires_allowed_origins():
-    result = _import_server(_production_import_env(JWT_SECRET="test-only-random-secret"))
+    result = _import_server(_production_import_env(JWT_SECRET="test-only-random-secret", ADMIN_ACTION_SECRET="test-only-admin-secret"))
     assert result.returncode != 0
     assert "ALLOWED_ORIGINS must be configured in production." in result.stderr
 
@@ -62,6 +63,15 @@ def test_production_accepts_multiple_http_https_origins():
         " https://records.example.gov, http://localhost:8000 ",
         production=True,
     ) == ["https://records.example.gov", "http://localhost:8000"]
+
+
+def test_production_import_requires_admin_action_secret():
+    result = _import_server(_production_import_env(
+        JWT_SECRET="test-only-random-secret",
+        ALLOWED_ORIGINS="https://records.example.gov",
+    ))
+    assert result.returncode != 0
+    assert "ADMIN_ACTION_SECRET must be configured in production." in result.stderr
 
 
 def test_production_import_succeeds_with_required_configuration():
