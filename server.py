@@ -1764,6 +1764,8 @@ async def process_sample(
     except Exception:
         property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
 
+    status_value, ai_payload, ownership_reasoning = apply_ownership_review(doc_id, property_resolution.get("property_id"), parsed, status_value, ai_payload)
+
     log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id}", doc_id)
     for correction in parsed["pipeline_meta"].get("corrections", []):
         log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
@@ -1850,6 +1852,8 @@ async def process_upload(
             property_resolution["property_id"] = match_property
     except Exception:
         property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
+
+    status_value, ai_payload, ownership_reasoning = apply_ownership_review(doc_id, property_resolution.get("property_id"), parsed, status_value, ai_payload)
 
     log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id}", doc_id)
     for correction in parsed["pipeline_meta"].get("corrections", []):
