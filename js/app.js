@@ -90,7 +90,23 @@ function routePortal(){
 }
 
 function showAuth(){ $('#authView').classList.remove('hidden'); $('#appShell').classList.add('hidden'); }
-function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); }
+function openDocumentDeepLink(){
+  const id = new URLSearchParams(window.location.search).get('open_document');
+  if(!id || !me) return;
+  // Let the existing portal route own the document/OCR/review experience.
+  window.setTimeout(()=>{
+    if(me.role === ROLE_VERIFICATION_OFFICER || me.role === ROLE_ADMIN){
+      switchStaffTab('review');
+      openStaffReview(id);
+    }else{
+      openSimpleDetail(id);
+    }
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('open_document');
+    window.history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : ''));
+  }, 0);
+}
+function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); openDocumentDeepLink(); }
 
 function doLogout(quiet){
   if(token && !quiet){ api('/api/auth/logout',{method:'POST'}).catch(()=>{}); }

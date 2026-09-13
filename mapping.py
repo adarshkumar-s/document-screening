@@ -839,6 +839,12 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
     validation = _parse_json(row["validation"], {}) if "validation" in row.keys() else {}
     if not isinstance(validation, dict):
         validation = {}
+    persisted_source = row["location_source"] if "location_source" in row.keys() else None
+    persisted_confidence = row["location_confidence"] if "location_confidence" in row.keys() else None
+    verified_by = row["location_verified_by"] if "location_verified_by" in row.keys() else None
+    verified_at = row["location_verified_at"] if "location_verified_at" in row.keys() else None
+    location_status = "EXACT_PIN" if has_exact_pin else ("VILLAGE_LEVEL" if village else "UNRESOLVED")
+    location_source = (persisted_source or "Authorised reviewer pin") if has_exact_pin else ("Document village fields; geocode on request" if village else None)
     item = {
         "id": row["id"],
         "filename": row["filename"],
@@ -860,18 +866,128 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
         "lon": float(lon) if lon is not None else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"] if "updated_at" in row.keys() else row["created_at"],
-        "location_status": "EXACT_PIN" if has_exact_pin else ("VILLAGE_LEVEL" if village else "UNRESOLVED"),
-        "location_source": "Authorised reviewer pin" if has_exact_pin else ("Cached village geocode" if village else None),
+        "location_status": location_status,
+        "location_state": "VERIFIED_LOCATION" if location_status == "EXACT_PIN" else ("APPROXIMATE_VILLAGE_LOCATION" if location_status == "VILLAGE_LEVEL" else "LOCATION_NOT_AVAILABLE"),
+        "location_label": "VERIFIED LOCATION" if location_status == "EXACT_PIN" else ("APPROXIMATE — VILLAGE LOCATION" if location_status == "VILLAGE_LEVEL" else "LOCATION NOT AVAILABLE"),
+        "location_source": location_source,
+        "location_confidence": float(persisted_confidence) if persisted_confidence is not None else None,
+        "location_verified_by": verified_by if has_exact_pin else None,
+        "location_verified_at": verified_at if has_exact_pin else None,
+        "location_reason": row["location_reason"] if "location_reason" in row.keys() else None,
+        "location_provenance": {
+            "status": location_status,
+            "source": location_source,
+            "confidence": float(persisted_confidence) if persisted_confidence is not None else None,
+            "verified_by": verified_by if has_exact_pin else None,
+            "verified_at": verified_at if has_exact_pin else None,
+            "query": None,
+        },
         "review_required": str(row["status"] or "").upper() not in {"APPROVED", "VERIFIED", "AUTO_APPROVED"},
         "validation_issues": len(validation.get("issues") or []) if isinstance(validation.get("issues"), list) else 0,
     }
     return item
 
 
+def _map_location_audit_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """Read reviewer/at metadata from the existing audit trail.
+
+    Document coordinates remain the only persisted document location fields.
+    Verification identity and time are intentionally derived from the existing
+    audit table rather than duplicated in the OCR document schema.
+    """
+    if not document_ids:
+        return {}
+    wanted = {str(value) for value in document_ids}
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT doc_id, ts, username, action, detail
+               FROM audit
+               WHERE action IN ('location_set', 'location_cleared')
+               ORDER BY ts DESC, id DESC"""
+        ).fetchall()
+    result: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        doc_id = str(row["doc_id"] or "")
+        if doc_id not in wanted or doc_id in result:
+            continue
+        result[doc_id] = {
+            "verified_by": row["username"] if row["action"] == "location_set" else None,
+            "verified_at": row["ts"] if row["action"] == "location_set" else None,
+            "action": row["action"],
+            "detail": row["detail"],
+        }
+    return result
+
+
+def _map_property_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """Return explicitly linked reference geometry without making it authoritative.
+
+    A property link is intentionally kept separate from a document's exact pin:
+    synthetic/reference geometry must never turn an unresolved document into a
+    verified parcel location.
+    """
+    if not document_ids:
+        return {}
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT pd.document_id, p.*
+               FROM property_documents pd
+               JOIN properties p ON p.property_id = pd.property_id
+               ORDER BY pd.linked_at DESC"""
+        ).fetchall()
+    result: Dict[str, Dict[str, Any]] = {}
+    wanted = {str(value) for value in document_ids}
+    for row in rows:
+        document_id = str(row["document_id"])
+        if document_id in wanted and document_id not in result:
+            result[document_id] = _property_dict(row)
+    return result
+
+
 def _map_visible_records(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     with get_db() as db:
         rows = db.execute("SELECT * FROM documents ORDER BY created_at DESC LIMIT 10000").fetchall()
-    return [_map_document_item(row) for row in rows if _map_document_visible(row, user)]
+    visible = [row for row in rows if _map_document_visible(row, user)]
+    records = [_map_document_item(row) for row in visible]
+    document_ids = [str(record["id"]) for record in records]
+    audit_context = _map_location_audit_context(document_ids)
+    property_context = _map_property_context(document_ids)
+    for record in records:
+        audit_item = audit_context.get(str(record["id"]))
+        has_coordinates = record.get("lat") is not None and record.get("lon") is not None
+        record["location_audit_available"] = bool(audit_item)
+        record["location_provenance"]["audit_available"] = bool(audit_item)
+        if has_coordinates:
+            if audit_item and audit_item.get("action") == "location_set":
+                record["location_verified_by"] = audit_item.get("verified_by")
+                record["location_verified_at"] = audit_item.get("verified_at")
+                detail = str(audit_item.get("detail") or "")
+                record["location_reason"] = detail.split(" Reason: ", 1)[1] if " Reason: " in detail else None
+                record["location_provenance"].update({
+                    "verified_by": record["location_verified_by"],
+                    "verified_at": record["location_verified_at"],
+                })
+        property_item = property_context.get(str(record["id"]))
+        if not property_item:
+            record["reference_geometry"] = None
+            record["reference_property"] = None
+            continue
+        record["reference_geometry"] = property_item.get("geometry")
+        record["reference_property"] = {
+            "property_id": property_item.get("property_id"),
+            "parcel_id": property_item.get("parcel_id"),
+            "survey_number": property_item.get("survey_number"),
+            "sub_division": property_item.get("sub_division"),
+            "area": property_item.get("area"),
+            "area_unit": property_item.get("area_unit"),
+            "geometry_source": property_item.get("geometry_source"),
+            "geometry_confidence": property_item.get("geometry_confidence"),
+            "data_source": property_item.get("data_source"),
+            "location": property_item.get("location"),
+            "synthetic": "synthetic" in str(property_item.get("data_source") or "").casefold()
+                or "synthetic" in str(property_item.get("geometry_source") or "").casefold(),
+        }
+    return records
 
 
 def _map_record_matches(record: Dict[str, Any], *, q: str = "", district: str = "", tehsil: str = "", village: str = "", status: str = "", location: str = "") -> bool:
@@ -891,11 +1007,18 @@ def _map_summary(records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     statuses = {"EXACT_PIN": 0, "VILLAGE_LEVEL": 0, "UNRESOLVED": 0}
     for record in records:
         statuses[record.get("location_status") or "UNRESOLVED"] = statuses.get(record.get("location_status") or "UNRESOLVED", 0) + 1
+    total = len(records)
+    exact = statuses.get("EXACT_PIN", 0)
     return {
-        "records": len(records),
-        "exact_pins": statuses.get("EXACT_PIN", 0),
+        "records": total,
+        "exact_pins": exact,
         "village_level": statuses.get("VILLAGE_LEVEL", 0),
         "unresolved": statuses.get("UNRESOLVED", 0),
+        # Coverage is based only on persisted, reviewer-set coordinates. A
+        # village name or a reference polygon is not counted as an exact map.
+        "mapped_records": exact,
+        "mapped_percent": round((exact / total) * 100, 1) if total else 0.0,
+        "location_coverage_percent": round((exact / total) * 100, 1) if total else 0.0,
         "review_required": sum(1 for record in records if record.get("review_required")),
         "approved": sum(1 for record in records if not record.get("review_required")),
         "villages": len({normalise for normalise in (_normalise(record.get("village")) for record in records) if normalise}),
@@ -945,6 +1068,52 @@ def map_summary(user: Dict[str, Any] = Depends(get_current_user)):
     return {"summary": _map_summary(records), "metadata": {"authoritative": False}}
 
 
+@map_router.get("/properties")
+def map_properties(
+    village: str = Query("", max_length=200),
+    tehsil: str = Query("", max_length=200),
+    district: str = Query("", max_length=200),
+    survey: str = Query("", max_length=120),
+    limit: int = Query(500, ge=1, le=5000),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return explicitly stored reference geometry for the Village Sheet.
+
+    The response is deliberately labelled non-authoritative.  These records
+    are useful for orientation and comparison only; they are never presented
+    as legal cadastral boundaries or as a substitute for a document pin.
+    """
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM properties ORDER BY village, survey_number, property_id LIMIT 5000").fetchall()
+    filtered = []
+    for row in rows:
+        if village and _normalise(row["village"]) != _normalise(village):
+            continue
+        if tehsil and _normalise(row["taluka"]) != _normalise(tehsil):
+            continue
+        if district and _normalise(row["district"]) != _normalise(district):
+            continue
+        if survey and _land_number(survey).casefold() not in _land_number(row["survey_number"]).casefold():
+            continue
+        item = _property_dict(row)
+        item["synthetic"] = (
+            "synthetic" in str(item.get("data_source") or "").casefold()
+            or "synthetic" in str(item.get("geometry_source") or "").casefold()
+        )
+        item["authoritative"] = False
+        item["disclaimer"] = "Reference geometry only; not an authoritative cadastral boundary or legal title."
+        filtered.append(item)
+    return {
+        "properties": filtered[:limit],
+        "total": len(filtered),
+        "metadata": {
+            "authoritative": False,
+            "source": "Project-owned reference geometry",
+            "disclaimer": "Reference geometry only; not an authoritative cadastral boundary or legal title.",
+        },
+    }
+
+
 @map_router.get("/export.csv")
 def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
     """Download a review-friendly map register without exposing hidden records."""
@@ -953,7 +1122,8 @@ def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
     writer = csv.DictWriter(output, fieldnames=(
         "id", "filename", "doc_type", "status", "owner", "survey", "khasra", "khata", "plot",
         "area", "village", "tehsil", "district", "state", "year", "lat", "lon",
-        "location_status", "location_source", "review_required"), extrasaction="ignore")
+        "location_status", "location_state", "location_label", "location_source", "location_confidence",
+        "location_verified_by", "location_verified_at", "location_audit_available", "review_required"), extrasaction="ignore")
     writer.writeheader()
     writer.writerows(_map_visible_records(user))
     return Response(content=output.getvalue(), media_type="text/csv; charset=utf-8", headers={
@@ -971,18 +1141,32 @@ def map_set_document_location(
     """Set or clear an exact document pin with an audit event."""
     raw_lat = payload.get("lat", payload.get("latitude"))
     raw_lon = payload.get("lon", payload.get("longitude"))
+    reason = str(payload.get("reason") or "").strip()[:500]
     if (raw_lat is None) != (raw_lon is None):
         raise HTTPException(status_code=400, detail="lat and lon must be supplied together (or both be null).")
+    actor = user.get("full_name", user.get("email", "user"))
+    changed_at = _now()
     with get_db() as db:
         row = db.execute("SELECT id, lat, lon FROM documents WHERE id=?", (doc_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Record not found.")
         previous = (row["lat"], row["lon"])
         if raw_lat is None:
-            db.execute("UPDATE documents SET lat=NULL, lon=NULL, updated_at=? WHERE id=?", (_now(), doc_id))
+            db.execute(
+                "UPDATE documents SET lat=NULL, lon=NULL, updated_at=? WHERE id=?",
+                (changed_at, doc_id),
+            )
             detail = "Document GIS pin cleared; previous coordinates were (%s, %s)." % previous
+            if reason:
+                detail += " Reason: %s" % reason
             action = "location_cleared"
-            result = {"ok": True, "lat": None, "lon": None}
+            result = {
+                "ok": True, "lat": None, "lon": None,
+                "location_status": "LOCATION_NOT_AVAILABLE",
+                "location_source": None,
+                "location_verified_by": None,
+                "location_verified_at": None,
+            }
         else:
             try:
                 latitude, longitude = float(raw_lat), float(raw_lon)
@@ -990,11 +1174,22 @@ def map_set_document_location(
                 raise HTTPException(status_code=400, detail="lat/lon must be numbers (or null to clear).")
             if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
                 raise HTTPException(status_code=400, detail="lat must be -90..90 and lon -180..180.")
-            db.execute("UPDATE documents SET lat=?, lon=?, updated_at=? WHERE id=?", (latitude, longitude, _now(), doc_id))
+            db.execute(
+                "UPDATE documents SET lat=?, lon=?, updated_at=? WHERE id=?",
+                (latitude, longitude, changed_at, doc_id),
+            )
             detail = "Document GIS pin changed from (%s, %s) to (%.6f, %.6f)." % (previous[0], previous[1], latitude, longitude)
+            if reason:
+                detail += " Reason: %s" % reason
             action = "location_set"
-            result = {"ok": True, "lat": latitude, "lon": longitude}
-    log_audit(user.get("full_name", user.get("email", "user")), action, detail, doc_id)
+            result = {
+                "ok": True, "lat": latitude, "lon": longitude,
+                "location_status": "VERIFIED_LOCATION",
+                "location_source": "Authorised reviewer pin",
+                "location_verified_by": actor,
+                "location_verified_at": changed_at,
+            }
+    log_audit(actor, action, detail, doc_id)
     return result
 
 
@@ -1024,6 +1219,7 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
             "lat": cached_row["latitude"],
             "lon": cached_row["longitude"],
             "display_name": cached_row["display_name"],
+            "source": "Nominatim persistent cache",
         }
         _map_geocode_cache[key] = {**cached_result, "_cached_at": _now()}
         return {**cached_result, "cached": True}
@@ -1050,7 +1246,7 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
     else:
         latitude, longitude = _number(data[0].get("lat")), _number(data[0].get("lon"))
         result = {"query": query, "lat": latitude, "lon": longitude,
-                  "display_name": data[0].get("display_name"), "cached": False}
+                  "display_name": data[0].get("display_name"), "source": "Nominatim", "cached": False}
     _map_geocode_cache[key] = {**{k: v for k, v in result.items() if k != "cached"}, "_cached_at": _now()}
     # Persist only valid coordinate results in the shared cache. An unresolved
     # network response should be retried later rather than frozen indefinitely.
@@ -1067,6 +1263,11 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
 
 def _history_item(row: Any) -> Dict[str, Any]:
     item = _map_document_item(row)
+    audit_item = _map_location_audit_context([str(item["id"])]).get(str(item["id"]))
+    if item["lat"] is not None and item["lon"] is not None and audit_item and audit_item.get("action") == "location_set":
+        item["location_verified_by"] = audit_item.get("verified_by")
+        item["location_verified_at"] = audit_item.get("verified_at")
+    item["location_audit_available"] = bool(audit_item)
     return {
         "id": item["id"], "filename": item["filename"], "doc_type": item["doc_type"],
         "status": item["status"], "owner": item["owner"], "father": item["father"],
@@ -1074,6 +1275,10 @@ def _history_item(row: Any) -> Dict[str, Any]:
         "area": item["area"], "village": item["village"], "tehsil": item["tehsil"],
         "district": item["district"], "state": item["state"], "year": item["year"],
         "lat": item["lat"], "lon": item["lon"], "location_status": item["location_status"],
+        "location_state": item["location_state"], "location_label": item["location_label"],
+        "location_source": item["location_source"], "location_confidence": item["location_confidence"],
+        "location_verified_by": item.get("location_verified_by"), "location_verified_at": item.get("location_verified_at"),
+        "location_audit_available": item["location_audit_available"],
         "created_at": item["created_at"],
     }
 

@@ -111,6 +111,80 @@ def test_exact_document_pin_is_rbac_protected_and_audited():
     assert "location_set" in actions and "location_cleared" in actions
 
 
+def test_location_states_provenance_and_real_coverage_metrics():
+    village_id = "MAP-STATE-VILLAGE-" + uuid.uuid4().hex[:8]
+    unresolved_id = "MAP-STATE-NONE-" + uuid.uuid4().hex[:8]
+    exact_id = "MAP-STATE-EXACT-" + uuid.uuid4().hex[:8]
+    _insert_document(village_id, village="Sundarpur State Test", lat=None, lon=None)
+    _insert_document(unresolved_id, village="", lat=None, lon=None)
+    _insert_document(exact_id, village="Sundarpur State Test", lat=28.62, lon=77.10)
+    headers = _make_user("VERIFICATION_OFFICER")
+    payload = client.get("/api/map/records", headers=headers).json()
+    records = {record["id"]: record for record in payload["records"]}
+    assert records[village_id]["location_status"] == "VILLAGE_LEVEL"
+    assert records[village_id]["location_label"] == "APPROXIMATE — VILLAGE LOCATION"
+    assert records[village_id]["lat"] is None and records[village_id]["lon"] is None
+    assert records[village_id]["location_confidence"] is None
+    assert records[unresolved_id]["location_status"] == "UNRESOLVED"
+    assert records[unresolved_id]["location_label"] == "LOCATION NOT AVAILABLE"
+    assert records[exact_id]["location_label"] == "VERIFIED LOCATION"
+    assert records[exact_id]["location_confidence"] is None
+    summary = payload["metadata"]["summary"]
+    assert summary["records"] >= 3
+    assert summary["mapped_records"] >= 1
+    assert 0 < summary["mapped_percent"] <= 100
+
+    updated = client.put(
+        f"/api/map/records/{village_id}/location", headers=headers,
+        json={"lat": 28.6212345, "lon": 77.1012345, "reason": "Compared with signed location note"},
+    )
+    assert updated.status_code == 200
+    refreshed = client.get("/api/map/records", headers=headers).json()
+    record = next(item for item in refreshed["records"] if item["id"] == village_id)
+    assert record["location_label"] == "VERIFIED LOCATION"
+    assert record["location_verified_by"] == "Map Reviewer"
+    assert record["location_verified_at"]
+    assert record["location_audit_available"] is True
+    assert record["location_confidence"] is None
+
+
+def test_reference_geometry_is_explicitly_non_authoritative():
+    headers = _make_user("VIEWER")
+    response = client.get("/api/map/properties?village=Demo%20Village", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["metadata"]["authoritative"] is False
+    assert "not an authoritative cadastral boundary" in data["metadata"]["disclaimer"]
+    assert data["properties"]
+    assert all(item["authoritative"] is False for item in data["properties"])
+    assert all(item["synthetic"] is True for item in data["properties"])
+
+
+def test_mapping_does_not_geocode_every_village_on_initial_load():
+    js = client.get("/map.js").text
+    assert "geocodeVillages();" not in js
+    assert "No exact parcel coordinate is being created" in js
+    assert "portfolioMapVillageCache" in js
+    html = client.get("/map").text
+    assert "Map tiles unavailable" in html
+    assert "offline schematic" in html.lower()
+    assert "Open document" in js
+    assert "openHistory" in js
+
+
+def test_history_exposes_location_state_without_replacing_existing_fields():
+    doc_id = "MAP-HISTORY-LOCATION-" + uuid.uuid4().hex[:8]
+    _insert_document(doc_id, village="History Location Village")
+    headers = _make_user("VERIFICATION_OFFICER")
+    client.put(f"/api/map/records/{doc_id}/location", headers=headers, json={"lat": 28.63, "lon": 77.11})
+    response = client.get(f"/api/documents/{doc_id}/history", headers=headers)
+    assert response.status_code == 200
+    current = next(item for item in response.json()["items"] if item["id"] == doc_id)
+    assert current["location_status"] == "EXACT_PIN"
+    assert current["location_label"] == "VERIFIED LOCATION"
+    assert current["location_verified_by"] == "Map Reviewer"
+
+
 def test_history_includes_current_record_and_transfer_aware_reasoning():
     _insert_document("MAP-HISTORY-2019", owner="Ram Singh", year="2019")
     _insert_document("MAP-HISTORY-2023", owner="Kamla Devi", year="2023")

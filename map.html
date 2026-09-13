@@ -48,10 +48,11 @@
       </div>
       <div id="mapStats" class="map-stats" aria-live="polite">
         <div class="stat-card"><span class="stat-label">VISIBLE RECORDS</span><strong id="statRecords">—</strong></div>
-        <div class="stat-card exact-stat"><span class="stat-label">EXACT PINS</span><strong id="statExact">—</strong></div>
+        <div class="stat-card coverage-stat"><span class="stat-label">LOCATION COVERAGE</span><strong id="statMapped">—</strong><small id="statMappedDetail">Persisted exact locations</small></div>
+        <div class="stat-card exact-stat"><span class="stat-label">VERIFIED LOCATIONS</span><strong id="statExact">—</strong></div>
         <div class="stat-card village-stat"><span class="stat-label">VILLAGE APPROX.</span><strong id="statVillage">—</strong></div>
         <div class="stat-card review-stat"><span class="stat-label">REVIEW QUEUE</span><strong id="statReview">—</strong></div>
-        <div class="stat-context"><span id="statContext">Loading map coverage…</span></div>
+        <div class="stat-context"><span id="statContext">Loading map coverage…</span><span id="statUnresolved" class="stat-unresolved"></span></div>
       </div>
 
       <div id="mapSheetView" class="sheet-view" role="tabpanel">
@@ -76,6 +77,17 @@
             <span id="sheetSubheader" class="muted">Select a village to see document-grounded plots.</span>
           </div>
           <span class="schematic-chip">▦ Schematic · no internet required</span>
+        </div>
+        <div id="sheetReferencePanel" class="reference-panel">
+          <div class="reference-head">
+            <div><span class="section-kicker">ORIENTATION LAYER</span><strong>Reference geometry and neighbouring plots</strong></div>
+            <span id="referenceGeometryStatus" class="reference-status">Loading reference layer…</span>
+          </div>
+          <div class="reference-canvas-wrap">
+            <svg id="sheetGeometrySvg" class="sheet-geometry" viewBox="0 0 900 240" role="img" aria-label="Reference-only village plot orientation"></svg>
+            <div class="orientation-key" aria-label="Orientation key"><span><i class="north-arrow">↑</i> North</span><span><i class="orientation-line"></i> Reference orientation</span></div>
+          </div>
+          <p class="reference-disclaimer"><strong>Non-authoritative cadastral reference.</strong> Shapes, survey labels, confidence, and neighbouring relationships are project-owned reference geometry only. They do not establish legal title, possession, or an official boundary.</p>
         </div>
         <div class="sheet-layout">
           <div id="sheetGrid" class="sheet-grid" aria-live="polite">
@@ -105,9 +117,9 @@
           <label class="filter-picker">Location
             <select id="mapLocationFilter">
               <option value="">All locations</option>
-              <option value="EXACT_PIN">Exact pins</option>
-              <option value="VILLAGE_LEVEL">Village approximate</option>
-              <option value="UNRESOLVED">Unresolved</option>
+              <option value="EXACT_PIN">Verified location</option>
+              <option value="VILLAGE_LEVEL">Approximate — village location</option>
+              <option value="UNRESOLVED">Location not available</option>
             </select>
           </label>
           <label class="filter-picker">Review status
@@ -122,7 +134,7 @@
           </label>
           <button id="exportMapBtn" class="btn ghost export-btn" type="button">⇩ Export CSV</button>
           <button id="fitRecordsBtn" class="btn ghost export-btn" type="button">⌖ Fit to records</button>
-          <label id="pinModeLabel" class="pin-toggle"><input id="mapPinMode" type="checkbox"> <span>📍 Set exact pin</span></label>
+          <label id="pinModeLabel" class="pin-toggle"><input id="mapPinMode" type="checkbox"> <span>📍 Set verified location</span></label>
           <span id="mapRegionStatus" class="toolbar-count" aria-live="polite"></span>
           <span id="mapCount" class="toolbar-count"></span>
         </div>
@@ -130,6 +142,9 @@
           <aside class="record-sidebar">
             <div class="sidebar-head"><span>RECORDS</span><span id="mapListCount">0</span></div>
             <div id="mapList" class="record-list"><div class="empty-state">Loading…</div></div>
+            <section id="selectedRecordPanel" class="selected-record-panel" aria-live="polite">
+              <div class="empty-state">Select a record to keep its document, location, and history in view.</div>
+            </section>
           </aside>
           <div class="map-stage">
             <div id="map" aria-label="Land record map"></div>

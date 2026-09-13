@@ -16,9 +16,13 @@
     selectedId: null,
     historyId: null,
     villageCache: {},
+    properties: [],
+    referenceKey: '',
+    referenceLoading: false,
     map: null,
     markers: null,
     markerById: new Map(),
+    referenceMapLayer: null,
     tileLayer: null,
     // Use the global Humanitarian OSM style first. The direct OSM endpoint
     // can block hosted applications for policy reasons, and Esri can return
@@ -62,6 +66,9 @@
   const TILE_SOURCE_STORAGE_KEY = 'documentScreeningMapTileSource';
   const LEGACY_TILE_SOURCE_STORAGE_KEY = 'portfolioMapTileSource';
   const TILE_FALLBACK_ORDER = ['osmhot', 'esri', 'topo', 'osm', 'schematic'];
+  // UI copy intentionally retains the familiar "set exact pin" wording for
+  // existing integrations and accessibility checks; the state label is now
+  // presented as VERIFIED LOCATION to users.
 
   class ApiError extends Error {
     constructor(status, message) { super(message); this.status = status; }
@@ -131,6 +138,62 @@
     return null;
   }
 
+  function locationState(record) {
+    if (coordinatePair(record.lat, record.lon)) return 'VERIFIED_LOCATION';
+    if (record.location_status === 'VILLAGE_LEVEL' || record.village) return 'APPROXIMATE — VILLAGE LOCATION';
+    return 'LOCATION NOT AVAILABLE';
+  }
+
+  function locationShortLabel(record) {
+    const stateLabel = locationState(record);
+    if (stateLabel === 'VERIFIED_LOCATION') return 'Verified location';
+    if (stateLabel === 'APPROXIMATE — VILLAGE LOCATION') return recordCoordinate(record) ? 'Village approximate' : 'Village location · resolve';
+    return 'Location not available';
+  }
+
+  function locationBadge(record) {
+    const stateLabel = locationState(record);
+    if (stateLabel === 'VERIFIED_LOCATION') return '<span class="record-badge exact">Verified location</span>';
+    if (stateLabel === 'APPROXIMATE — VILLAGE LOCATION') return `<span class="record-badge village">${recordCoordinate(record) ? 'Village approximate' : 'Village location'}</span>`;
+    return '<span class="record-badge unresolved">Location not available</span>';
+  }
+
+  function formatTimestamp(value) {
+    if (value == null || value === '') return 'Not available';
+    const numeric = Number(value);
+    const date = Number.isFinite(numeric) ? new Date(numeric < 100000000000 ? numeric * 1000 : numeric) : new Date(value);
+    return Number.isNaN(date.getTime()) ? text(value, 'Not available') : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
+  function locationProvenance(record) {
+    const exact = coordinatePair(record.lat, record.lon);
+    const cached = state.villageCache[villageKey(record)];
+    const approximate = !exact && coordinatePair(cached?.lat, cached?.lon) ? cached : null;
+    const stateLabel = locationState(record);
+    let source = record.location_source || 'Not available';
+    let query = 'Not applicable';
+    let coords = 'Not available';
+    let confidence = 'Not supplied by backend';
+    let verified = 'Not applicable';
+    if (exact) {
+      coords = `${exact.lat.toFixed(7)}, ${exact.lon.toFixed(7)}`;
+      confidence = record.location_confidence != null ? String(record.location_confidence) : 'Not supplied by backend';
+      verified = `${text(record.location_verified_by, 'Authorised reviewer not recorded')} · ${formatTimestamp(record.location_verified_at)}`;
+    } else if (approximate) {
+      source = cached.source || 'Nominatim village geocode';
+      query = cached.query || villageLabel(record) || 'Village query not available';
+      coords = `${approximate.lat.toFixed(7)}, ${approximate.lon.toFixed(7)}`;
+      confidence = 'Not supplied by backend';
+    } else if (stateLabel === 'APPROXIMATE — VILLAGE LOCATION') {
+      source = record.location_source || 'Document village fields';
+      query = villageLabel(record) || 'Village query not available';
+    }
+    const audit = exact
+      ? (record.location_audit_available === false ? 'No matching location audit event found' : 'Available · exact-pin changes emit an audit event')
+      : 'No location-change audit event for this record';
+    return { stateLabel, source, query, coords, confidence, verified, audit };
+  }
+
   function loadCache() {
     try {
       const raw = JSON.parse(window.localStorage.getItem('portfolioMapVillageCache') || '{}');
@@ -174,8 +237,14 @@
     $('statExact').textContent = value('exact_pins');
     $('statVillage').textContent = value('village_level');
     $('statReview').textContent = value('review_required');
+    const mapped = $('statMapped');
+    if (mapped) mapped.textContent = state.summary.mapped_percent != null ? `${value('mapped_percent')}%` : '—';
+    const mappedDetail = $('statMappedDetail');
+    if (mappedDetail) mappedDetail.textContent = `${value('mapped_records')} of ${value('records')} persisted exact`;
     const context = $('statContext');
     if (context) context.textContent = `${value('villages')} villages · ${value('districts')} districts · ${value('surveys')} survey numbers`;
+    const unresolved = $('statUnresolved');
+    if (unresolved) unresolved.textContent = `${value('unresolved')} without a usable location`;
   }
 
   function sortedUnique(values) {
@@ -250,6 +319,95 @@
     return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true, sensitivity: 'base' }));
   }
 
+  function propertyRings(geometry) {
+    if (!geometry || !Array.isArray(geometry.coordinates)) return [];
+    if (geometry.type === 'Polygon') return geometry.coordinates.filter((ring) => Array.isArray(ring));
+    if (geometry.type === 'MultiPolygon') return geometry.coordinates.flatMap((polygon) => Array.isArray(polygon) ? polygon : []);
+    return [];
+  }
+
+  function renderReferenceGeometry() {
+    const svg = $('sheetGeometrySvg');
+    const status = $('referenceGeometryStatus');
+    if (!svg) return;
+    const properties = state.properties.filter((property) => property.geometry && property.geometry.coordinates);
+    if (!properties.length) {
+      svg.innerHTML = '<text x="450" y="120" text-anchor="middle" class="svg-empty">No stored reference geometry for this village.</text>';
+      if (status) status.textContent = 'No reference geometry';
+      return;
+    }
+    const rings = properties.flatMap((property) => propertyRings(property.geometry));
+    const coordinates = rings.flatMap((ring) => ring.map((point) => [Number(point[0]), Number(point[1])]).filter((point) => point.every(Number.isFinite)));
+    if (!coordinates.length) {
+      svg.innerHTML = '<text x="450" y="120" text-anchor="middle" class="svg-empty">Reference geometry could not be drawn.</text>';
+      if (status) status.textContent = 'Geometry unavailable';
+      return;
+    }
+    const lons = coordinates.map((point) => point[0]);
+    const lats = coordinates.map((point) => point[1]);
+    const minLon = Math.min(...lons); const maxLon = Math.max(...lons);
+    const minLat = Math.min(...lats); const maxLat = Math.max(...lats);
+    const lonSpan = Math.max(maxLon - minLon, 0.0001); const latSpan = Math.max(maxLat - minLat, 0.0001);
+    const project = (point) => [35 + ((Number(point[0]) - minLon) / lonSpan) * 830, 210 - ((Number(point[1]) - minLat) / latSpan) * 175];
+    const selected = normalise($('plotInfo')?.dataset.selected || '');
+    const shapes = properties.map((property) => {
+      const propertyKey = text(property.survey_number || property.parcel_id || property.property_id, 'Reference plot');
+      const plotKey = normalise(propertyKey);
+      const active = selected && (selected === plotKey || selected.startsWith(plotKey));
+      const path = propertyRings(property.geometry).map((ring) => ring.map(project).map((point) => point.join(',')).join(' ')).map((points) => `<polygon points="${esc(points)}" class="reference-polygon${active ? ' active' : ''}" data-reference-property="${esc(property.property_id || property.parcel_id || '')}" tabindex="0"></polygon>`).join('');
+      const allPoints = propertyRings(property.geometry).flatMap((ring) => ring.map(project));
+      const center = allPoints.length ? [allPoints.reduce((sum, point) => sum + point[0], 0) / allPoints.length, allPoints.reduce((sum, point) => sum + point[1], 0) / allPoints.length] : [0, 0];
+      return `${path}<text x="${center[0]}" y="${center[1]}" class="reference-label">${esc(propertyKey)}${property.sub_division ? `/${esc(property.sub_division)}` : ''}</text>`;
+    }).join('');
+    svg.innerHTML = `<rect x="0" y="0" width="900" height="240" class="svg-watermark"></rect>${shapes}<text x="18" y="28" class="svg-north">N ↑</text>`;
+    svg.querySelectorAll('[data-reference-property]').forEach((shape) => {
+      const activate = () => {
+        const property = properties.find((item) => String(item.property_id || item.parcel_id) === String(shape.dataset.referenceProperty));
+        const matching = property && groupedPlots(selectedSheetRecords()).find((plot) => normalise(plot.key) === normalise(property.survey_number || property.parcel_id));
+        if (matching) selectPlot(matching.key);
+        else setNotice(`<strong>Reference plot ${esc(property?.survey_number || property?.parcel_id || 'geometry')} selected.</strong> No screened document record is linked to this reference shape.`, 'info');
+      };
+      shape.addEventListener('click', activate);
+      shape.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } });
+    });
+    if (status) status.textContent = `${properties.length} reference plot${properties.length === 1 ? '' : 's'} · orientation only`;
+  }
+
+  async function loadReferenceProperties() {
+    const village = $('sheetVillage')?.value || '';
+    const tehsil = $('sheetTehsil')?.value || '';
+    const district = $('sheetDistrict')?.value || '';
+    const key = [district, tehsil, village].map(normalise).join('|');
+    if (!village) {
+      state.properties = [];
+      state.referenceKey = key;
+      if ($('referenceGeometryStatus')) $('referenceGeometryStatus').textContent = 'Select a village for reference geometry';
+      renderReferenceGeometry();
+      return;
+    }
+    if (state.referenceKey === key) {
+      if (!state.referenceLoading) renderReferenceGeometry();
+      return;
+    }
+    state.referenceKey = key;
+    state.referenceLoading = true;
+    if ($('referenceGeometryStatus')) $('referenceGeometryStatus').textContent = 'Loading reference layer…';
+    try {
+      const params = new URLSearchParams({ village });
+      if (tehsil) params.set('tehsil', tehsil);
+      if (district) params.set('district', district);
+      const response = await api(`/api/map/properties?${params.toString()}`);
+      state.properties = Array.isArray(response.properties) ? response.properties : [];
+    } catch (error) {
+      state.properties = [];
+      if ($('referenceGeometryStatus')) $('referenceGeometryStatus').textContent = 'Reference layer unavailable';
+      setNotice(`<strong>Reference geometry unavailable.</strong> ${esc(error.message)} Document records remain unchanged.`, 'warn');
+    } finally {
+      state.referenceLoading = false;
+      renderReferenceGeometry();
+    }
+  }
+
   function loadVillageSheet() {
     const records = selectedSheetRecords();
     const village = $('sheetVillage')?.value || '';
@@ -260,6 +418,7 @@
     $('sheetSubheader').textContent = `${records.length} document record${records.length === 1 ? '' : 's'} grouped into ${groupedPlots(records).length} plot${groupedPlots(records).length === 1 ? '' : 's'}.`;
     const grid = $('sheetGrid');
     const plots = groupedPlots(records);
+    loadReferenceProperties();
     const searchStatus = $('plotSearchStatus');
     const query = String($('sheetPlotSearch')?.value || '').trim();
     if (searchStatus) {
@@ -299,18 +458,23 @@
     info.dataset.selected = group.key;
     $('sheetGrid').querySelectorAll('.plot-card').forEach((button) => button.classList.toggle('active', normalise(button.dataset.plotKey) === normalise(group.key)));
     const first = group.records[0];
+    state.selectedId = first.id;
+    renderSelectedRecord();
     const nearby = plots.filter((plot) => plot !== group).slice(0, 4);
-    const recordsHtml = group.records.map((record) => `<div class="plot-record"><div><strong>${esc(record.filename || `Record ${record.id}`)}</strong><br><span class="muted">${esc(record.status || 'Pending review')} · ${esc(record.doc_type || 'Land Record')}</span></div><div class="plot-actions"><button type="button" data-history-id="${esc(record.id)}">History</button><button type="button" data-map-id="${esc(record.id)}">Map</button></div></div>`).join('');
+    const recordsHtml = group.records.map((record) => `<div class="plot-record"><div><strong>${esc(record.filename || `Record ${record.id}`)}</strong><br><span class="muted">${esc(record.status || 'Pending review')} · ${esc(record.doc_type || 'Land Record')} · ${esc(locationShortLabel(record))}</span></div><div class="plot-actions"><button type="button" data-open-id="${esc(record.id)}">Open</button><button type="button" data-history-id="${esc(record.id)}">History</button><button type="button" data-map-id="${esc(record.id)}">Map</button></div></div>`).join('');
     const nearbyHtml = nearby.length ? `<div class="info-kicker">NEIGHBOURING PLOTS</div>${nearby.map((plot) => `<button class="nearby-plot" data-nearby-plot="${esc(plot.key)}" type="button">${esc(plot.key)} <span>${esc(plot.records[0].owner || '—')}</span></button>`).join('')}` : '';
     info.classList.remove('empty-state');
     info.innerHTML = `<h3>Plot ${esc(group.key)}</h3>
       <div class="info-row"><div class="info-kicker">HOLDER / OWNER</div><div class="info-value">${esc(group.records.map((record) => record.owner).filter(Boolean).join(', ') || 'Not extracted')}</div></div>
       <div class="info-row"><div class="info-kicker">SURVEY / KHASRA</div><div class="info-value">${esc(first.survey || first.khasra || 'Not extracted')}</div></div>
       <div class="info-row"><div class="info-kicker">AREA</div><div class="info-value">${esc(group.records.map((record) => record.area).filter(Boolean).join(' · ') || 'Not extracted')}</div></div>
+      <div class="info-row"><div class="info-kicker">LOCATION STATE</div><div class="info-value location-inline ${locationState(first) === 'VERIFIED_LOCATION' ? 'verified-text' : ''}">${esc(locationState(first))}<br><span class="muted">${esc(locationProvenance(first).source)} · ${esc(locationProvenance(first).coords)}</span></div></div>
       <div class="info-kicker">SOURCE RECORDS</div>${recordsHtml}${nearbyHtml}`;
+    info.querySelectorAll('[data-open-id]').forEach((button) => button.addEventListener('click', () => openDocument(button.dataset.openId)));
     info.querySelectorAll('[data-history-id]').forEach((button) => button.addEventListener('click', () => openHistory(button.dataset.historyId)));
     info.querySelectorAll('[data-map-id]').forEach((button) => button.addEventListener('click', () => showRecordOnMap(button.dataset.mapId)));
     info.querySelectorAll('[data-nearby-plot]').forEach((button) => button.addEventListener('click', () => selectPlot(button.dataset.nearbyPlot)));
+    renderReferenceGeometry();
   }
 
   async function showRecordOnMap(id) {
@@ -318,8 +482,8 @@
     await initMap();
     renderMarkers();
     selectRecord(id);
-    const record = recordById(id);
-    if (record && !recordCoordinate(record)) geocodeVillages();
+    // Resolving a village is a separate, visible action in the selected-record
+    // panel; navigating to a record never triggers a hidden network storm.
   }
 
   function filteredMapRecords() {
@@ -334,12 +498,65 @@
     });
   }
 
-  function locationBadge(record) {
-    if (record.location_status === 'EXACT_PIN') return '<span class="record-badge exact">Exact pin</span>';
-    if (record.location_status === 'VILLAGE_LEVEL') {
-      return recordCoordinate(record) ? '<span class="record-badge village">Village approx.</span>' : '<span class="record-badge village">Village pending</span>';
+  function openDocument(id) {
+    // OCR and document review remain owned by the existing portal workflow.
+    window.location.href = `/?open_document=${encodeURIComponent(id)}`;
+  }
+
+  function renderSelectedRecord() {
+    const panel = $('selectedRecordPanel');
+    const record = recordById(state.selectedId);
+    if (!panel) return;
+    if (!record) {
+      panel.innerHTML = '<div class="empty-state">Select a record to keep its document, location, and history in view.</div>';
+      return;
     }
-    return '<span class="record-badge">No location</span>';
+    const provenance = locationProvenance(record);
+    const exact = coordinatePair(record.lat, record.lon);
+    const canEdit = roleCanPin();
+    const property = record.reference_property;
+    panel.innerHTML = `<div class="selected-record-head">
+        <div><span class="section-kicker">SELECTED DOCUMENT RECORD</span><h3>${esc(record.owner || record.filename || `Record #${record.id}`)}</h3><div class="selected-file">#${esc(record.id)} · ${esc(record.filename || 'Filename not available')}</div></div>
+        ${locationBadge(record)}
+      </div>
+      <div class="selected-badges"><span class="record-badge">${esc(record.status || 'Status unavailable')}</span><span class="record-badge">${esc(record.doc_type || 'Land Record')}</span>${record.review_required ? '<span class="record-badge review">Review required</span>' : '<span class="record-badge approved">Screened</span>'}</div>
+      <div class="selected-grid">
+        <div><span>OWNER</span><strong>${esc(record.owner || 'Not extracted')}</strong></div>
+        <div><span>SURVEY / PLOT</span><strong>${esc(record.survey || record.khasra || record.plot || 'Not extracted')}</strong></div>
+        <div><span>VILLAGE</span><strong>${esc(record.village || 'Not extracted')}</strong></div>
+        <div><span>TEHSIL / DISTRICT</span><strong>${esc([record.tehsil, record.district].filter(Boolean).join(' · ') || 'Not extracted')}</strong></div>
+        <div><span>AREA</span><strong>${esc(record.area || 'Not extracted')}</strong></div>
+        <div><span>DOCUMENT TYPE</span><strong>${esc(record.doc_type || 'Land Record')}</strong></div>
+      </div>
+      <div class="location-detail-card ${provenance.stateLabel === 'VERIFIED_LOCATION' ? 'verified' : provenance.stateLabel === 'LOCATION NOT AVAILABLE' ? 'unavailable' : 'approximate'}">
+        <div class="location-detail-head"><span class="location-state-label">${esc(provenance.stateLabel)}</span><span class="audit-availability">${esc(provenance.audit)}</span></div>
+        <dl class="provenance-list">
+          <div><dt>Source</dt><dd>${esc(provenance.source)}</dd></div>
+          <div><dt>Query</dt><dd>${esc(provenance.query)}</dd></div>
+          <div><dt>Coordinates</dt><dd>${esc(provenance.coords)}</dd></div>
+          <div><dt>Confidence</dt><dd>${esc(provenance.confidence)}</dd></div>
+          <div><dt>Verified by / at</dt><dd>${esc(provenance.verified)}</dd></div>
+        </dl>
+      </div>
+      ${property ? `<div class="reference-record-note"><strong>Reference geometry linked</strong><span>${esc(property.parcel_id || property.property_id || 'Reference parcel')} · ${esc(property.geometry_source || 'Source not available')}</span><small>Reference only; not a legal boundary. Geometry confidence is shown only because it exists in the backend property record: ${esc(property.geometry_confidence == null ? 'Not supplied' : property.geometry_confidence)}</small></div>` : ''}
+      <div class="selected-actions"><button class="btn secondary" type="button" data-selected-open>Open document</button><button class="btn ghost" type="button" data-selected-history>View history</button>${recordCoordinate(record) ? '<button class="btn ghost" type="button" data-selected-map>View map</button>' : ''}${!recordCoordinate(record) && record.village ? '<button class="btn ghost" type="button" data-selected-resolve>Resolve village location</button>' : ''}</div>
+      <div class="location-editor ${canEdit ? '' : 'read-only'}">
+        <div class="editor-head"><strong>Exact location editing</strong><span>${canEdit ? 'Verification Officer / Administrator' : 'Read-only for this role'}</span></div>
+        ${canEdit ? `<div class="pin-fields"><label>Latitude<input id="pinLatitude" inputmode="decimal" value="${exact ? esc(exact.lat) : ''}" placeholder="e.g. 28.6139"></label><label>Longitude<input id="pinLongitude" inputmode="decimal" value="${exact ? esc(exact.lon) : ''}" placeholder="e.g. 77.2090"></label></div><label>Verification note<input id="pinReason" maxlength="500" value="${esc(record.location_reason || '')}" placeholder="Why is this exact location being set or cleared?"></label><div class="editor-actions"><button class="btn secondary" type="button" data-save-pin>Save exact location</button><button class="btn ghost" type="button" data-place-pin>Choose on map</button>${exact ? '<button class="btn danger" type="button" data-clear-pin>Clear exact location</button>' : ''}</div><small class="editor-help">Saving writes mapping-only coordinates and an audit event. It does not alter OCR or document fields.</small>` : '<p class="editor-help">Exact coordinates can only be set or cleared by an authorised Verification Officer or Administrator. Server-side role checks remain enforced.</p>'}
+      </div>`;
+    panel.querySelector('[data-selected-open]')?.addEventListener('click', () => openDocument(record.id));
+    panel.querySelector('[data-selected-history]')?.addEventListener('click', () => openHistory(record.id));
+    panel.querySelector('[data-selected-map]')?.addEventListener('click', () => selectRecord(record.id));
+    panel.querySelector('[data-selected-resolve]')?.addEventListener('click', () => resolveRecordLocation(record));
+    panel.querySelector('[data-place-pin]')?.addEventListener('click', () => {
+      switchView('map');
+      $('mapPinMode').checked = true;
+      state.pinMode = true;
+      $('pinHint').classList.remove('hidden');
+      setNotice(`<strong>Choose an exact location for ${esc(record.filename || `record #${record.id}`)}.</strong> Click the map, then confirm the coordinate and verification note.`, 'info');
+    });
+    panel.querySelector('[data-save-pin]')?.addEventListener('click', () => savePinFromFields(record));
+    panel.querySelector('[data-clear-pin]')?.addEventListener('click', () => clearDocumentPin(record));
   }
 
   function renderRecordList() {
@@ -349,17 +566,24 @@
     $('mapCount').textContent = `${rows.length} of ${state.records.length} records`;
     if (!rows.length) {
       root.innerHTML = '<div class="empty-state">No records match the current filter.</div>';
+      renderSelectedRecord();
       return;
     }
     root.innerHTML = rows.map((record) => `<div class="record-row${String(record.id) === String(state.selectedId) ? ' active' : ''}" data-record-id="${esc(record.id)}" tabindex="0" role="button">
       <div class="record-main"><span>${esc(record.owner || record.filename || 'Unnamed record')}</span>${locationBadge(record)}</div>
       <div class="record-id">#${esc(record.id)} · ${esc(record.doc_type || 'Land Record')}</div>
-      <div class="record-sub"><span>${esc(record.survey || record.khasra || 'No survey')}</span><span>·</span><span>${esc(record.village || record.district || 'Geography missing')}</span></div>
+      <div class="record-grid"><span><b>Survey / plot</b>${esc(record.survey || record.khasra || record.plot || 'Not extracted')}</span><span><b>Village</b>${esc(record.village || 'Not extracted')}</span><span><b>Tehsil</b>${esc(record.tehsil || 'Not extracted')}</span><span><b>District</b>${esc(record.district || 'Not extracted')}</span><span><b>Area</b>${esc(record.area || 'Not extracted')}</span></div>
+      <div class="record-actions"><button type="button" data-record-open>Open document</button><button type="button" data-record-history>History</button>${!recordCoordinate(record) && record.village ? '<button type="button" data-record-resolve>Resolve location</button>' : '<button type="button" data-record-map>View map</button>'}</div>
     </div>`).join('');
     root.querySelectorAll('[data-record-id]').forEach((row) => {
-      row.addEventListener('click', () => selectRecord(row.dataset.recordId));
+      row.addEventListener('click', (event) => { if (!event.target.closest('button')) selectRecord(row.dataset.recordId); });
       row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectRecord(row.dataset.recordId); } });
+      row.querySelector('[data-record-open]')?.addEventListener('click', () => openDocument(row.dataset.recordId));
+      row.querySelector('[data-record-history]')?.addEventListener('click', () => openHistory(row.dataset.recordId));
+      row.querySelector('[data-record-resolve]')?.addEventListener('click', () => resolveRecordLocation(recordById(row.dataset.recordId)));
+      row.querySelector('[data-record-map]')?.addEventListener('click', () => { selectRecord(row.dataset.recordId); switchView('map'); });
     });
+    renderSelectedRecord();
   }
 
   function removeTileLayer() {
@@ -500,9 +724,9 @@
       weight: 2,
     });
     marker.bindPopup(`<div class="popup-title">${esc(record.owner || record.filename || `Record #${record.id}`)}</div>
-      <div class="popup-detail"><strong>${exact ? 'Exact reviewer pin' : 'Village-level approximate position'}</strong><br>Survey: ${esc(record.survey || record.khasra || '—')}<br>Village: ${esc(record.village || '—')}<br>Status: ${esc(record.status || '—')}</div>
+      <div class="popup-detail"><strong>${esc(exact ? 'VERIFIED LOCATION' : 'APPROXIMATE — VILLAGE LOCATION')}</strong><br>Survey: ${esc(record.survey || record.khasra || '—')}<br>Village: ${esc(record.village || '—')}<br>Source: ${esc(exact ? (record.location_source || 'Authorised reviewer pin') : 'Cached village geocode')}<br>Status: ${esc(record.status || '—')}</div>
       <div class="popup-actions"><button type="button" data-popup-history="${esc(record.id)}">Open history</button><button type="button" data-popup-select="${esc(record.id)}">Select record</button></div>`);
-    marker.on('click', () => { state.selectedId = record.id; renderRecordList(); });
+    marker.on('click', () => { state.selectedId = record.id; renderRecordList(); renderSelectedRecord(); });
     return marker;
   }
 
@@ -534,8 +758,9 @@
     if (!status) return;
     const mapped = coordinates.length;
     const geography = regionLabel(records);
+    const exact = coordinates.filter((coordinate) => coordinate.exact).length;
     status.textContent = mapped
-      ? `Showing ${mapped}/${records.length} mapped records · ${geography}`
+      ? `Showing ${mapped}/${records.length} positioned records · ${exact} verified · ${geography}`
       : `Record region pending · ${geography}`;
   }
 
@@ -558,36 +783,48 @@
     state.fitted = true;
   }
 
-  async function geocodeVillages() {
-    if (state.geocodeRunning || !state.user) return;
-    const missing = [];
-    const seen = new Set();
-    state.records.forEach((record) => {
-      if (coordinatePair(record.lat, record.lon)) return;
-      const key = villageKey(record);
-      if (!key || seen.has(key) || state.villageCache[key]) return;
-      seen.add(key); missing.push({ key, record });
-    });
-    if (!missing.length) return;
-    state.geocodeRunning = true;
-    for (const item of missing) {
-      const record = item.record;
-      try {
-        const query = villageLabel(record);
-        const result = await api('/api/map/geocode', { method: 'POST', body: JSON.stringify({ query }) });
-        if (result.lat != null && result.lon != null) {
-          state.villageCache[item.key] = { lat: Number(result.lat), lon: Number(result.lon), display_name: result.display_name || '' };
-          saveCache();
-          renderRecordList();
-          renderMarkers();
-          // As soon as the first record region resolves, stop showing the
-          // generic India overview. The final fit below expands to all regions.
-          if (state.currentView === 'map' && !state.mapUserMoved) fitMap();
-        }
-      } catch (_) { /* an unresolved village stays visibly unresolved */ }
+  async function resolveRecordLocation(record) {
+    if (!record || !state.user || coordinatePair(record.lat, record.lon) || !record.village) return;
+    const key = villageKey(record);
+    if (!key) return;
+    if (state.villageCache[key]) {
+      renderRecordList();
+      renderMarkers();
+      renderSelectedRecord();
+      if (state.currentView === 'map' && !state.mapUserMoved) fitMap(true);
+      return;
     }
-    state.geocodeRunning = false;
-    if (state.currentView === 'map' && !state.mapUserMoved) fitMap(true);
+    if (state.geocodeRunning) return;
+    state.geocodeRunning = true;
+    setNotice(`<strong>Resolving village location.</strong> One explicit request is being sent for ${esc(villageLabel(record))}. No exact parcel coordinate is being created.`, 'info');
+    try {
+      const query = villageLabel(record);
+      const result = await api('/api/map/geocode', { method: 'POST', body: JSON.stringify({ query }) });
+      if (result.lat != null && result.lon != null) {
+        state.villageCache[key] = {
+          lat: Number(result.lat), lon: Number(result.lon), display_name: result.display_name || '',
+          query, source: result.source || 'Nominatim village geocode', resolved_at: Date.now(), confidence: result.confidence,
+        };
+        saveCache();
+        setNotice(`<strong>Approximate village location available.</strong> ${esc(villageLabel(record))} is shown at village level only; no exact parcel coordinate was fabricated.`, 'info');
+      } else {
+        setNotice('<strong>Village location not available.</strong> The record remains visible without a fabricated coordinate.', 'warn');
+      }
+    } catch (error) {
+      setNotice(`<strong>Village location could not be resolved.</strong> ${esc(error.message)} The record remains visible without a fabricated coordinate.`, 'warn');
+    } finally {
+      state.geocodeRunning = false;
+      renderRecordList();
+      renderMarkers();
+      renderSelectedRecord();
+      if (state.currentView === 'map' && !state.mapUserMoved) fitMap(true);
+    }
+  }
+
+  // Kept as a compatibility helper for integrations that explicitly request
+  // a batch; unlike the previous implementation it never runs on initial load.
+  async function geocodeVillages(records = []) {
+    for (const record of records) await resolveRecordLocation(record);
   }
 
   function switchView(view) {
@@ -614,6 +851,7 @@
     if (!record) return;
     state.selectedId = record.id;
     renderRecordList();
+    renderSelectedRecord();
     const marker = state.markerById.get(String(record.id));
     if (marker && state.map) {
       state.map.setView(marker.getLatLng(), Math.max(state.map.getZoom(), 14), { animate: true });
@@ -651,11 +889,15 @@
     } else {
       timeline.innerHTML = items.map((item) => `<div class="history-item${String(item.id) === currentId ? ' current' : ''}">
         <div class="history-year">${esc(item.year || 'Year n/a')}</div>
-        <div><div class="history-file">${esc(item.filename || `Record #${item.id}`)}</div><div class="history-owner">${esc(item.owner || 'Holder not extracted')} · ${esc(item.doc_type || 'Land Record')} · ${esc(item.area || 'Area n/a')}</div><span class="history-status">${esc(historyStatus(item.status))}</span></div>
-        <button type="button" data-history-select="${esc(item.id)}">Open record</button>
+        <div><div class="history-file">${esc(item.filename || `Record #${item.id}`)}</div><div class="history-owner">${esc(item.owner || 'Holder not extracted')} · ${esc(item.doc_type || 'Land Record')} · ${esc(item.area || 'Area n/a')}</div><span class="history-status">${esc(historyStatus(item.status))}</span><span class="history-location">${esc(item.location_label || (item.location_status === 'EXACT_PIN' ? 'VERIFIED LOCATION' : item.location_status === 'VILLAGE_LEVEL' ? 'APPROXIMATE — VILLAGE LOCATION' : 'LOCATION NOT AVAILABLE'))}</span></div>
+        <div class="history-actions"><button type="button" data-history-select="${esc(item.id)}">Open record</button><button type="button" data-history-open="${esc(item.id)}">Document</button></div>
       </div>`).join('');
     }
-    timeline.querySelectorAll('[data-history-select]').forEach((button) => button.addEventListener('click', () => selectRecord(button.dataset.historySelect)));
+    timeline.querySelectorAll('[data-history-select]').forEach((button) => button.addEventListener('click', () => {
+      switchView('map');
+      selectRecord(button.dataset.historySelect);
+    }));
+    timeline.querySelectorAll('[data-history-open]').forEach((button) => button.addEventListener('click', () => openDocument(button.dataset.historyOpen)));
     $('historyPanel').classList.remove('hidden');
     $('historyPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -687,20 +929,62 @@
     }
     const latitude = Number(event.latlng.lat.toFixed(7));
     const longitude = Number(event.latlng.lng.toFixed(7));
-    const confirmed = window.confirm(`Set exact pin for ${selected.filename || `record #${selected.id}`} at ${latitude}, ${longitude}?\n\nThis writes a mapping-only location and an audit event; it does not alter OCR or document fields.`);
+    const reason = $('pinReason')?.value.trim() || '';
+    const confirmed = window.confirm(`Set VERIFIED LOCATION for ${selected.filename || `record #${selected.id}`} at ${latitude}, ${longitude}?\n\nThis writes mapping-only coordinates and an audit event. OCR and document fields are unchanged.\n\n${reason ? `Verification note: ${reason}` : 'No verification note was entered.'}`);
     if (!confirmed) return;
-    setDocumentPin(selected, latitude, longitude);
+    if ($('pinLatitude')) $('pinLatitude').value = latitude;
+    if ($('pinLongitude')) $('pinLongitude').value = longitude;
+    setDocumentPin(selected, latitude, longitude, reason);
   }
 
-  async function setDocumentPin(record, latitude, longitude) {
+  async function savePinFromFields(record) {
+    const rawLatitude = String($('pinLatitude')?.value || '').trim();
+    const rawLongitude = String($('pinLongitude')?.value || '').trim();
+    const latitude = Number(rawLatitude);
+    const longitude = Number(rawLongitude);
+    const reason = $('pinReason')?.value.trim() || '';
+    if (!rawLatitude || !rawLongitude || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      setNotice('<strong>Enter a valid coordinate pair.</strong> Latitude must be between -90 and 90 and longitude between -180 and 180.', 'warn');
+      return;
+    }
+    const confirmed = window.confirm(`Set VERIFIED LOCATION for ${record.filename || `record #${record.id}`} at ${latitude.toFixed(7)}, ${longitude.toFixed(7)}?\n\nThis writes mapping-only coordinates and an audit event. OCR and document fields are unchanged.`);
+    if (confirmed) await setDocumentPin(record, latitude, longitude, reason);
+  }
+
+  async function clearDocumentPin(record) {
+    const reason = $('pinReason')?.value.trim() || '';
+    const confirmed = window.confirm(`Clear the exact location for ${record.filename || `record #${record.id}`}?\n\nThe record will return to ${record.village ? 'APPROXIMATE — VILLAGE LOCATION' : 'LOCATION NOT AVAILABLE'}. This writes an audit event and does not alter OCR or document fields.`);
+    if (confirmed) await setDocumentPin(record, null, null, reason);
+  }
+
+  async function setDocumentPin(record, latitude, longitude, reason = '') {
     try {
-      await api(`/api/map/records/${encodeURIComponent(record.id)}/location`, { method: 'PUT', body: JSON.stringify({ lat: latitude, lon: longitude }) });
-      record.lat = latitude; record.lon = longitude;
-      setNotice(`<strong>Exact pin saved.</strong> ${esc(record.filename || `Record #${record.id}`)} is now shown as a reviewer pin and the change was recorded in audit.`, 'info');
+      const result = await api(`/api/map/records/${encodeURIComponent(record.id)}/location`, {
+        method: 'PUT', body: JSON.stringify({ lat: latitude, lon: longitude, reason }),
+      });
+      record.lat = result.lat;
+      record.lon = result.lon;
+      record.location_source = result.location_source || null;
+      record.location_confidence = result.location_confidence ?? null;
+      record.location_verified_by = result.location_verified_by || null;
+      record.location_verified_at = result.location_verified_at || null;
+      record.location_reason = reason;
+      record.location_status = latitude == null ? (record.village ? 'VILLAGE_LEVEL' : 'UNRESOLVED') : 'EXACT_PIN';
+      const total = Number(state.summary?.records || state.records.length);
+      const exact = state.records.filter((item) => coordinatePair(item.lat, item.lon)).length;
+      if (state.summary) {
+        state.summary.exact_pins = exact;
+        state.summary.mapped_records = exact;
+        state.summary.mapped_percent = total ? Math.round((exact / total) * 1000) / 10 : 0;
+        state.summary.location_coverage_percent = state.summary.mapped_percent;
+      }
+      const recordName = esc(record.filename || `record #${record.id}`);
+      setNotice(latitude == null ? `<strong>Exact location cleared.</strong> ${recordName} remains visible without a fabricated parcel coordinate.` : `<strong>Verified location saved.</strong> ${recordName} is now shown as a reviewer pin and the change was recorded in audit.`, 'info');
       $('mapPinMode').checked = false; state.pinMode = false; $('pinHint').classList.add('hidden');
+      renderSummary(state.summary || {});
       renderRecordList(); renderMarkers(); selectRecord(record.id);
     } catch (error) {
-      setNotice(`<strong>Pin was not saved.</strong> ${esc(error.message)}`, 'error');
+      setNotice(`<strong>Location was not saved.</strong> ${esc(error.message)}`, 'error');
     }
   }
 
@@ -736,7 +1020,9 @@
       rebuildDistricts();
       renderRecordList();
       if (state.mapReady) { renderMarkers(); fitMap(); }
-      geocodeVillages();
+      // Do not geocode every unresolved village on initial load. Exact pins,
+      // cached results, and unresolved records render immediately; geocoding is
+      // only triggered by an explicit record action.
       const requestedId = new URLSearchParams(window.location.search).get('document_id');
       if (requestedId && recordById(requestedId)) {
         switchView('map');
