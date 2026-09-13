@@ -1,7 +1,8 @@
 (() => {
 "use strict";
-const state={map:null,geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,scenarios:[],activeScenario:null,loading:false};
+const state={map:null,geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,locationMarkers:new Map(),locationRecords:new Map(),scenarios:[],activeScenario:null,loading:false,user:null,pinMode:false};
 const API="/api/demo-land";
+const LAND_API="/api/land";
 const $=id=>document.getElementById(id);
 const esc=v=>String(v??"—").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const badge=status=>{const s=String(status||"UNKNOWN");const cls=["MATCH","CONSISTENT","VERIFIED"].includes(s)?"ok":(["CONFLICT","NO MATCH"].includes(s)?"bad":(["REVIEW REQUIRED","POSSIBLE MATCH","OPEN","ACKNOWLEDGED"].includes(s)?"warn":"neutral"));return '<span class="status '+cls+'">'+esc(s)+'</span>';};
@@ -15,6 +16,52 @@ async function api(url){
 function setStatus(text){if($("mapStatus"))$("mapStatus").textContent=text}
 function notice(text){const n=$("mapNotice");if(!n)return;n.textContent=text;n.classList.remove("hidden")}
 function clearNotice(){$("mapNotice")?.classList.add("hidden")}
+function locationLabel(status){return {EXACT_PIN:"EXACT LOCATION",VILLAGE_LEVEL:"VILLAGE-LEVEL APPROXIMATE",PARCEL_GEOMETRY:"PARCEL GEOMETRY",UNRESOLVED:"LOCATION UNRESOLVED"}[status]||"LOCATION UNRESOLVED"}
+function locationClass(status){return status==="EXACT_PIN"?"exact":status==="VILLAGE_LEVEL"?"approx":status==="UNRESOLVED"?"unresolved":"verify"}
+function canEditLocation(){return ["VERIFICATION_OFFICER","ADMIN"].includes(state.user?.role)}
+async function loadCurrentUser(){try{const r=await api("/api/auth/me");state.user=r.user||null}catch(_){state.user=null}}
+function clearLocationMarkers(){state.locationMarkers.forEach(m=>m.remove());state.locationMarkers.clear()}
+function renderLocationMarkers(records){
+  clearLocationMarkers();if(!state.map)return;
+  records.forEach(p=>{const loc=p.location||{};if(loc.latitude==null||loc.longitude==null)return;const status=loc.status||"UNRESOLVED";
+    const marker=L.circleMarker([loc.latitude,loc.longitude],{radius:status==="EXACT_PIN"?7:5,color:status==="EXACT_PIN"?"#16803c":status==="VILLAGE_LEVEL"?"#315ba8":status==="UNRESOLVED"?"#64748b":"#b07b29",fillColor:status==="EXACT_PIN"?"#22a447":status==="VILLAGE_LEVEL"?"#4f7fc4":status==="UNRESOLVED"?"#94a3b8":"#d39a38",fillOpacity:.85,weight:2})
+      .bindPopup("<strong>"+esc(p.parcel_id||p.property_id)+"</strong><br>"+esc(locationLabel(status))+(status==="VILLAGE_LEVEL"?"<br>Village-level location is approximate and does not represent the exact parcel.":""));
+    marker.on("click",()=>selectParcel(p.property_id));marker.addTo(state.map);state.locationMarkers.set(p.property_id,marker);
+  });
+}
+async function loadMapLocations(filters={}){
+  if(!state.user)return;try{const qs=new URLSearchParams();Object.entries(filters).forEach(([k,v])=>{if(v)qs.set(k,v)});const r=await api(LAND_API+"/map/records"+(qs.toString()?"?"+qs.toString():""));state.locationRecords.clear();(r.records||[]).forEach(p=>state.locationRecords.set(p.property_id,p));renderLocationMarkers(r.records||[])}catch(_){}
+}
+function renderLocationPanel(p){
+  const loc=p.location||{};const status=loc.status||p.location_status||"UNRESOLVED";const cls=locationClass(status);
+  const lat=loc.latitude??p.latitude,lon=loc.longitude??p.longitude;const coords=lat!=null&&lon!=null?lat+", "+lon:"—";
+  const note=status==="VILLAGE_LEVEL"?"Village-level location is approximate and does not represent the exact parcel.":status==="PARCEL_GEOMETRY"?"Location comes from project-owned parcel geometry; it is not an authoritative cadastral pin.":status==="EXACT_PIN"?"Exact coordinate was set by an authorized human reviewer and is recorded in the audit trail.":"No usable location is currently resolved.";
+  const controls=canEditLocation()?"<div class=\"location-actions\"><button type=\"button\" class=\"btn secondary\" id=\"setPinBtn\">Set exact pin</button>"+(status==="EXACT_PIN"?"<button type=\"button\" class=\"btn secondary\" id=\"clearPinBtn\">Clear exact pin</button>":"")+"</div>":"";
+  return "<div class=\"subhead\">Location</div><div class=\"location-state "+cls+"\"><strong>"+esc(locationLabel(status))+"</strong><br><span class=\"muted\">"+esc(note)+"</span><br><b>Coordinates:</b> "+esc(coords)+controls+"</div>";
+}
+function renderVillageSheet(features){
+  const root=$("villageSheet");if(!root)return;if(!features.length){root.innerHTML="<div class=\"empty\">No parcel geometry is available for this village.</div>";return}
+  const polys=features.filter(f=>f.geometry?.type==="Polygon");if(!polys.length){root.innerHTML="<div class=\"empty\">No polygon parcel geometry is available.</div>";return}
+  const all=polys.flatMap(f=>f.geometry.coordinates?.[0]||[]),xs=all.map(x=>x[0]),ys=all.map(x=>x[1]),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),dx=Math.max(maxX-minX,1e-9),dy=Math.max(maxY-minY,1e-9);
+  root.innerHTML="<div class=\"village-sheet-title\">Village Sheet · project-owned schematic · not authoritative</div>";
+  polys.forEach(f=>{const p=f.properties||{},ring=f.geometry.coordinates[0],px=ring.map(x=>((x[0]-minX)/dx)*94+3),py=ring.map(x=>((maxY-x[1])/dy)*84+9),left=Math.max(2,Math.min(...px)),top=Math.max(8,Math.min(...py)),right=Math.min(98,Math.max(...px)),bottom=Math.min(96,Math.max(...py)),b=document.createElement("button");
+    b.type="button";b.className="sheet-parcel"+(state.selected?.property_id===p.property_id?" selected":"");b.style.left=left+"%";b.style.top=top+"%";b.style.width=Math.max(8,right-left)+"%";b.style.height=Math.max(12,bottom-top)+"%";b.textContent=p.parcel_id||p.property_id;b.title="Survey "+(p.survey_number||"—")+" · "+(p.area??"—");b.onclick=()=>selectParcel(p.property_id);root.appendChild(b)});
+}
+async function populateGeography(){
+  const d=$("districtSelect"),t=$("talukaSelect"),v=$("villageSelect");if(!d||!t||!v)return;let tree={};
+  try{tree=(await api(LAND_API+"/geography")).geography||{}}catch(_){(state.geo?.features||[]).forEach(f=>{const p=f.properties||{},a=p.district||"",b=p.taluka||"",z=p.village||"";tree[a]??={};tree[a][b]??={};tree[a][b][z]={parcel_count:1}})}
+  const fill=(el,values,placeholder)=>{el.innerHTML="<option value=\"\">"+placeholder+"</option>"+values.map(x=>"<option value=\""+esc(x)+"\">"+esc(x)+"</option>").join("");el.disabled=values.length===0};
+  const rebuild=()=>{const td=tree[d.value]||{};fill(t,Object.keys(td).filter(Boolean),"All talukas");const vd=td[t.value]||{};fill(v,Object.keys(vd).filter(Boolean),"All villages");loadFilteredMap(d.value,t.value,v.value)};
+  d.onchange=rebuild;t.onchange=()=>{const td=tree[d.value]||{},vd=td[t.value]||{};fill(v,Object.keys(vd).filter(Boolean),"All villages");loadFilteredMap(d.value,t.value,v.value)};v.onchange=()=>loadFilteredMap(d.value,t.value,v.value);rebuild();
+}
+async function loadFilteredMap(district,taluka,village){
+  const fs=(state.geo?.features||[]).filter(f=>{const p=f.properties||{};return(!district||p.district===district)&&(!taluka||p.taluka===taluka)&&(!village||p.village===village)});
+  renderParcels(fs);renderVillageSheet(fs);await loadMapLocations({district,taluka,village});
+}
+async function focusMapProperty(id){
+  if(!state.map)return;const marker=state.locationMarkers.get(id);const layer=state.parcelLayers.get(id);if(marker){state.map.setView(marker.getLatLng(),17);marker.openPopup();return}if(layer){state.map.fitBounds(layer.getBounds(),{padding:[35,35],maxZoom:17});return}
+  const p=state.selected;if(p?.latitude!=null&&p?.longitude!=null)state.map.setView([p.latitude,p.longitude],17);
+}
 function loadingPanel(id,title="Loading…"){const root=$(id);if(root)root.innerHTML='<div class="empty"><strong>'+esc(title)+'</strong><p>Please wait while evidence is retrieved.</p></div>'}
 
 function initMap(){
