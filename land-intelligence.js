@@ -73,6 +73,7 @@ function initMap(){
     tile.on("tileerror",()=>notice("Base map unavailable. Parcel geometry and evidence remain usable."));
     tile.addTo(state.map);
     window.addEventListener("resize",()=>state.map?.invalidateSize());
+    state.map.on("click",e=>{if(!state.pinMode||!state.selected)return;state.pinMode=false;setExactPin(state.selected.property_id,e.latlng.lat,e.latlng.lng)});
   }catch(e){notice("Map could not be initialized. Property intelligence remains available.");setStatus("Map unavailable")}
 }
 function fitAll(){
@@ -131,6 +132,26 @@ function renderProperty(p){
     (neighbours.length?neighbours.map(n=>'<button type="button" class="result" data-neighbor="'+esc(n.property_id)+'"><strong>'+esc(n.parcel_id)+'</strong><span class="muted">Survey '+esc(n.survey_number)+' · '+esc(n.area)+' '+esc(n.area_unit)+'</span></button>').join(""):'<span class="muted">No adjacent parcels detected.</span>');
   $("propertyPanel").querySelectorAll("[data-doc]").forEach(b=>b.addEventListener("click",()=>compareDoc(b.dataset.doc,p.property_id)));
   $("propertyPanel").querySelectorAll("[data-neighbor]").forEach(b=>b.addEventListener("click",()=>selectParcel(b.dataset.neighbor)));
+  $("propertyPanel").insertAdjacentHTML("beforeend",renderLocationPanel(p)+"<div class="location-actions"><button type="button" class="btn secondary" id="showMapBtn">Show on map</button></div>");
+  $("showMapBtn").onclick=()=>focusMapProperty(p.property_id);
+  if(canEditLocation()){const sb=$("setPinBtn");if(sb)sb.onclick=()=>{state.pinMode=true;notice("Exact-pin mode: click the map to place the selected property. The server validates and audits the change.");setStatus("Click the map to set exact pin")};const cb=$("clearPinBtn");if(cb)cb.onclick=()=>clearExactPin(p.property_id)}
+
+}
+function setExactPin(propertyId,lat,lon){
+  if(!canEditLocation()){notice("Only Verification Officers or Administrators may set an exact pin.");return}
+  const current=state.locationRecords.get(propertyId);
+  fetch(LAND_API+"/properties/"+encodeURIComponent(propertyId)+"/location",{method:"PUT",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({latitude:lat,longitude:lon,reason:"Placed from Land Intelligence map.",expected_location_updated_at:current?.location?.updated_at})})
+    .then(async r=>{let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Location update failed");return d})
+    .then(async()=>{await loadMapLocations();await selectParcel(propertyId);setStatus("Exact location saved and audited")})
+    .catch(e=>{notice("Exact pin was not saved: "+e.message);setStatus("Pin update failed")});
+}
+function clearExactPin(propertyId){
+  if(!canEditLocation()||!window.confirm("Clear the exact pin for this property?"))return;
+  const current=state.locationRecords.get(propertyId);
+  fetch(LAND_API+"/properties/"+encodeURIComponent(propertyId)+"/location",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({reason:"Cleared from Land Intelligence.",expected_location_updated_at:current?.location?.updated_at})})
+    .then(async r=>{let d={};try{d=await r.json()}catch(_){}if(!r.ok)throw new Error(d.detail||"Location update failed");return d})
+    .then(async()=>{await loadMapLocations();await selectParcel(propertyId);setStatus("Exact location cleared")})
+    .catch(e=>notice("Exact pin was not cleared: "+e.message));
 }
 function renderEvidence(p){
   const doc=(p.documents||[])[0];
@@ -155,7 +176,7 @@ async function compareDoc(docId,propertyId){
 }
 async function selectParcel(id){
   setStatus("Loading property intelligence…");loadingPanel("propertyPanel","Loading property intelligence…");loadingPanel("evidencePanel","Loading evidence…");
-  try{const p=await api(API+"/properties/"+encodeURIComponent(id));if(p.error)throw new Error(p.error);state.selected=p;selectMapLayer(p.property_id);renderProperty(p);renderEvidence(p);setStatus("Selected "+(p.parcel_id||p.property_id))}
+  try{const p=await api(API+"/properties/"+encodeURIComponent(id));if(p.error)throw new Error(p.error);if(state.user){try{const live=await api(LAND_API+"/properties/"+encodeURIComponent(id));p.location={status:live.location_status||"UNRESOLVED",source:live.location_source,confidence:live.location_confidence,verified_by:live.location_verified_by,verified_at:live.location_verified_at,updated_at:live.location_updated_at,latitude:live.latitude,longitude:live.longitude};}catch(_){}}state.selected=p;selectMapLayer(p.property_id);renderProperty(p);renderEvidence(p);renderVillageSheet(state.geo?.features||[]);setStatus("Selected "+(p.parcel_id||p.property_id))}
   catch(e){$("propertyPanel").innerHTML='<div class="empty"><strong>Unable to load property</strong><p>'+esc(e.message)+'</p></div>';$("evidencePanel").innerHTML='<div class="empty"><strong>Evidence unavailable</strong><p>'+esc(e.message)+'</p></div>';setStatus("Property unavailable")}
 }
 async function search(){
@@ -177,9 +198,10 @@ async function load(){
   if(state.loading)return;state.loading=true;setStatus("Loading parcel dataset…");
   try{
     initMap();
+    await loadCurrentUser();
     const [geo,metrics,scenarios]=await Promise.all([api(API+"/geojson"),api(API+"/dashboard"),api(API+"/scenarios")]);
     state.geo=geo;state.metrics=metrics;state.scenarios=scenarios.scenarios||[];
-    renderMetrics(metrics);renderScenarios();renderParcels(geo.features||[]);
+    renderMetrics(metrics);renderScenarios();renderParcels(geo.features||[]);renderVillageSheet(geo.features||[]);if(state.user)await loadMapLocations();if(state.user)await populateGeography();
     if(state.map&&state.parcelLayers.size)fitAll();
     if(geo.features?.length)await selectParcel(geo.features[0].properties.property_id);else{notice("No parcel data is available.");loadingPanel("propertyPanel","No parcel data");loadingPanel("evidencePanel","No evidence data")}
   }catch(e){notice("Land Intelligence data is unavailable: "+e.message);setStatus("Data unavailable");$("metrics").innerHTML="";$("scenarios").innerHTML="";loadingPanel("propertyPanel","Land Intelligence unavailable");loadingPanel("evidencePanel","Evidence unavailable")}
@@ -189,7 +211,7 @@ $("searchBtn").addEventListener("click",search);
 $("search").addEventListener("keydown",e=>{if(e.key==="Enter")search()});
 $("demoBtn").addEventListener("click",()=>runScenario("area-review"));
 $("resetBtn").addEventListener("click",reset);
-$("fitBtn").addEventListener("click",fitAll);
+$("fitBtn").addEventListener("click",fitAll);$("villageSheetBtn")?.addEventListener("click",()=>{$("villageSheet")?.classList.toggle("hidden")});
 document.querySelectorAll("[data-font]").forEach(b=>b.addEventListener("click",()=>{const v=Number(b.dataset.font);const current=parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--font-scale"))||14;document.documentElement.style.setProperty("--font-scale",(v===0?14:Math.max(12,Math.min(18,current+v)))+"px")}));
 $("contrastBtn").addEventListener("click",()=>document.body.classList.toggle("high-contrast"));
 window.addEventListener("load",load);
