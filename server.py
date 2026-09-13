@@ -1441,21 +1441,29 @@ async def generate_ai_consistency_explanation(records: List[Dict[str, Any]], rep
 # Backward-compatible deterministic extraction and pipeline hook.
 # The AI-assisted pipeline remains the production implementation; this wrapper keeps
 # the document workflow testable and lets callers replace the OCR stage safely.
+def _normalize_ocr_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "")
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
 def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
-    text = text or ""
+    text = _normalize_ocr_text(text)
     patterns = {
-        "owner_name": r"(?:owner\s*name|landowner|owner)\s*[:\-]\s*([^\n]+)",
-        "father_name": r"(?:father(?:'s)?\s*name|father|husband)\s*[:\-]\s*([^\n]+)",
-        "village": r"village\s*[:\-]\s*([^\n]+)",
-        "tehsil": r"(?:tehsil|taluka)\s*[:\-]\s*([^\n]+)",
-        "district": r"district\s*[:\-]\s*([^\n]+)",
-        "state": r"state\s*[:\-]\s*([^\n]+)",
-        "survey_number": r"(?:survey(?:\s*no\.?|\s*number)|gat(?:\s*no\.?|\s*number))\s*[:\-]\s*([^\n]+)",
-        "khasra_number": r"khasra\s*(?:no\.?|number)?\s*[:\-]\s*([^\n]+)",
-        "khata_number": r"khata\s*(?:no\.?|number)?\s*[:\-]\s*([^\n]+)",
-        "plot_number": r"plot\s*(?:no\.?|number)?\s*[:\-]\s*([^\n]+)",
-        "area": r"area\s*[:\-]\s*([^\n]+)",
-        "document_date": r"(?:date|document\s*date)\s*[:\-]\s*([^\n]+)",
+        "owner_name": r"(?:owner\s*name|landowner|owner|मालिक(?:\s*का)?\s*नाम|भूस्वामी)\s*[:\-]\s*([^\n]+)",
+        "father_name": r"(?:father(?:'s)?\s*name|father|husband|पिता\s*का\s*नाम|पति\s*का\s*नाम)\s*[:\-]\s*([^\n]+)",
+        "village": r"(?:village|ग्राम|गांव|गाँव)\s*[:\-]\s*([^\n]+)",
+        "tehsil": r"(?:tehsil|taluka|तहसील|तालुका)\s*[:\-]\s*([^\n]+)",
+        "district": r"(?:district|जिला)\s*[:\-]\s*([^\n]+)",
+        "state": r"(?:state|राज्य)\s*[:\-]\s*([^\n]+)",
+        "survey_number": r"(?:survey(?:\s*no\.?|\s*number)?|gat(?:\s*no\.?|\s*number)?|सर्वे\s*(?:नं\.?|नंबर)?|गट\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
+        "khasra_number": r"(?:khasra\s*(?:no\.?|number)?|खसरा\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
+        "khata_number": r"(?:khata\s*(?:no\.?|number)?|खाता\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
+        "plot_number": r"(?:plot\s*(?:no\.?|number)?|प्लॉट\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
+        "area": r"(?:area|land\s*area|क्षेत्रफल)\s*[:\-]\s*([^\n]+)",
+        "document_date": r"(?:date|document\s*date|दिनांक|तारीख)\s*[:\-]\s*([^\n]+)",
+        "khatauni_year": r"(?:khatauni\s*year|record\s*year|year|वर्ष)\s*[:\-]\s*([^\n]+)",
+        "mutation_no": r"(?:mutation\s*(?:no\.?|number)?|नामांतरण\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
+        "registration_no": r"(?:registration\s*(?:no\.?|number)?|पंजीकरण\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
     }
     fields = {k: {"value": "", "confidence": 0.0} for k in FIELD_KEYS}
     fields["document_type"] = {"value": "Land Record", "confidence": 0.8}
@@ -1504,6 +1512,10 @@ async def run_ocr_pipeline(content: bytes, filename: str, lang: str = "auto") ->
         image = bitmap.to_pil()
         return await run_ai_assisted_pipeline(image, lang)
     image = Image.open(io.BytesIO(content))
+    image.load()
+    max_side = int(os.getenv("MAX_IMAGE_DIMENSION", "15000"))
+    if max(image.width, image.height) > max_side:
+        raise ValueError(f"Image exceeds the maximum supported dimension of {max_side}px")
     return await run_ai_assisted_pipeline(image, lang)
 
 # FastAPI Request Models
