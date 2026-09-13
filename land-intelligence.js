@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const state={map:null,geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,locationMarkers:new Map(),locationRecords:new Map(),scenarios:[],activeScenario:null,loading:false,user:null,pinMode:false};
+const state={map:null,geo:null,metrics:null,selected:null,parcelLayers:new Map(),selectedLayer:null,locationMarkers:new Map(),locationRecords:new Map(),scenarios:[],activeScenario:null,loading:false,user:null,pinMode:false,visibleFeatures:[]};
 const API="/api/demo-land";
 const LAND_API="/api/land";
 const $=id=>document.getElementById(id);
@@ -60,7 +60,7 @@ async function populateGeography(){
 }
 async function loadFilteredMap(district,taluka,village){
   const fs=(state.geo?.features||[]).filter(f=>{const p=f.properties||{};return(!district||p.district===district)&&(!taluka||p.taluka===taluka)&&(!village||p.village===village)});
-  renderParcels(fs);renderVillageSheet(fs);await loadMapLocations({district,taluka,village});
+  state.visibleFeatures=fs;renderParcels(fs);renderVillageSheet(fs);await loadMapLocations({district,taluka,village});
 }
 async function focusMapProperty(id){
   if(!state.map)return;const marker=state.locationMarkers.get(id);const layer=state.parcelLayers.get(id);if(marker){state.map.setView(marker.getLatLng(),17);marker.openPopup();return}if(layer){state.map.fitBounds(layer.getBounds(),{padding:[35,35],maxZoom:17});return}
@@ -180,7 +180,7 @@ async function compareDoc(docId,propertyId){
 }
 async function selectParcel(id){
   setStatus("Loading property intelligence…");loadingPanel("propertyPanel","Loading property intelligence…");loadingPanel("evidencePanel","Loading evidence…");
-  try{const p=await api(API+"/properties/"+encodeURIComponent(id));if(p.error)throw new Error(p.error);if(state.user){try{const live=await api(LAND_API+"/properties/"+encodeURIComponent(id));p.location={status:live.location_status||"UNRESOLVED",source:live.location_source,confidence:live.location_confidence,verified_by:live.location_verified_by,verified_at:live.location_verified_at,updated_at:live.location_updated_at,latitude:live.latitude,longitude:live.longitude};}catch(_){}}state.selected=p;selectMapLayer(p.property_id);renderProperty(p);renderEvidence(p);renderVillageSheet(state.geo?.features||[]);setStatus("Selected "+(p.parcel_id||p.property_id))}
+  try{const p=await api(API+"/properties/"+encodeURIComponent(id));if(p.error)throw new Error(p.error);if(state.user){try{const live=await api(LAND_API+"/properties/"+encodeURIComponent(id));p.location={status:live.location_status||"UNRESOLVED",source:live.location_source,confidence:live.location_confidence,verified_by:live.location_verified_by,verified_at:live.location_verified_at,updated_at:live.location_updated_at,latitude:live.latitude,longitude:live.longitude};}catch(_){}}state.selected=p;selectMapLayer(p.property_id);renderProperty(p);renderEvidence(p);renderVillageSheet(state.visibleFeatures?.length?state.visibleFeatures:(state.geo?.features||[]));setStatus("Selected "+(p.parcel_id||p.property_id))}
   catch(e){$("propertyPanel").innerHTML='<div class="empty"><strong>Unable to load property</strong><p>'+esc(e.message)+'</p></div>';$("evidencePanel").innerHTML='<div class="empty"><strong>Evidence unavailable</strong><p>'+esc(e.message)+'</p></div>';setStatus("Property unavailable")}
 }
 async function search(){
@@ -204,7 +204,7 @@ async function load(){
     initMap();
     await loadCurrentUser();
     const [geo,metrics,scenarios]=await Promise.all([api(API+"/geojson"),api(API+"/dashboard"),api(API+"/scenarios")]);
-    state.geo=geo;state.metrics=metrics;state.scenarios=scenarios.scenarios||[];
+    state.geo=geo;state.visibleFeatures=geo.features||[];state.metrics=metrics;state.scenarios=scenarios.scenarios||[];
     renderMetrics(metrics);renderScenarios();renderParcels(geo.features||[]);renderVillageSheet(geo.features||[]);if(state.user)await loadMapLocations();if(state.user)await populateGeography();
     if(state.map&&state.parcelLayers.size)fitAll();
     if(geo.features?.length)await selectParcel(geo.features[0].properties.property_id);else{notice("No parcel data is available.");loadingPanel("propertyPanel","No parcel data");loadingPanel("evidencePanel","No evidence data")}
