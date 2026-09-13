@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="DILRMP Land Intelligence — document and parcel verification workspace">
 <title>Land Intelligence | Digital Land Records</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <link rel="stylesheet" href="/land-intelligence.css">
 <link rel="stylesheet" href="/land-intelligence-theme.css">
 <style>
@@ -13,10 +12,8 @@
 .instant-map{position:absolute;inset:0;width:100%;height:100%;z-index:0;background:linear-gradient(135deg,#edf3f7,#e5edf2)}
 .instant-map .road{fill:none;stroke:#c7d2da;stroke-width:2;opacity:.9}
 .instant-map .parcel{fill:#dbe8df;stroke:#426b54;stroke-width:2}
-.instant-map .parcel.alt{fill:#e7ead6}
-.instant-map .parcel.selected{fill:#bfd7ef;stroke:#315ba8;stroke-width:3}
-.instant-map text{font:600 12px system-ui,sans-serif;fill:#334155}
-.instant-map .label{font-weight:700;fill:#1e3a5f}
+.instant-map .parcel.alt{fill:#e7ead6}.instant-map .parcel.selected{fill:#bfd7ef;stroke:#315ba8;stroke-width:3}
+.instant-map text{font:600 12px system-ui,sans-serif;fill:#334155}.instant-map .label{font-weight:700;fill:#1e3a5f}
 .instant-map .pin{fill:#b42318;stroke:#fff;stroke-width:2}
 </style>
 </head>
@@ -33,16 +30,10 @@
 <section class="panel"><div class="section-head"><div><span class="eyebrow">GEOGRAPHY</span><h2>District → Taluka → Village</h2></div></div><div class="geo-cascade"><label>District<select id="districtSelect"><option value="">All districts</option></select></label><label>Taluka / Tehsil<select id="talukaSelect" disabled><option value="">All talukas</option></select></label><label>Village<select id="villageSelect" disabled><option value="">All villages</option></select></label></div><div id="geoStatus" class="muted" style="margin-top:7px">Synthetic/project-owned geography.</div></section>
 <section class="panel"><div class="section-head"><div><span class="eyebrow">PARCELS</span><h2>Project dataset</h2></div></div><div id="parcelList" class="result-list"></div></section><section class="panel boundary"><strong>Data boundary</strong><p>Geometry and records shown in demo mode are synthetic and are not government records. Confidence indicates evidence quality, not legal truth.</p></section></aside>
 <section class="map-panel panel" aria-label="Interactive parcel map"><div class="map-toolbar"><span id="mapStatus" role="status">Instant project map ready</span><div class="map-tools"><button id="villageSheetBtn" class="map-tool" type="button">Village sheet</button><button id="fitBtn" class="map-tool" type="button">Fit parcels</button></div></div>
-<div id="map" aria-label="Parcel map">
-<svg class="instant-map" viewBox="0 0 900 520" role="img" aria-label="Instant schematic project parcel map">
-<path class="road" d="M40 420 C190 350 260 360 390 290 S650 170 860 90"/><path class="road" d="M120 70 C250 160 350 180 470 150 S700 100 840 210"/>
-<polygon class="parcel selected" points="150,275 330,230 390,330 210,375"/><polygon class="parcel alt" points="350,220 520,175 585,270 405,320"/><polygon class="parcel" points="530,150 700,125 760,220 595,260"/><polygon class="parcel alt" points="270,385 445,340 520,425 340,470"/>
-<circle class="pin" cx="285" cy="300" r="8"/><circle class="pin" cx="445" cy="260" r="7"/><circle class="pin" cx="650" cy="190" r="7"/>
-<text class="label" x="155" y="300">DEMO-103-A</text><text x="385" y="255">DEMO-103-B</text><text x="610" y="175">DEMO-104</text><text x="350" y="415">DEMO-105</text><text x="48" y="45">Demo District · Demo Taluka · Demo Village</text><text x="48" y="490">Instant schematic · project-owned synthetic geometry</text>
-</svg></div><div id="mapNotice" class="map-notice hidden" role="status"></div><div id="villageSheet" class="village-sheet hidden" aria-label="Village Sheet schematic parcel view"></div><div class="map-legend"><span><i class="swatch selected"></i>Selected</span><span><i class="swatch exact"></i>Exact location</span><span><i class="swatch approximate"></i>Village-level approximate</span><span><i class="swatch parcel"></i>Parcel geometry</span></div></section>
+<div id="map" aria-label="Parcel map"><svg class="instant-map" viewBox="0 0 900 520" role="img" aria-label="Instant schematic project parcel map"><path class="road" d="M40 420 C190 350 260 360 390 290 S650 170 860 90"/><path class="road" d="M120 70 C250 160 350 180 470 150 S700 100 840 210"/><polygon class="parcel selected" points="150,275 330,230 390,330 210,375"/><polygon class="parcel alt" points="350,220 520,175 585,270 405,320"/><polygon class="parcel" points="530,150 700,125 760,220 595,260"/><polygon class="parcel alt" points="270,385 445,340 520,425 340,470"/><circle class="pin" cx="285" cy="300" r="8"/><circle class="pin" cx="445" cy="260" r="7"/><circle class="pin" cx="650" cy="190" r="7"/><text class="label" x="155" y="300">DEMO-103-A</text><text x="385" y="255">DEMO-103-B</text><text x="610" y="175">DEMO-104</text><text x="350" y="415">DEMO-105</text><text x="48" y="45">Demo District · Demo Taluka · Demo Village</text><text x="48" y="490">Instant schematic · project-owned synthetic geometry</text></svg></div><div id="mapNotice" class="map-notice hidden" role="status"></div><div id="villageSheet" class="village-sheet hidden" aria-label="Village Sheet schematic parcel view"></div><div class="map-legend"><span><i class="swatch selected"></i>Selected</span><span><i class="swatch exact"></i>Exact location</span><span><i class="swatch approximate"></i>Village-level approximate</span><span><i class="swatch parcel"></i>Parcel geometry</span></div></section>
 <aside class="right-rail"><section class="panel scroll-panel" id="propertyPanel"><div class="empty"><strong>Property Intelligence</strong><p>Select a parcel or run a scenario.</p></div></section><section class="panel scroll-panel" id="evidencePanel"><div class="empty"><strong>Evidence & verification</strong><p>Comparison, provenance and verification findings will appear here.</p></div></section></aside>
 </section>
-<section class="panel workflow"><div class="section-head"><div><span class="eyebrow">END-TO-END FLOW</span><h2>From document to defensible review</h2></div></div><div class="steps"><span>DOCUMENT</span><b>→</b><span>OCR</span><b>→</b><span>PROPERTY IDENTITY</span><b>→</b><span>PARCEL</span><b>→</b><span>COMPARE</span><b>→</b><span>FINDING</span><b>→</b><span>HUMAN REVIEW</span><b>→</b><span>AUDIT</span></div><p class="footnote">Base-map tiles are optional. The project map is available immediately without waiting for external tile servers.</p></section>
+<section class="panel workflow"><div class="section-head"><div><span class="eyebrow">END-TO-END FLOW</span><h2>From document to defensible review</h2></div></div><div class="steps"><span>DOCUMENT</span><b>→</b><span>OCR</span><b>→</b><span>PROPERTY IDENTITY</span><b>→</b><span>PARCEL</span><b>→</b><span>COMPARE</span><b>→</b><span>FINDING</span><b>→</b><span>HUMAN REVIEW</span><b>→</b><span>AUDIT</span></div><p class="footnote">Instant project map loads locally. External basemap tiles are optional and never block the demo.</p></section>
 </main>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="/land-map-fix.js"></script><script src="/land-intelligence.js"></script>
+<script src="/land-map-fix.js"></script><script src="/land-intelligence.js"></script>
 </body></html>
