@@ -615,7 +615,7 @@ def geocode_location(req: GeocodeRequest, user: dict = Depends(get_current_user)
 
 @router.get("/map/records")
 def map_records(district: Optional[str]=None, taluka: Optional[str]=None, village: Optional[str]=None,
-                q: Optional[str]=None, limit: int=250, user: dict=Depends(get_current_user)):
+                q: Optional[str]=None, owner: Optional[str]=None, limit: int=250, user: dict=Depends(get_current_user)):
     limit = max(1, min(limit, 250))
     clauses, params = [], []
     for col, val in (("district",district),("taluka",taluka),("village",village)):
@@ -626,6 +626,10 @@ def map_records(district: Optional[str]=None, taluka: Optional[str]=None, villag
         clauses.append("""(property_id LIKE ? OR parcel_id LIKE ? OR survey_number LIKE ? OR gat_number LIKE ?
                            OR khasra_number LIKE ? OR village LIKE ? OR taluka LIKE ? OR district LIKE ?)""")
         params.extend([like]*8)
+    if owner:
+        clauses.append("""EXISTS (SELECT 1 FROM property_documents pd JOIN documents d ON d.id=pd.document_id
+                           WHERE pd.property_id=properties.property_id AND LOWER(d.fields) LIKE LOWER(?))""")
+        params.append("%" + owner.strip() + "%")
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with get_db() as db:
         rows = db.execute("SELECT * FROM properties" + where + " ORDER BY district,taluka,village,parcel_id LIMIT ?", tuple(params+[limit])).fetchall()
@@ -730,7 +734,7 @@ def properties(q: Optional[str]=None, district: Optional[str]=None, village: Opt
     limit=max(1,min(limit,250)); offset=max(0,offset)
     clauses=[]; params=[]
     if q:
-        like=f"%{q.strip()}%"; clauses.append("(property_id LIKE ? OR parcel_id LIKE ? OR survey_number LIKE ? OR gat_number LIKE ? OR khasra_number LIKE ? OR village LIKE ?)"); params += [like]*6
+        like=f"%{q.strip()}%"; clauses.append("""(property_id LIKE ? OR parcel_id LIKE ? OR survey_number LIKE ? OR gat_number LIKE ? OR khasra_number LIKE ? OR village LIKE ? OR taluka LIKE ? OR district LIKE ? OR EXISTS (SELECT 1 FROM property_documents pd JOIN documents d ON d.id=pd.document_id WHERE pd.property_id=properties.property_id AND LOWER(d.fields) LIKE LOWER(?)))"""); params += [like]*9
     for col,val in (("district",district),("village",village),("taluka",taluka),("survey_number",survey_number),("gat_number",gat_number),("khasra_number",khasra_number)):
         if val: clauses.append("LOWER(" + col + ")=LOWER(?)"); params.append(val)
     if owner:
