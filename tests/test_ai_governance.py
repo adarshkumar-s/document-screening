@@ -110,11 +110,10 @@ def test_location_actions_are_registered_and_admin_governed():
         }, created_by="AI_ASSISTANT")
 
 
-def test_location_proposal_requires_approval_before_execution():
+def test_location_proposal_requires_approval_before_execution(tmp_path):
     import land_intelligence
     import server
-    from fastapi.testclient import TestClient
-    server.DB_PATH = str(Path("data") / "ai-location-test.db")
+    server.DB_PATH = str(tmp_path / "ai-location-test.db")
     server.init_db()
     land_intelligence._ensure_tables()
     with server.get_db() as db:
