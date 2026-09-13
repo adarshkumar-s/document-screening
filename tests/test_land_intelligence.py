@@ -167,3 +167,21 @@ def test_land_intelligence_js_route_serves_javascript_not_html():
     assert "function initMap()" in r.text
     assert "<html" not in r.text.lower()
     assert "LAND INTELLIGENCE" not in r.text
+
+
+def test_land_intelligence_assets_are_available_from_canonical_server_app():
+    import server
+    from fastapi.testclient import TestClient
+
+    server_client = TestClient(server.app)
+    html = server_client.get("/land-intelligence")
+    css = server_client.get("/land-intelligence.css")
+    js = server_client.get("/land-intelligence.js")
+
+    assert html.status_code == 200
+    assert css.status_code == 200
+    assert js.status_code == 200
+    assert css.headers["content-type"].split(";", 1)[0] == "text/css"
+    assert js.headers["content-type"].split(";", 1)[0] == "application/javascript"
+    assert ":root{" in css.text
+    assert '"use strict"' in js.text
