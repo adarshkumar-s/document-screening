@@ -203,3 +203,23 @@ def test_cadastral_separator_is_preserved_during_document_diff():
     b = {"survey_number": {"value": "45/2", "confidence": 0.95}}
     diff = server.compute_document_diff(a, b)
     assert any(item["field"] == "survey_number" for item in diff["changed"])
+
+
+def test_ai_correction_cannot_silently_change_land_identifiers(monkeypatch):
+    original_client = server.ai_client
+    class FakeResponse:
+        text = '[{"field":"survey_number","ocr_value":"452","ai_value":"453","decision":"CORRECT","confidence":0.99,"reason":"clear visual reading"}]'
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            return FakeResponse()
+    class FakeClient:
+        models = FakeModels()
+    monkeypatch.setattr(server, "ai_client", FakeClient())
+    updated, corrections, report = server.ai_verify_ocr_fields(
+        b"fake-image",
+        {"survey_number":{"value":"452","confidence":0.4}}
+    )
+    assert updated["survey_number"]["value"] == "452"
+    assert not corrections
+    assert report["proposed_corrections"][0]["requires_human_review"] is True
+    monkeypatch.setattr(server, "ai_client", original_client)
