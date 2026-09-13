@@ -63,7 +63,7 @@ def test_map_assets_are_explicit_and_portal_navigation_is_visible():
     assert "Land Records Map" in html.text
     assert "/static/vendor/leaflet/leaflet.css" in html.text
     assert "Offline schematic" in html.text
-    assert "tile.openstreetmap.fr/osmfr" in js.text
+    assert "tile.openstreetmap.fr/hot" in js.text
     assert "World_Imagery" in js.text
     assert "World_Street_Map" not in js.text
     assert "basemaps.cartocdn.com" not in js.text

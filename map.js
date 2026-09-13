@@ -20,10 +20,10 @@
     markers: null,
     markerById: new Map(),
     tileLayer: null,
-    // Use a keyless OSM France tile endpoint first. The direct OSM endpoint
+    // Use the global Humanitarian OSM style first. The direct OSM endpoint
     // can block hosted applications for policy reasons, and Esri can return
     // legitimate "Map data not yet available" placeholder tiles.
-    tileSource: 'osmfr',
+    tileSource: 'osmhot',
     currentView: 'sheet',
     mapReady: false,
     pinMode: false,
@@ -32,10 +32,10 @@
   };
 
   const TILE_SOURCES = {
-    osmfr: {
-      label: 'OpenStreetMap France',
-      url: 'https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors · tiles courtesy of <a href="https://www.openstreetmap.fr/" target="_blank" rel="noreferrer">OpenStreetMap France</a>',
+    osmhot: {
+      label: 'OpenStreetMap Humanitarian',
+      url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors · HOT tiles courtesy of <a href="https://www.hotosm.org/" target="_blank" rel="noreferrer">Humanitarian OpenStreetMap Team</a>',
       subdomains: 'abc',
       maxNativeZoom: 19,
     },
@@ -60,7 +60,7 @@
   };
   const TILE_SOURCE_STORAGE_KEY = 'documentScreeningMapTileSource';
   const LEGACY_TILE_SOURCE_STORAGE_KEY = 'portfolioMapTileSource';
-  const TILE_FALLBACK_ORDER = ['osmfr', 'esri', 'topo', 'osm', 'schematic'];
+  const TILE_FALLBACK_ORDER = ['osmhot', 'esri', 'topo', 'osm', 'schematic'];
 
   class ApiError extends Error {
     constructor(status, message) { super(message); this.status = status; }
@@ -399,12 +399,12 @@
       const current = window.localStorage.getItem(TILE_SOURCE_STORAGE_KEY);
       const legacy = window.localStorage.getItem(LEGACY_TILE_SOURCE_STORAGE_KEY);
       const stored = current || legacy;
-      // Migrate every previous default/provider choice to the keyless OSM
-      // France endpoint so returning users do not see policy or no-data tiles.
-      if (stored === 'carto' || stored === 'esri-street' || stored === 'esri' || stored === 'osm' || (!current && stored === 'topo')) return 'osmfr';
-      if (stored === 'schematic' || stored === 'osmfr' || Object.prototype.hasOwnProperty.call(TILE_SOURCES, stored)) return stored;
+      // Migrate every previous default/provider choice to the global HOT
+      // endpoint so returning users do not see policy or no-data tiles.
+      if (stored === 'carto' || stored === 'esri-street' || stored === 'esri' || stored === 'osm' || stored === 'osmfr' || (!current && stored === 'topo')) return 'osmhot';
+      if (stored === 'schematic' || stored === 'osmhot' || Object.prototype.hasOwnProperty.call(TILE_SOURCES, stored)) return stored;
     } catch (_) { /* storage is optional */ }
-    return 'osmfr';
+    return 'osmhot';
   }
 
   function saveTileSource() {
@@ -415,7 +415,7 @@
   }
 
   function setTileSource(source) {
-    state.tileSource = ['osmfr', 'esri', 'topo', 'osm', 'schematic'].includes(source) ? source : 'osmfr';
+    state.tileSource = ['osmhot', 'esri', 'topo', 'osm', 'schematic'].includes(source) ? source : 'osmhot';
     saveTileSource();
     if (!state.mapReady) return;
     removeTileLayer();

@@ -9,7 +9,7 @@ class MapTileProvider(ABC):
 
 class DevelopmentProvider(MapTileProvider):
     def configuration(self):
-        return {"url": "https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png", "attribution": "© OpenStreetMap contributors · tiles courtesy of OpenStreetMap France", "requires_key": False}
+        return {"url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", "attribution": "© OpenStreetMap contributors · HOT tiles courtesy of Humanitarian OpenStreetMap Team", "requires_key": False}
 
 class OpenMapProvider(DevelopmentProvider):
     pass
