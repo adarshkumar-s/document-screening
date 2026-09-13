@@ -21,7 +21,7 @@ The replacement is intentionally limited to the mapping surface and mapping-only
 Open `/map` from the portal after signing in. The replacement map provides:
 
 - **Village Sheet** — cascading district, tehsil/taluka, and village selectors; plot/survey grouping; plot search; source-record browsing; neighbouring-plot navigation;
-- **Real Map** — Leaflet record map with a keyless Esri street layer by default, Esri imagery, OpenStreetMap/OpenTopoMap fallbacks, and a fully offline schematic mode;
+- **Real Map** — Leaflet record map with keyless Esri World Imagery by default, OpenTopoMap/OpenStreetMap fallbacks, native-zoom safeguards, and a fully offline schematic mode;
 - **document-grounded positions** — exact reviewer pins, cached village-level geocodes, and explicit unresolved locations instead of fabricated coordinates;
 - **record navigation** — filtered record sidebar, exact marker selection, popup actions, plot-to-map jumps, refresh, and stable local Leaflet assets;
 - **coverage dashboard** — exact-pin, village-approximate, unresolved, survey, village, district, and review-queue metrics;

@@ -20,10 +20,10 @@
     markers: null,
     markerById: new Map(),
     tileLayer: null,
-    // Use the public Esri street tiles first. CARTO now returns an API-key
-    // placeholder in some deployments, while Esri's public raster endpoint is
-    // keyless and the fallback chain still preserves an offline view.
-    tileSource: 'esri-street',
+    // Use the public Esri imagery tiles first. The Esri street cache contains
+    // legitimate "Map data not yet available" tiles for some regions/scales;
+    // imagery avoids that empty-cache presentation while remaining keyless.
+    tileSource: 'esri',
     currentView: 'sheet',
     mapReady: false,
     pinMode: false,
@@ -37,25 +37,22 @@
       url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
     },
-    'esri-street': {
-      label: 'Esri World Street Map',
-      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
-      attribution: 'Tiles &copy; Esri',
-    },
     esri: {
       label: 'Esri World Imagery',
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       attribution: 'Tiles &copy; Esri',
+      maxNativeZoom: 18,
     },
     topo: {
       label: 'OpenTopoMap',
       url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
       attribution: '&copy; OpenStreetMap contributors, SRTM | style &copy; OpenTopoMap',
+      maxNativeZoom: 17,
     },
   };
   const TILE_SOURCE_STORAGE_KEY = 'documentScreeningMapTileSource';
   const LEGACY_TILE_SOURCE_STORAGE_KEY = 'portfolioMapTileSource';
-  const TILE_FALLBACK_ORDER = ['esri-street', 'esri', 'osm', 'topo', 'schematic'];
+  const TILE_FALLBACK_ORDER = ['esri', 'topo', 'osm', 'schematic'];
 
   class ApiError extends Error {
     constructor(status, message) { super(message); this.status = status; }
@@ -394,12 +391,12 @@
       const current = window.localStorage.getItem(TILE_SOURCE_STORAGE_KEY);
       const legacy = window.localStorage.getItem(LEGACY_TILE_SOURCE_STORAGE_KEY);
       const stored = current || legacy;
-      // Migrate both previous defaults (OSM and CARTO) to the keyless Esri
-      // street layer so a returning user does not see a provider error again.
-      if (stored === 'carto' || (stored === 'osm' && !current)) return 'esri-street';
+      // Migrate previous defaults (OSM, CARTO, and Esri street) to imagery
+      // so returning users do not see provider-policy or empty-cache tiles.
+      if (stored === 'carto' || stored === 'esri-street' || (stored === 'osm' && !current)) return 'esri';
       if (stored === 'schematic' || Object.prototype.hasOwnProperty.call(TILE_SOURCES, stored)) return stored;
     } catch (_) { /* storage is optional */ }
-    return 'esri-street';
+    return 'esri';
   }
 
   function saveTileSource() {
@@ -410,7 +407,7 @@
   }
 
   function setTileSource(source) {
-    state.tileSource = ['esri-street', 'esri', 'osm', 'topo', 'schematic'].includes(source) ? source : 'esri-street';
+    state.tileSource = ['esri', 'topo', 'osm', 'schematic'].includes(source) ? source : 'esri';
     saveTileSource();
     if (!state.mapReady) return;
     removeTileLayer();
@@ -424,7 +421,12 @@
     }
     $('mapSchematicNote').classList.add('hidden');
     const definition = TILE_SOURCES[state.tileSource];
-    state.tileLayer = window.L.tileLayer(definition.url, { attribution: definition.attribution, maxZoom: 19, crossOrigin: true });
+    state.tileLayer = window.L.tileLayer(definition.url, {
+      attribution: definition.attribution,
+      maxZoom: 19,
+      maxNativeZoom: definition.maxNativeZoom || 19,
+      crossOrigin: true,
+    });
     attachTileHealth(state.tileLayer, state.tileSource);
     state.tileLayer.addTo(state.map);
     renderMarkers();

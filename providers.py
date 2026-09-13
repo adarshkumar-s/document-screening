@@ -9,7 +9,7 @@ class MapTileProvider(ABC):
 
 class DevelopmentProvider(MapTileProvider):
     def configuration(self):
-        return {"url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", "attribution": "Tiles © Esri", "requires_key": False}
+        return {"url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "attribution": "Tiles © Esri", "requires_key": False}
 
 class OpenMapProvider(DevelopmentProvider):
     pass
