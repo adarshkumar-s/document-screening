@@ -1,48 +1,29 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Document Screening Map</title>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Document Intelligence Workspace</title>
   <link rel="stylesheet" href="/document-map.css">
 </head>
 <body>
-  <main>
-    <header>
-      <div class="top"><a href="/">← Document Screening</a><span>PRIVATE • DOCUMENT-DERIVED DATA</span></div>
-      <h1>Document Evidence Map</h1>
-      <p>Visualize only geographic evidence extracted from uploaded screening documents. No parcel, ownership, or location data is fabricated.</p>
-    </header>
-    <section id="summary" class="cards">
-      <div><b id="total">—</b><small>Documents</small></div>
-      <div><b id="mapped">—</b><small>Mapped</small></div>
-      <div><b id="unmapped">—</b><small>No geometry</small></div>
-      <div><b id="low">—</b><small>Low confidence</small></div>
-    </section>
-    <section class="toolbar">
-      <input id="search" placeholder="Search owner, survey, khasra, village, filename…">
-      <select id="status"><option value="">All statuses</option></select>
-      <select id="mappedFilter"><option value="">All records</option><option value="true">Mapped</option><option value="false">No map data</option></select>
-      <button id="refresh">Refresh</button>
-    </section>
-    <section class="workspace">
-      <div class="list">
-        <table>
-          <thead><tr><th>Document</th><th>Land identifier</th><th>Location</th><th>Status</th><th>Map</th><th></th></tr></thead>
-          <tbody id="rows"><tr><td colspan="6" class="empty">Loading documents…</td></tr></tbody>
-        </table>
-      </div>
-      <section class="map-panel">
-        <div class="map-head"><b>Spatial evidence</b><span id="mapState">Select a mapped document</span></div>
-        <div id="map" aria-label="Document location map">
-          <div class="map-grid"></div>
-          <svg id="mapSvg" viewBox="0 0 800 565" preserveAspectRatio="none" role="img" aria-label="Geographic evidence plot"></svg>
-          <div id="mapLegend" class="map-legend">No external map library required</div>
-        </div>
-      </section>
-      <aside id="detail"><div class="empty">Select a document to inspect screening evidence.</div></aside>
-    </section>
-  </main>
-  <script src="/document-map.js"></script>
-</body>
-</html>
+<main>
+<header><div class="top"><a href="/">← Document Screening</a><span>PRIVATE • DOCUMENT-DERIVED DATA</span></div><h1>Document Intelligence Workspace</h1><p>Investigate geographic evidence, screening risk, cross-document consistency, timelines and verification history without inventing land facts.</p></header>
+<section id="summary" class="cards"><div><b id="total">—</b><small>Documents</small></div><div><b id="mapped">—</b><small>Mapped</small></div><div><b id="unmapped">—</b><small>Unmapped</small></div><div><b id="low">—</b><small>Low OCR confidence</small></div><div><b id="riskCount">—</b><small>Needs review</small></div></section>
+<section class="toolbar"><input id="search" placeholder="Search owner, survey, khasra, village, filename…"><select id="status"><option value="">All statuses</option></select><select id="mappedFilter"><option value="">All records</option><option value="true">Mapped</option><option value="false">No map data</option></select><button id="refresh">Refresh</button></section>
+<section class="workspace">
+<div class="list"><table><thead><tr><th>Document</th><th>Land identifier</th><th>Location</th><th>Status</th><th>Map</th><th></th></tr></thead><tbody id="rows"><tr><td colspan="6" class="empty">Loading documents…</td></tr></tbody></table></div>
+<section class="map-panel"><div class="map-head"><b>Spatial evidence</b><span id="mapState">Select a mapped document</span></div><div id="map"><div class="map-grid"></div><svg id="mapSvg" viewBox="0 0 800 565" preserveAspectRatio="none" role="img" aria-label="Geographic evidence plot"></svg><div id="mapLegend">SVG evidence plot • no external map dependency</div></div></section>
+<aside id="detail"><div class="empty">Select a document to inspect screening evidence.</div></aside>
+</section>
+<section id="insights" class="insights hidden">
+<div class="section-title"><div><h2>Screening intelligence</h2><p>Deterministic findings derived from the stored document records.</p></div><span id="recommendation" class="recommendation">—</span></div>
+<div class="insight-grid">
+<article><h3>Risk Radar</h3><div id="riskPanel">Select a document.</div></article>
+<article><h3>Why was this flagged?</h3><div id="explainPanel">Select a document.</div></article>
+<article class="wide"><h3>Cross-document consistency</h3><div id="consistencyPanel">Select a document.</div></article>
+<article class="wide"><h3>Document timeline</h3><div id="timelinePanel">Select a document.</div></article>
+<article class="wide"><h3>Compare documents</h3><div class="compare-controls"><select id="compareSelect"><option value="">Select related document…</option></select><button id="compareBtn">Compare</button></div><div id="comparePanel">Select a second document to see field-level changes.</div></article>
+<article class="wide"><h3>Audit history</h3><div id="auditPanel">Loading when a document is selected.</div></article>
+</div></section>
+</main><script src="/document-map.js"></script>
+</body></html>
