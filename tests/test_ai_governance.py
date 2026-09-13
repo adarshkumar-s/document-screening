@@ -12,12 +12,7 @@ import ai_governance
 client = TestClient(main.app)
 
 
-@pytest.fixture()
-def client():
-    return TestClient(main.app)
-
-
-def test_land_intelligence_assets_and_types(client):
+def test_land_intelligence_assets_and_types():
     checks = [
         ("/land-intelligence", 200, "text/html"),
         ("/land-intelligence.css", 200, "text/css"),
@@ -31,7 +26,7 @@ def test_land_intelligence_assets_and_types(client):
     assert "LAND INTELLIGENCE" in client.get("/land-intelligence").text
 
 
-def test_demo_land_endpoints_are_available(client):
+def test_demo_land_endpoints_are_available():
     assert client.get("/api/demo-land/health").status_code == 200
     properties = client.get("/api/demo-land/properties")
     assert properties.status_code == 200
