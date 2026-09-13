@@ -137,3 +137,33 @@ def test_geojson_import_rejects_unsupported_crs():
     payload = '{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:3857"}},"features":[]}'
     r = client.post("/api/land/import-geojson", headers=headers, files={"file":("bad.geojson",payload,"application/geo+json")})
     assert r.status_code == 422
+
+
+def test_land_intelligence_ui_route_serves_html():
+    r = client.get("/land-intelligence")
+    assert r.status_code == 200
+    assert "LAND INTELLIGENCE" in r.text
+    assert 'href="/land-intelligence.css"' in r.text
+    assert 'src="/land-intelligence.js"' in r.text
+    assert "leaflet@1.9.4/dist/leaflet.css" in r.text
+    assert "leaflet@1.9.4/dist/leaflet.js" in r.text
+
+
+def test_land_intelligence_css_route_serves_css_not_html():
+    r = client.get("/land-intelligence.css")
+    assert r.status_code == 200
+    assert r.headers["content-type"].split(";", 1)[0] == "text/css"
+    assert ":root{" in r.text
+    assert ".workspace{" in r.text
+    assert "<html" not in r.text.lower()
+    assert "LAND INTELLIGENCE" not in r.text
+
+
+def test_land_intelligence_js_route_serves_javascript_not_html():
+    r = client.get("/land-intelligence.js")
+    assert r.status_code == 200
+    assert r.headers["content-type"].split(";", 1)[0] == "application/javascript"
+    assert '"use strict"' in r.text
+    assert "function initMap()" in r.text
+    assert "<html" not in r.text.lower()
+    assert "LAND INTELLIGENCE" not in r.text
