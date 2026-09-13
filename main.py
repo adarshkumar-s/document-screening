@@ -1,62 +1,51 @@
-"""Production ASGI entrypoint."""
+"""Production ASGI entrypoint.
+
+Keeps the existing Document Screening application intact and adds only the
+new document-first mapping routes.
+"""
 from fastapi import Request
 from fastapi.responses import Response
 from server import app
-import land_intelligence
+from document_mapping import router as document_mapping_router
 from demo_land import router as demo_land_router
 from ai_governance import router as ai_approval_router
-from land_intelligence_bridge_optimized import router as land_bridge_router
-from land_intelligence_fast import router as land_fast_router
-from land_intelligence_optimized import ensure_property_indexes
-from land_intelligence_identity import ensure_store, backfill
-import threading
 
 app.include_router(demo_land_router)
 app.include_router(ai_approval_router)
-app.include_router(land_bridge_router)
-app.include_router(land_fast_router)
+app.include_router(document_mapping_router)
 
-@app.on_event("startup")
-def initialize_land_intelligence():
-    # DDL is performed once before serving requests; HTTP handlers stay read/query only.
-    ensure_property_indexes()
-    ensure_store()
-    threading.Thread(target=backfill, kwargs={"limit": 500}, daemon=True, name="land-identity-backfill").start()
-
-LAND_INTELLIGENCE_SCRIPT = b'''<script>
+DOCUMENT_MAPPING_SCRIPT = b'''<script>
 (function(){
-  function addLandActions(){
+  function addActions(){
     ['#simpleDocTable','#simpleSubmissionsTable','#staffRecordsTable'].forEach(function(selector){
-      var table=document.querySelector(selector); if(!table)return;
+      var table=document.querySelector(selector);if(!table)return;
       table.querySelectorAll('tbody tr').forEach(function(row){
-        if(row.dataset.liAction==='1')return;
-        var cells=row.querySelectorAll('td'); if(!cells.length)return;
-        var match=(cells[0].textContent||'').match(/#(\\d+)/); if(!match)return;
-        var id=match[1], cell=cells[cells.length-1]; if(!cell)return;
-        var button=document.createElement('button');
-        button.type='button'; button.className='btn ghost'; button.textContent='Land Intelligence';
+        if(row.dataset.documentMapAction==='1')return;
+        var cells=row.querySelectorAll('td');if(!cells.length)return;
+        var match=(cells[0].textContent||'').match(/#(\\d+)/);if(!match)return;
+        var id=match[1],cell=cells[cells.length-1];if(!cell)return;
+        var button=document.createElement('button');button.type='button';button.className='btn ghost';button.textContent='Map document';
         button.style.cssText='padding:4px 10px;font-size:11px;margin-left:6px;white-space:nowrap;';
-        button.title='Open this saved document in Land Intelligence';
-        button.onclick=function(){window.location.href='/land-intelligence?document_id='+encodeURIComponent(id);};
-        cell.appendChild(button); row.dataset.liAction='1';
+        button.onclick=function(){window.location.href='/api/land/document-map?document_id='+encodeURIComponent(id)};
+        cell.appendChild(button);row.dataset.documentMapAction='1';
       });
     });
   }
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',addLandActions,{once:true});else addLandActions();
-  new MutationObserver(addLandActions).observe(document.documentElement,{childList:true,subtree:true});
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',addActions,{once:true});else addActions();
+  new MutationObserver(addActions).observe(document.documentElement,{childList:true,subtree:true});
 })();
 </script>'''
 
 @app.middleware("http")
-async def inject_land_intelligence_record_action(request: Request, call_next):
-    response = await call_next(request)
-    if request.url.path.startswith("/api/land/intelligence/"):
-        response.headers["Cache-Control"] = "no-store, private"
+async def inject_document_mapping_action(request: Request, call_next):
+    response=await call_next(request)
+    if request.url.path.startswith('/api/land/document-map'):
+        response.headers['Cache-Control']='no-store, private'
         return response
-    if request.url.path != "/" or "text/html" not in response.headers.get("content-type", ""):
+    if request.url.path!='/' or 'text/html' not in response.headers.get('content-type',''):
         return response
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    if b"liAction" not in body and b"</body>" in body:
-        body = body.replace(b"</body>", LAND_INTELLIGENCE_SCRIPT + b"</body>", 1)
-    headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
-    return Response(content=body,status_code=response.status_code,headers=headers,media_type="text/html")
+    body=b''.join([chunk async for chunk in response.body_iterator])
+    if b'documentMapAction' not in body and b'</body>' in body:
+        body=body.replace(b'</body>',DOCUMENT_MAPPING_SCRIPT+b'</body>',1)
+    headers={k:v for k,v in response.headers.items() if k.lower()!='content-length'}
+    return Response(content=body,status_code=response.status_code,headers=headers,media_type='text/html')
