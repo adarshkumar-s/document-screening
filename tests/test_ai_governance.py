@@ -96,3 +96,44 @@ def test_create_verification_case_requires_admin_approval_and_executes_server_si
     assert approved.json()["proposal"]["execution_result"]["cases"]
     with server.get_db() as db:
         assert db.execute("SELECT 1 FROM verification_cases").fetchone() is not None
+
+
+def test_location_actions_are_registered_and_admin_governed():
+    assert "SET_PROPERTY_LOCATION" in ai_governance.ACTION_REGISTRY
+    assert "CLEAR_PROPERTY_LOCATION" in ai_governance.ACTION_REGISTRY
+    with pytest.raises(Exception):
+        ai_governance.create_proposal({
+            "action_type":"SET_PROPERTY_LOCATION","target_type":"PROPERTY",
+            "target_ids":["DOES-NOT-EXIST"],"before":{},
+            "after":{"latitude":28.62,"longitude":77.10},"reason":"test",
+            "evidence":[],"confidence":0.9,"risk":"HIGH"
+        }, created_by="AI_ASSISTANT")
+
+
+def test_location_proposal_requires_approval_before_execution():
+    import land_intelligence
+    import server
+    from fastapi.testclient import TestClient
+    server.DB_PATH = str(Path("data") / "ai-location-test.db")
+    server.init_db()
+    land_intelligence._ensure_tables()
+    with server.get_db() as db:
+        admin = db.execute("SELECT id,full_name,email FROM users WHERE role='ADMIN' AND is_active=1 ORDER BY id LIMIT 1").fetchone()
+    if not admin:
+        pytest.skip("No test administrator is available")
+    proposal = ai_governance.create_proposal({
+        "action_type":"SET_PROPERTY_LOCATION","target_type":"PROPERTY",
+        "target_ids":["DEMO-PROP-103-A"],
+        "before":{"properties":{"DEMO-PROP-103-A":{"location_status":"PARCEL_GEOMETRY"}}},
+        "after":{"latitude":28.6227,"longitude":77.1057,"reason":"Governed test pin"},
+        "reason":"AI proposes a verified pin for administrator review.",
+        "evidence":[{"type":"test"}],"confidence":0.95,"risk":"HIGH"
+    }, created_by="AI_ASSISTANT")
+    assert proposal["status"] == "PROPOSED"
+    with server.get_db() as db:
+        row=db.execute("SELECT latitude,longitude,location_status FROM properties WHERE property_id='DEMO-PROP-103-A'").fetchone()
+    assert row["location_status"] == "PARCEL_GEOMETRY"
+    assert row["latitude"] != 28.6227
+    executed=ai_governance.approve_proposal(proposal["proposal_id"],dict(admin),"test approval")
+    assert executed["status"] == "EXECUTED"
+    assert executed["execution_result"]["location_status"] == "EXACT_PIN"
