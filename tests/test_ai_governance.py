@@ -73,8 +73,8 @@ def test_create_verification_case_requires_admin_approval_and_executes_server_si
              '{"owner_name":{"value":"A","confidence":0.6},"survey_number":{"value":"452","confidence":0.9},"village":{"value":"Sundarpur","confidence":0.9}}',
              '{}','{}','','','eng','{}','admin@landrec.gov.in',0,0)
         )
-        db.execute("INSERT INTO property_documents(property_id,document_id,relationship_type,linked_at,linked_by) VALUES (?,?,?,?,?)",
-                   ("DEMO-PROP-103-A","CASE-DOC","SUPPORTING_DOCUMENT",0,"test"))
+        db.execute("INSERT INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)",
+                   ("DEMO-PROP-103-A","CASE-DOC","SUPPORTING_DOCUMENT",0))
     admin = client.post("/api/auth/login", json={"email":"admin@landrec.gov.in","password":"Admin@123"})
     assert admin.status_code == 200
     headers = {"Authorization": f"Bearer {admin.json()['token']}"}
