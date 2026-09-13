@@ -892,12 +892,6 @@ Rules:
             reason = str(item.get("reason") or "Visual verification result")
             if decision == "CORRECT" and ai_value and confidence >= AI_CORRECTION_CONFIDENCE_THRESHOLD:
                 old = updated.get(field, {}) if isinstance(updated.get(field), dict) else {"value": updated.get(field, "")}
-                updated[field] = {
-                    "value": ai_value,
-                    "confidence": round(confidence, 3),
-                    "validation_status": "VALID",
-                    "validation_message": "Corrected by AI after visual verification."
-                }
                 corr = {
                     "field": field,
                     "original_value": str(old.get("value") or ocr_value),
@@ -906,8 +900,23 @@ Rules:
                     "reason": reason,
                     "method": "AI_VISUAL_VERIFICATION",
                 }
-                corrections.append(corr)
-                report["corrections"].append(corr)
+                # Never silently rewrite authoritative land identifiers. An AI
+                # visual correction becomes a human-review proposal instead.
+                protected = {"survey_number", "khasra_number", "khata_number", "plot_number", "mutation_no", "registration_no"}
+                if field in protected:
+                    corr["applied"] = False
+                    corr["requires_human_review"] = True
+                    report.setdefault("proposed_corrections", []).append(corr)
+                else:
+                    updated[field] = {
+                        "value": ai_value,
+                        "confidence": round(confidence, 3),
+                        "validation_status": "VALID",
+                        "validation_message": "Corrected by AI after visual verification; original OCR is preserved in original_fields."
+                    }
+                    corr["applied"] = True
+                    corrections.append(corr)
+                    report["corrections"].append(corr)
             elif decision == "VERIFIED":
                 report["verified"].append({"field": field, "confidence": round(confidence, 3), "reason": reason})
             else:
