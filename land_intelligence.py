@@ -582,6 +582,8 @@ def _apply_village_location(property_id: str, result: Dict[str, Any], actor: dic
         row = db.execute("SELECT * FROM properties WHERE property_id=? OR parcel_id=?", (property_id, property_id)).fetchone()
         if not row:
             raise HTTPException(404, "Property not found")
+        if row["location_status"] == "EXACT_PIN":
+            raise HTTPException(409, "An exact pin already exists. Clear it before replacing it with an approximate village location.")
         db.execute("""UPDATE properties SET latitude=?,longitude=?,location_status='VILLAGE_LEVEL',
                       location_source='OpenStreetMap Nominatim',location_confidence=0.5,
                       location_verified_by=NULL,location_verified_at=NULL,
