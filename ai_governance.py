@@ -272,11 +272,55 @@ def _execute(proposal, admin):
                 db.execute("UPDATE documents SET status=?,updated_at=? WHERE id=?",(new_status,time.time(),rid))
             return {"records":ids,"status":new_status}
         if action=="CREATE_VERIFICATION_CASE":
-            # Delegate to the existing Land Intelligence schema only when it exists.
+            from land_intelligence import _ensure_tables
+            _ensure_tables()
+            cases = []
+            grouped = {}
             for rid in ids:
-                if not db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='verification_cases'").fetchone() and not s.DATABASE_URL:
-                    raise HTTPException(503,"Verification case storage is not initialized.")
-            return {"records":ids,"message":"Proposal validated; use the existing verification workflow to create the case."}
+                row = db.execute(
+                    "SELECT pd.property_id FROM property_documents pd WHERE pd.document_id=? ORDER BY pd.linked_at DESC LIMIT 1",
+                    (rid,),
+                ).fetchone()
+                property_id = row["property_id"] if row else None
+                grouped.setdefault(property_id, []).append(rid)
+            for property_id, record_ids in grouped.items():
+                case_id = "CASE-" + uuid.uuid4().hex[:10].upper()
+                now = time.time()
+                findings = [{
+                    "finding_type": "AI_PROPOSAL",
+                    "severity": "REVIEW",
+                    "title": after.get("title") or "AI-proposed verification case",
+                    "evidence": {
+                        "proposal_id": proposal["proposal_id"],
+                        "record_ids": record_ids,
+                        "reason": proposal.get("reason", ""),
+                        "evidence": proposal.get("evidence", []),
+                    },
+                }]
+                db.execute(
+                    """INSERT INTO verification_cases
+                       (case_id,property_id,status,assigned_officer,findings,warnings,comparison_results,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (case_id, property_id, "OPEN", None, _json(findings), _json([]), _json([]), now, now),
+                )
+                for finding in findings:
+                    db.execute(
+                        """INSERT INTO verification_findings
+                           (finding_id,property_id,case_id,finding_type,severity,status,title,evidence,created_by,created_at,updated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        ("FND-" + uuid.uuid4().hex[:10].upper(), property_id, case_id,
+                         finding["finding_type"], finding["severity"], "OPEN", finding["title"],
+                         _json(finding["evidence"]), admin["full_name"], now, now),
+                    )
+                if property_id:
+                    db.execute(
+                        "INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",
+                        (uuid.uuid4().hex, property_id, "AI_VERIFICATION_CASE_CREATED",
+                         "Verification case " + case_id + " created after administrator approval of AI proposal " + proposal["proposal_id"] + ".",
+                         "AI Approval Center", now),
+                    )
+                cases.append({"case_id": case_id, "property_id": property_id, "record_ids": record_ids})
+            return {"records": ids, "cases": cases}
     raise HTTPException(400,"Registered action has no executor.")
 
 def approve_proposal(pid, admin, note=""):
