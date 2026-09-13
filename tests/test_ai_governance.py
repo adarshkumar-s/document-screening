@@ -138,3 +138,26 @@ def test_location_proposal_requires_approval_before_execution(tmp_path):
     assert executed["status"] == "EXECUTED"
     assert executed["execution_result"]["location_status"] == "EXACT_PIN"
     server.DB_PATH = old_db_path
+
+
+def test_ai_location_pin_command_creates_proposal_without_mutating_property(tmp_path):
+    import land_intelligence
+    import server
+    old_db_path = server.DB_PATH
+    server.DB_PATH = str(tmp_path / "assistant-location.db")
+    server.init_db()
+    land_intelligence._ensure_tables()
+    before = server.get_db()
+    with before as db:
+        row = db.execute("SELECT location_status,latitude,longitude FROM properties WHERE property_id='DEMO-PROP-103-A'").fetchone()
+    result = __import__("admin_assistant").run_assistant_turn(
+        "Set exact pin for DEMO-PROP-103-A at 28.6227, 77.1057"
+    )
+    assert result["action_card"]["confirmation_required"] is True
+    assert result["action_card"]["action_type"] == "SET_PROPERTY_LOCATION"
+    with server.get_db() as db:
+        after = db.execute("SELECT location_status,latitude,longitude FROM properties WHERE property_id='DEMO-PROP-103-A'").fetchone()
+    assert after["location_status"] == row["location_status"]
+    assert after["latitude"] == row["latitude"]
+    assert after["longitude"] == row["longitude"]
+    server.DB_PATH = old_db_path
