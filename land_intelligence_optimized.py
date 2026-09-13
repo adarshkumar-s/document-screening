@@ -1,4 +1,9 @@
-"""Indexed candidate retrieval for Land Intelligence."""
+"""Fast candidate retrieval for Land Intelligence.
+
+Indexes are prepared once when the application imports this module. The document
+request path never performs DDL, so opening a document cannot be blocked by index
+creation on a large parcel table.
+"""
 from __future__ import annotations
 
 import threading
@@ -15,6 +20,7 @@ _indexes_ready = False
 
 
 def _ensure_indexes() -> None:
+    """Create lookup indexes once during application startup, never on a request."""
     global _indexes_ready
     if _indexes_ready:
         return
@@ -39,7 +45,6 @@ def _candidate_rows(fields: Dict[str, Any]) -> List[Dict[str, Any]]:
     supplied = {k: _field(fields, k) for k in IDENTIFIER_KEYS if _field(fields, k)}
     if not supplied:
         return []
-    _ensure_indexes()
     clauses: List[str] = []
     params: List[Any] = []
     for key in STRONG_KEYS:
@@ -85,7 +90,11 @@ def resolve_indexed(fields: Dict[str, Any]) -> Dict[str, Any]:
                 if key in STRONG_KEYS: strong_conflict=True
         if area_num is not None and row.get("area") is not None:
             max_score += 1
-            if abs(area_num-float(row["area"])) <= tolerance: score += 1; reasons.append(f"area within {tolerance:g} tolerance")
+            try:
+                area_match = abs(area_num-float(row["area"])) <= tolerance
+            except (TypeError, ValueError):
+                area_match = False
+            if area_match: score += 1; reasons.append(f"area within {tolerance:g} tolerance")
             else: conflicts.append("area")
         elif area_num is not None: max_score += 1; missing.append("area")
         if max_score > 0 and score > 0:
@@ -100,3 +109,7 @@ def resolve_indexed(fields: Dict[str, Any]) -> Dict[str, Any]:
     top_pct,_,top_reasons,top_missing,top_conflicts,top_strong_conflict=scored[0]
     status="MATCH" if top_pct>=95 and not top_strong_conflict and not top_conflicts else ("POSSIBLE MATCH" if top_pct>=50 and not top_strong_conflict else "NO MATCH")
     return {"status":status,"confidence":top_pct/100,"matches":matches,"reasons":top_reasons,"missing_fields":top_missing,"conflicting_fields":top_conflicts}
+
+# land_intelligence initializes the properties table before this module is imported
+# by main.py, so index creation happens here during application startup.
+_ensure_indexes()
