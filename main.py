@@ -30,12 +30,12 @@ async def add_land_intelligence_link(request: Request, call_next):
       if(row.querySelector('.land-intel-direct')) return;
       const cells=row.querySelectorAll('td');
       if(cells.length<7) return;
-      const m=(cells[0].textContent||'').match(/\\d+/);
+      const m=(cells[0].textContent||'').match(/\d+/);
       if(!m) return;
       const a=document.createElement('a');
       a.className='btn ghost land-intel-direct';
       a.href='/land-intelligence?document_id='+encodeURIComponent(m[0]);
-      a.textContent='Land Intelligence →';
+      a.textContent='Land Intelligence ->';
       a.title='Investigate this saved record in Land Intelligence';
       a.style.cssText='display:inline-block;margin-left:5px;padding:4px 9px;font-size:11px;white-space:nowrap;text-decoration:none';
       cells[6].appendChild(a);
@@ -45,14 +45,14 @@ async def add_land_intelligence_link(request: Request, call_next):
     const panel=document.querySelector('.gov-user-panel'), logout=document.getElementById('logoutBtn');
     if(!panel||!logout||document.getElementById('compactAccountMenu')) return;
     const wrap=document.createElement('div'); wrap.id='compactAccountMenu'; wrap.style.cssText='position:relative;display:inline-block';
-    wrap.innerHTML='<button type="button" id="accountMenuBtn" class="btn ghost" style="padding:6px 11px;font-size:12px">Account ▾</button><div id="accountMenu" style="display:none;position:absolute;right:0;top:38px;min-width:190px;background:#fff;border:1px solid #dbe3ec;border-radius:8px;box-shadow:0 10px 30px rgba(15,23,42,.18);z-index:100001;padding:6px"></div>';
+    wrap.innerHTML='<button type="button" id="accountMenuBtn" class="btn ghost" style="padding:6px 11px;font-size:12px">Account v</button><div id="accountMenu" style="display:none;position:absolute;right:0;top:38px;min-width:190px;background:#fff;border:1px solid #dbe3ec;border-radius:8px;box-shadow:0 10px 30px rgba(15,23,42,.18);z-index:100001;padding:6px"></div>';
     logout.replaceWith(wrap);
     const menu=wrap.querySelector('#accountMenu');
     const item=(label,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.style.cssText='display:block;width:100%;text-align:left;border:0;background:#fff;padding:9px 10px;border-radius:6px;font-size:12px;font-weight:700;color:#12355b;cursor:pointer';b.onclick=()=>{menu.style.display='none';fn()};menu.appendChild(b)};
-    item('👤 User profile',()=>openAccountModal('User profile',`<p><strong>${esc(document.getElementById('userName')?.textContent||'User')}</strong></p><p>Role: ${esc(document.getElementById('userRole')?.textContent||'—')}</p>`));
-    item('⚙ Settings',()=>openAccountModal('Settings','<p>Accessibility controls remain in the top utility bar. Account settings are kept here so the main workspace stays focused.</p>'));
-    item('✨ AI Corrections',()=>{ const a=document.getElementById('staff-tab-approvals'); if(a){a.scrollIntoView({behavior:'smooth',block:'start'}); const t=document.querySelector('[data-staff-pane="approvals"],[data-pane="approvals"]'); if(t)t.click();} else openAccountModal('AI Corrections','<p>AI correction proposals are handled through the authorized staff approval workflow.</p>'); });
-    item('🗺 Land Intelligence',()=>location.href='/land-intelligence');
+    item('User profile',()=>openAccountModal('User profile',`<p><strong>${esc(document.getElementById('userName')?.textContent||'User')}</strong></p><p>Role: ${esc(document.getElementById('userRole')?.textContent||'-')}</p>`));
+    item('Settings',()=>openAccountModal('Settings','<p>Accessibility controls remain in the top utility bar. Account settings are kept here so the main workspace stays focused.</p>'));
+    item('AI Corrections',()=>{ const a=document.getElementById('staff-tab-approvals'); if(a){a.scrollIntoView({behavior:'smooth',block:'start'}); const t=document.querySelector('[data-staff-pane="approvals"],[data-pane="approvals"]'); if(t)t.click();} else openAccountModal('AI Corrections','<p>AI correction proposals are handled through the authorized staff approval workflow.</p>'); });
+    item('Land Intelligence',()=>location.href='/land-intelligence');
     document.getElementById('accountMenuBtn').onclick=e=>{e.stopPropagation();menu.style.display=menu.style.display==='none'?'block':'none'};
     document.addEventListener('click',()=>menu.style.display='none');
   }
