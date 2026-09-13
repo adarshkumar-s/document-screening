@@ -20,7 +20,9 @@
     markers: null,
     markerById: new Map(),
     tileLayer: null,
-    tileSource: 'osm',
+    // CARTO is the safer default for hosted deployments; some network environments
+    // return a policy 403 for the public OpenStreetMap tile endpoint.
+    tileSource: 'carto',
     currentView: 'sheet',
     mapReady: false,
     pinMode: false,
@@ -30,22 +32,29 @@
 
   const TILE_SOURCES = {
     osm: {
+      label: 'OpenStreetMap',
       url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
     },
     carto: {
+      label: 'CARTO Voyager',
       url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
       attribution: '&copy; OpenStreetMap contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noreferrer">CARTO</a>',
     },
     esri: {
+      label: 'Esri World Imagery',
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       attribution: 'Tiles &copy; Esri',
     },
     topo: {
+      label: 'OpenTopoMap',
       url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
       attribution: '&copy; OpenStreetMap contributors, SRTM | style &copy; OpenTopoMap',
     },
   };
+  const TILE_SOURCE_STORAGE_KEY = 'documentScreeningMapTileSource';
+  const LEGACY_TILE_SOURCE_STORAGE_KEY = 'portfolioMapTileSource';
+  const TILE_FALLBACK_ORDER = ['carto', 'esri', 'topo', 'schematic'];
 
   class ApiError extends Error {
     constructor(status, message) { super(message); this.status = status; }
@@ -341,19 +350,68 @@
     state.tileLayer = null;
   }
 
-  function attachTileHealth(layer) {
-    layer.on('tileerror', () => { $('mapFallback').classList.remove('hidden'); });
-    layer.once('tileload', () => { $('mapFallback').classList.add('hidden'); $('mapLoadHint').classList.add('hidden'); });
+  function tileSourceLabel(source) {
+    if (source === 'schematic') return 'Offline schematic';
+    return TILE_SOURCES[source]?.label || 'Map tiles';
   }
 
-  function saveTileSource() { try { window.localStorage.setItem('portfolioMapTileSource', state.tileSource); } catch (_) {} }
+  function nextTileSource(source) {
+    if (source === 'schematic') return null;
+    const start = source === 'osm' ? -1 : TILE_FALLBACK_ORDER.indexOf(source);
+    return TILE_FALLBACK_ORDER.slice(start + 1).find((candidate) => candidate !== source) || null;
+  }
+
+  function attachTileHealth(layer, source) {
+    let failures = 0;
+    let loaded = false;
+    let fallbackStarted = false;
+    layer.on('tileerror', () => {
+      failures += 1;
+      $('mapFallback').classList.remove('hidden');
+      $('mapLoadHint').classList.add('hidden');
+      // A blocked tile provider usually fails every visible tile. Switch after
+      // two initial failures instead of leaving a wall of provider error tiles.
+      if (loaded || fallbackStarted || failures < 2) return;
+      const fallback = nextTileSource(source);
+      if (!fallback) return;
+      fallbackStarted = true;
+      window.setTimeout(() => {
+        if (state.tileLayer !== layer) return;
+        setTileSource(fallback);
+        setNotice(`<strong>${esc(tileSourceLabel(source))} tiles were unavailable.</strong> Switched to ${esc(tileSourceLabel(fallback))}. You can change the base layer below.`, 'warn');
+      }, 0);
+    });
+    layer.once('tileload', () => {
+      loaded = true;
+      $('mapFallback').classList.add('hidden');
+      $('mapLoadHint').classList.add('hidden');
+    });
+  }
+
+  function loadTileSource() {
+    try {
+      const current = window.localStorage.getItem(TILE_SOURCE_STORAGE_KEY);
+      const legacy = window.localStorage.getItem(LEGACY_TILE_SOURCE_STORAGE_KEY);
+      const stored = current || legacy;
+      if (stored === 'osm' && !current) return 'carto';
+      if (stored === 'schematic' || Object.prototype.hasOwnProperty.call(TILE_SOURCES, stored)) return stored;
+    } catch (_) { /* storage is optional */ }
+    return 'carto';
+  }
+
+  function saveTileSource() {
+    try {
+      window.localStorage.setItem(TILE_SOURCE_STORAGE_KEY, state.tileSource);
+      window.localStorage.removeItem(LEGACY_TILE_SOURCE_STORAGE_KEY);
+    } catch (_) { /* storage is optional */ }
+  }
 
   function setTileSource(source) {
-    state.tileSource = source;
+    state.tileSource = source === 'osm' || source === 'carto' || source === 'esri' || source === 'topo' || source === 'schematic' ? source : 'carto';
     saveTileSource();
     if (!state.mapReady) return;
     removeTileLayer();
-    if (source === 'schematic') {
+    if (state.tileSource === 'schematic') {
       $('mapSchematicNote').classList.remove('hidden');
       $('mapLoadHint').classList.add('hidden');
       $('mapFallback').classList.add('hidden');
@@ -362,9 +420,9 @@
       return;
     }
     $('mapSchematicNote').classList.add('hidden');
-    const definition = TILE_SOURCES[source] || TILE_SOURCES.osm;
+    const definition = TILE_SOURCES[state.tileSource];
     state.tileLayer = window.L.tileLayer(definition.url, { attribution: definition.attribution, maxZoom: 19, crossOrigin: true });
-    attachTileHealth(state.tileLayer);
+    attachTileHealth(state.tileLayer, state.tileSource);
     state.tileLayer.addTo(state.map);
     renderMarkers();
     fitMap();
@@ -392,7 +450,7 @@
       state.markers = window.L.layerGroup().addTo(state.map);
       state.map.on('click', handleMapClick);
       state.mapReady = true;
-      try { state.tileSource = window.localStorage.getItem('portfolioMapTileSource') || state.tileSource; } catch (_) {}
+      state.tileSource = loadTileSource();
       $('mapTileSource').value = state.tileSource;
       setTileSource(state.tileSource);
       $('mapLoadHint').textContent = 'Loading record positions…';
