@@ -52,18 +52,21 @@ async def add_land_intelligence_link(request: Request, call_next):
     var logout = document.getElementById('logoutBtn');
     if (!logout || document.getElementById('globalUtilityNav')) return;
     var nav=document.createElement('div'); nav.id='globalUtilityNav';
-    nav.style.cssText='display:inline-flex;align-items:center;gap:6px;margin-right:8px;position:relative';
+    nav.style.cssText='display:inline-flex;align-items:center;margin-right:8px;position:relative';
     var wrap=document.createElement('div'); wrap.style.cssText='position:relative';
     var toggle=document.createElement('button'); toggle.type='button'; toggle.textContent='Administration'; toggle.className='btn ghost'; toggle.style.cssText='padding:6px 12px;font-size:12px';
-    var menu=document.createElement('div'); menu.style.cssText='display:none;position:absolute;right:0;top:calc(100% + 5px);min-width:170px;background:#fff;border:1px solid #d7dee8;border-radius:8px;padding:5px;box-shadow:0 10px 24px rgba(0,0,0,.16);z-index:99999';
+    var menu=document.createElement('div'); menu.style.cssText='display:none;position:absolute;right:0;top:calc(100% + 5px);min-width:210px;background:#fff;border:1px solid #d7dee8;border-radius:8px;padding:5px;box-shadow:0 10px 24px rgba(0,0,0,.16);z-index:99999';
     [['User','user'],['Settings','settings'],['AI Corrections','ai']].forEach(function(pair){
-      var b=document.createElement('button'); b.type='button'; b.textContent=pair[0]; b.className='btn ghost'; b.style.cssText='display:block;width:100%;text-align:left;border:0;padding:8px 10px;font-size:12px';
+      var b=document.createElement('button'); b.type='button'; b.textContent=pair[0]; b.className='btn ghost'; b.style.cssText='display:block;width:100%;text-align:left;border:0;padding:9px 10px;font-size:12px';
       b.onclick=function(e){e.stopPropagation();menu.style.display='none';openUtility(pair[1]);}; menu.appendChild(b);
     });
+    var land=document.createElement('a'); land.href='/land-intelligence'; land.textContent='Land Intelligence'; land.className='btn ghost'; land.style.cssText='display:block;width:100%;box-sizing:border-box;text-align:left;border:0;padding:9px 10px;font-size:12px;text-decoration:none'; menu.appendChild(land);
+    var logoutItem=document.createElement('div'); logoutItem.style.cssText='border-top:1px solid #e2e8f0;margin:5px 0 0;padding-top:5px';
+    logout.className='btn ghost'; logout.style.cssText='display:block;width:100%;box-sizing:border-box;text-align:left;border:0;padding:9px 10px;font-size:12px';
+    logoutItem.appendChild(logout); menu.appendChild(logoutItem);
     toggle.onclick=function(e){e.stopPropagation();menu.style.display=menu.style.display==='none'?'block':'none';};
     wrap.appendChild(toggle); wrap.appendChild(menu); nav.appendChild(wrap);
-    var land=document.createElement('a'); land.href='/land-intelligence'; land.textContent='Land Intelligence'; land.className='btn ghost'; land.style.cssText='padding:6px 12px;font-size:12px;text-decoration:none'; nav.appendChild(land);
-    logout.parentNode.insertBefore(nav,logout);
+    logout.parentNode.insertBefore(nav, logout); /* logout is moved into the menu above */
   }
 
   function records() {
@@ -78,7 +81,7 @@ async def add_land_intelligence_link(request: Request, call_next):
   function run(){ makeNav(); hideWorkspaceUtilities(); records(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',run,{once:true}); else run();
   new MutationObserver(run).observe(document.body,{subtree:true,childList:true});
-  document.addEventListener('click',function(){ var n=document.querySelector('#globalUtilityNav div div'); if(n) n.style.display='none'; },true);
+  document.addEventListener('click',function(e){ if(!e.target.closest('#globalUtilityNav')) { var n=document.querySelector('#globalUtilityNav div div'); if(n) n.style.display='none'; } },true);
 })();
 </script>
 """
