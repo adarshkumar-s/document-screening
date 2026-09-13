@@ -814,7 +814,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
 
     if "clear exact pin" in lower or "remove exact pin" in lower:
         import re
-        match = re.search(r"(?:property|parcel|record)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        match = re.search(r"(?:clear exact pin|remove exact pin)\s+(?:for\s+)?(?:property|parcel|record)?\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
         if not match:
             return {"response":"Please include the property or parcel ID whose exact pin should be cleared.","records":[],"action_card":None}
         pid=match.group(1)
