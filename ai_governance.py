@@ -323,6 +323,8 @@ def _execute(proposal, admin):
                 property_id = row["property_id"] if row else None
                 grouped.setdefault(property_id, []).append(rid)
             for property_id, record_ids in grouped.items():
+                if not property_id:
+                    raise HTTPException(400, "Verification cases require a document linked to a property.")
                 case_id = "CASE-" + uuid.uuid4().hex[:10].upper()
                 now = time.time()
                 findings = [{
