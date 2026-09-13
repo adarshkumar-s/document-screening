@@ -63,6 +63,7 @@ def test_legacy_ai_execution_endpoint_is_disabled():
 
 
 def test_create_verification_case_requires_admin_approval_and_executes_server_side(tmp_path):
+    old_db_path = server.DB_PATH
     server.DB_PATH = str(tmp_path / "governed-case.db")
     server.init_db()
     from land_intelligence import _ensure_tables
@@ -96,6 +97,7 @@ def test_create_verification_case_requires_admin_approval_and_executes_server_si
     assert approved.json()["proposal"]["execution_result"]["cases"]
     with server.get_db() as db:
         assert db.execute("SELECT 1 FROM verification_cases").fetchone() is not None
+    server.DB_PATH = old_db_path
 
 
 def test_location_actions_are_registered_and_admin_governed():
@@ -113,6 +115,7 @@ def test_location_actions_are_registered_and_admin_governed():
 def test_location_proposal_requires_approval_before_execution(tmp_path):
     import land_intelligence
     import server
+    old_db_path = server.DB_PATH
     server.DB_PATH = str(tmp_path / "ai-location-test.db")
     server.init_db()
     land_intelligence._ensure_tables()
@@ -136,3 +139,4 @@ def test_location_proposal_requires_approval_before_execution(tmp_path):
     executed=ai_governance.approve_proposal(proposal["proposal_id"],dict(admin),"test approval")
     assert executed["status"] == "EXECUTED"
     assert executed["execution_result"]["location_status"] == "EXACT_PIN"
+    server.DB_PATH = old_db_path
