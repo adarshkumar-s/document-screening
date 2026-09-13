@@ -50,7 +50,12 @@ def _insert_document(doc_id, *, owner="Ram Singh", survey="452", village="Sundar
         )
 
 
-def test_map_assets_are_explicit_and_old_surface_is_removed():
+def test_map_assets_are_explicit_and_portal_navigation_is_visible():
+    portal = client.get("/")
+    assert portal.status_code == 200
+    assert 'href="/map"' in portal.text
+    assert "Land Records Map" in portal.text
+
     html = client.get("/map")
     css = client.get("/map.css")
     js = client.get("/map.js")
