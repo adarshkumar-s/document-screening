@@ -1331,34 +1331,176 @@ async function loadStaffAudit(){
   }catch(e){}
 }
 
+const STAFF_USER_PAGE_SIZE = 10;
+const STAFF_USER_ROLE_DEFINITIONS = [
+  {key: 'ALL', label: 'All Users'},
+  {key: ROLE_ADMIN, label: 'Administrators'},
+  {key: ROLE_VERIFICATION_OFFICER, label: 'Verification Officers'},
+  {key: ROLE_DATA_OFFICER, label: 'Data Officers'},
+  {key: ROLE_VIEWER, label: 'Viewers'},
+];
+let staffUsersData = [];
+let staffUserRoleFilter = 'ALL';
+let staffUserSearch = '';
+let staffUserPage = 1;
+let staffUsersUiWired = false;
+
+function staffUserRoleLabel(role){
+  const known = STAFF_USER_ROLE_DEFINITIONS.find(item => item.key === role);
+  if(known) return known.label.replace(/s$/, '');
+  return String(role || 'Unknown').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
+function staffUserRoleDefinitions(){
+  const known = new Set(STAFF_USER_ROLE_DEFINITIONS.map(item => item.key));
+  const discovered = [...new Set(staffUsersData.map(user => String(user.role || '').toUpperCase()).filter(role => role && !known.has(role)))];
+  return STAFF_USER_ROLE_DEFINITIONS.concat(discovered.map(role => ({key: role, label: staffUserRoleLabel(role)})));
+}
+
+function staffUserRoleOptions(currentRole){
+  const roles = STAFF_USER_ROLE_DEFINITIONS.filter(item => item.key !== 'ALL');
+  if(currentRole && !roles.some(item => item.key === currentRole)) roles.push({key: currentRole, label: staffUserRoleLabel(currentRole)});
+  return roles.map(item => `<option value="${escapeHtml(item.key)}" ${item.key === currentRole ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('');
+}
+
+function setupStaffUsersInterface(){
+  if(staffUsersUiWired) return;
+  const addButton = $('#staffAddUserToggle');
+  const createPanel = $('#staffUserCreatePanel');
+  const closeButton = $('#staffUserCreateClose');
+  const createButton = $('#staffCreateUserBtn');
+  const search = $('#staffUserSearch');
+  if(!addButton || !createPanel || !search) return;
+  staffUsersUiWired = true;
+  const setCreatePanel = open => {
+    createPanel.classList.toggle('hidden', !open);
+    addButton.setAttribute('aria-expanded', String(open));
+    if(open) $('#staffNuName')?.focus();
+  };
+  addButton.addEventListener('click', () => setCreatePanel(createPanel.classList.contains('hidden')));
+  closeButton?.addEventListener('click', () => setCreatePanel(false));
+  createButton?.addEventListener('click', staffCreateUser);
+  search.addEventListener('input', event => {
+    staffUserSearch = event.target.value || '';
+    staffUserPage = 1;
+    renderStaffUsers();
+  });
+  document.addEventListener('click', event => {
+    if(!event.target.closest('.users-action-menu-wrap')) document.querySelectorAll('.users-action-menu').forEach(menu => menu.classList.add('hidden'));
+  });
+}
+
+function renderStaffUserRoleTabs(){
+  const root = $('#staffUserRoleTabs');
+  if(!root) return;
+  const definitions = staffUserRoleDefinitions();
+  root.innerHTML = definitions.map(item => {
+    const count = item.key === 'ALL' ? staffUsersData.length : staffUsersData.filter(user => String(user.role || '').toUpperCase() === item.key).length;
+    const active = staffUserRoleFilter === item.key;
+    return `<button type="button" class="user-role-tab${active ? ' active' : ''}" data-user-role="${escapeHtml(item.key)}" role="tab" aria-selected="${active}" tabindex="${active ? '0' : '-1'}">${escapeHtml(item.label)} <span>${count}</span></button>`;
+  }).join('');
+  root.querySelectorAll('[data-user-role]').forEach(button => button.addEventListener('click', () => {
+    staffUserRoleFilter = button.dataset.userRole;
+    staffUserPage = 1;
+    renderStaffUsers();
+  }));
+}
+
+function filteredStaffUsers(){
+  const query = staffUserSearch.trim().toLowerCase();
+  return staffUsersData.filter(user => {
+    const roleMatches = staffUserRoleFilter === 'ALL' || String(user.role || '').toUpperCase() === staffUserRoleFilter;
+    const searchMatches = !query || `${user.full_name || ''} ${user.email || ''}`.toLowerCase().includes(query);
+    return roleMatches && searchMatches;
+  });
+}
+
+function renderStaffUserPagination(totalPages){
+  const root = $('#staffUserPagination');
+  if(!root) return;
+  if(totalPages <= 1){ root.innerHTML = ''; return; }
+  const pages = new Set([1, totalPages, staffUserPage - 1, staffUserPage, staffUserPage + 1].filter(page => page >= 1 && page <= totalPages));
+  const ordered = [...pages].sort((a, b) => a - b);
+  const pageItems = [];
+  ordered.forEach((page, index) => {
+    if(index && page - ordered[index - 1] > 1) pageItems.push('<span class="users-page-ellipsis">…</span>');
+    pageItems.push(`<button type="button" class="users-page${page === staffUserPage ? ' active' : ''}" data-user-page="${page}" aria-current="${page === staffUserPage ? 'page' : 'false'}">${page}</button>`);
+  });
+  root.innerHTML = `<button type="button" class="users-page-nav" data-user-page="${staffUserPage - 1}" ${staffUserPage === 1 ? 'disabled' : ''}>Previous</button>${pageItems.join('')}<button type="button" class="users-page-nav" data-user-page="${staffUserPage + 1}" ${staffUserPage === totalPages ? 'disabled' : ''}>Next</button>`;
+  root.querySelectorAll('[data-user-page]').forEach(button => button.addEventListener('click', () => {
+    if(button.disabled) return;
+    staffUserPage = Number(button.dataset.userPage);
+    renderStaffUsers();
+  }));
+}
+
+function renderStaffUsers(){
+  const table = $('#staffUsersTable');
+  const tb = table?.querySelector('tbody');
+  if(!tb) return;
+  renderStaffUserRoleTabs();
+  const filtered = filteredStaffUsers();
+  const totalPages = Math.max(1, Math.ceil(filtered.length / STAFF_USER_PAGE_SIZE));
+  staffUserPage = Math.min(Math.max(staffUserPage, 1), totalPages);
+  const start = (staffUserPage - 1) * STAFF_USER_PAGE_SIZE;
+  const pageUsers = filtered.slice(start, start + STAFF_USER_PAGE_SIZE);
+  const summary = $('#staffUserSummary');
+  const filterSummary = $('#staffUserFilterSummary');
+  if(summary) summary.textContent = filtered.length ? `Showing ${start + 1}–${start + pageUsers.length} of ${filtered.length} users` : 'No users match this filter';
+  if(filterSummary) filterSummary.textContent = `${staffUserRoleFilter === 'ALL' ? 'All roles' : staffUserRoleLabel(staffUserRoleFilter)}${staffUserSearch.trim() ? ` · Search: ${staffUserSearch.trim()}` : ''}`;
+  if(!pageUsers.length){
+    tb.innerHTML = '<tr><td colspan="5" class="users-empty">No users match the selected role or search.</td></tr>';
+    renderStaffUserPagination(1);
+    return;
+  }
+  tb.innerHTML = pageUsers.map(user => {
+    const isSelf = me && String(user.id) === String(me.id);
+    const isActive = Boolean(user.is_active);
+    const menuLabel = isSelf ? 'Current account' : isActive ? 'Disable account' : 'Account already disabled';
+    return `<tr>
+      <td><strong>${escapeHtml(user.full_name || 'Unnamed user')}</strong></td>
+      <td>${escapeHtml(user.email || '—')}</td>
+      <td><span class="users-role-label">${escapeHtml(staffUserRoleLabel(String(user.role || '').toUpperCase()))}</span></td>
+      <td><span class="pill ${isActive ? 'valid' : 'rejected'}">${isActive ? 'Active' : 'Disabled'}</span></td>
+      <td class="users-action-cell"><div class="users-action-menu-wrap">
+        <button type="button" class="users-action-trigger" data-user-menu-toggle aria-label="Actions for ${escapeHtml(user.full_name || 'user')}" aria-expanded="false">⋮</button>
+        <div class="users-action-menu hidden" role="menu">
+          <label class="users-role-editor">Edit role<select data-user-role-select="${escapeHtml(user.id)}" data-previous="${escapeHtml(user.role || '')}" ${isSelf ? 'disabled' : ''}>${staffUserRoleOptions(String(user.role || '').toUpperCase())}</select></label>
+          <button type="button" class="users-menu-item" data-user-action-label ${isSelf || !isActive ? 'disabled' : ''}>${escapeHtml(menuLabel)}</button>
+        </div>
+      </div></td>
+    </tr>`;
+  }).join('');
+  tb.querySelectorAll('[data-user-menu-toggle]').forEach(button => button.addEventListener('click', event => {
+    event.stopPropagation();
+    const menu = button.parentElement.querySelector('.users-action-menu');
+    tb.querySelectorAll('.users-action-menu').forEach(item => { if(item !== menu) item.classList.add('hidden'); });
+    const open = menu.classList.toggle('hidden');
+    button.setAttribute('aria-expanded', String(!open));
+  }));
+  tb.querySelectorAll('[data-user-role-select]').forEach(select => select.addEventListener('change', () => staffChangeRole(select.dataset.userRoleSelect, select)));
+  tb.querySelectorAll('[data-user-action-label]').forEach(button => button.addEventListener('click', () => {
+    const row = button.closest('tr');
+    const select = row?.querySelector('[data-user-role-select]');
+    const user = staffUsersData.find(item => String(item.id) === String(select?.dataset.userRoleSelect));
+    if(user && me && String(user.id) !== String(me.id) && user.is_active) staffDeactivateUser(user.id);
+  }));
+  renderStaffUserPagination(totalPages);
+}
+
 async function loadStaffUsers(){
+  setupStaffUsersInterface();
   try{
     const d = await api('/api/users');
-    const tb = $('#staffUsersTable tbody'); tb.innerHTML = '';
-    (d.users||[]).forEach(u=>{
-      const isSelf = (me && u.id === me.id);
-      const roleSelectHtml = isSelf ? `
-        <span class="chip" style="font-weight:700">${escapeHtml(u.role)}</span>
-      ` : `
-        <select class="staff-role-select" onchange="staffChangeRole('${u.id}', this)" data-previous="${escapeHtml(u.role)}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--gov-border);font-size:12px">
-          <option value="VIEWER" ${u.role==='VIEWER'?'selected':''}>Viewer</option>
-          <option value="DATA_OFFICER" ${u.role==='DATA_OFFICER'?'selected':''}>Data Officer</option>
-          <option value="VERIFICATION_OFFICER" ${u.role==='VERIFICATION_OFFICER'?'selected':''}>Verification Officer</option>
-          <option value="ADMIN" ${u.role==='ADMIN'?'selected':''}>Administrator</option>
-        </select>
-      `;
-
-      tb.innerHTML += `
-        <tr>
-          <td><b>${escapeHtml(u.full_name)}</b></td>
-          <td>${escapeHtml(u.email)}</td>
-          <td>${roleSelectHtml}</td>
-          <td><span class="pill ${u.is_active?'valid':'rejected'}">${u.is_active?'Active':'Disabled'}</span></td>
-          <td>${!isSelf ? `<button class="btn danger" onclick="staffDeactivateUser('${u.id}')" style="padding:2px 6px;font-size:11px">Deactivate</button>` : '—'}</td>
-        </tr>
-      `;
-    });
-  }catch(e){}
+    staffUsersData = Array.isArray(d.users) ? d.users : [];
+    renderStaffUsers();
+  }catch(e){
+    staffUsersData = [];
+    const summary = $('#staffUserSummary');
+    if(summary) summary.textContent = 'Users could not be loaded';
+    const tb = $('#staffUsersTable tbody');
+    if(tb) tb.innerHTML = '<tr><td colspan="5" class="users-empty">Users could not be loaded for this session.</td></tr>';
+  }
 }
 
 async function staffChangeRole(uid, selectEl){

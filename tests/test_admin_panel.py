@@ -50,3 +50,21 @@ def test_staff_navigation_no_longer_exposes_admin_sections_as_main_tabs():
     assert "['account', '⚙️ Settings']" not in app_js
     assert "label:'AI Correction'" in app_js
     assert "label:'Settings'" in app_js
+
+
+def test_users_workspace_has_role_filters_search_pagination_and_compact_actions():
+    html = (ROOT / "index.html").read_text()
+    app_js = (ROOT / "js" / "app.js").read_text()
+    css = (ROOT / "css" / "style.css").read_text()
+    for element_id in (
+        "staffAddUserToggle", "staffUserCreatePanel", "staffUserRoleTabs",
+        "staffUserSearch", "staffUserSummary", "staffUserPagination", "staffUsersTable",
+    ):
+        assert f'id="{element_id}"' in html
+    assert "STAFF_USER_PAGE_SIZE = 10" in app_js
+    assert "ROLE_ADMIN" in app_js and "ROLE_VERIFICATION_OFFICER" in app_js
+    assert "filteredStaffUsers" in app_js
+    assert "renderStaffUserPagination" in app_js
+    assert "data-user-menu-toggle" in app_js
+    assert ".user-role-tab" in css
+    assert ".users-action-menu" in css

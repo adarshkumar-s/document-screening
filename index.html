@@ -653,30 +653,51 @@
     <div id="administrationTabs" class="administration-tabs" role="tablist" aria-label="Administration sections"></div>
     <div id="administrationMount" class="administration-mount">
         <div id="staff-tab-users" class="hidden">
-          <div style="display:grid;grid-template-columns:320px 1fr;gap:16px">
-            <div class="card">
-              <div class="card-header"><h3 class="card-title">Create User</h3></div>
-              <div class="formfield"><label class="field-label">Name</label><input type="text" id="staffNuName"></div>
-              <div class="formfield"><label class="field-label">Email</label><input type="email" id="staffNuEmail"></div>
-              <div class="formfield"><label class="field-label">Password</label><input type="password" id="staffNuPass"></div>
-              <div class="formfield">
-                <label class="field-label">Role</label>
-                <select id="staffNuRole">
-                  <option value="VIEWER">Viewer</option>
-                  <option value="DATA_OFFICER">Data Officer</option>
-                  <option value="VERIFICATION_OFFICER">Verification Officer</option>
-                  <option value="ADMIN">Administrator</option>
-                </select>
+          <div class="users-admin-shell">
+            <div class="users-section-head">
+              <div>
+                <h3 class="users-section-title">Users</h3>
+                <p class="users-section-subtitle">Manage authorised accounts by their existing application role.</p>
               </div>
-              <button class="btn block saffron" onclick="staffCreateUser()">Create User</button>
+              <button class="btn saffron" id="staffAddUserToggle" type="button" aria-expanded="false" aria-controls="staffUserCreatePanel">+ Add User</button>
             </div>
-            <div class="card">
-              <div class="card-header"><h3 class="card-title">Users</h3></div>
-              <table class="gov-table" id="staffUsersTable">
-                <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
+
+            <div id="staffUserCreatePanel" class="staff-user-create-panel hidden" aria-label="Create user">
+              <div class="users-create-head">
+                <strong>Create User</strong>
+                <button class="users-inline-close" id="staffUserCreateClose" type="button" aria-label="Close Add User form">×</button>
+              </div>
+              <div class="users-create-grid">
+                <div class="formfield"><label class="field-label" for="staffNuName">Name</label><input type="text" id="staffNuName"></div>
+                <div class="formfield"><label class="field-label" for="staffNuEmail">Email</label><input type="email" id="staffNuEmail"></div>
+                <div class="formfield"><label class="field-label" for="staffNuPass">Password</label><input type="password" id="staffNuPass"></div>
+                <div class="formfield">
+                  <label class="field-label" for="staffNuRole">Role</label>
+                  <select id="staffNuRole">
+                    <option value="VIEWER">Viewer</option>
+                    <option value="DATA_OFFICER">Data Officer</option>
+                    <option value="VERIFICATION_OFFICER">Verification Officer</option>
+                    <option value="ADMIN">Administrator</option>
+                  </select>
+                </div>
+                <button class="btn saffron users-create-submit" id="staffCreateUserBtn" type="button">Create User</button>
+              </div>
+            </div>
+
+            <div class="users-controls">
+              <div id="staffUserRoleTabs" class="user-role-tabs" role="tablist" aria-label="Filter users by role"></div>
+              <label class="users-search-label" for="staffUserSearch">Search users
+                <input id="staffUserSearch" type="search" placeholder="Search name or email…" autocomplete="off">
+              </label>
+            </div>
+            <div class="users-list-meta"><span id="staffUserSummary" aria-live="polite">Loading users…</span><span id="staffUserFilterSummary"></span></div>
+            <div class="users-table-scroll">
+              <table class="gov-table users-table" id="staffUsersTable">
+                <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th class="users-action-heading">Actions</th></tr></thead>
                 <tbody></tbody>
               </table>
             </div>
+            <div id="staffUserPagination" class="users-pagination" aria-label="User list pagination"></div>
           </div>
         </div>
         <div id="staff-tab-account" class="hidden">
@@ -708,7 +729,7 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/app.js?v=28"></script>
+<script src="js/app.js?v=29"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->
