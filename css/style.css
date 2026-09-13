@@ -662,3 +662,9 @@ body.administration-open { overflow: hidden; }
   .gov-user-panel { width: 100%; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
   .gov-user-panel .user-badge { margin-right: auto; }
 }
+
+/* Defensive guard for cached/older client bundles: these legacy admin tabs
+   are now available only inside the role-controlled Administration dialog. */
+#staffTabsList .tab[data-stab="users"],
+#staffTabsList .tab[data-stab="account"],
+#staffTabsList .tab[data-stab="learn"] { display: none !important; }
