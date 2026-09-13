@@ -734,6 +734,32 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     ensure_task_table()
     lower = prompt.lower().strip()
 
+    # Deterministic property-history analysis. This is read-only and never mutates records.
+    if any(k in lower for k in ["property history", "ownership history", "ownership transfer", "chain of title"]):
+        import re
+        match = re.search(r"(?:property|parcel|survey|record|document)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        if not match:
+            return {"response":"Please include a property or parcel identifier, for example: 'Show property history for DEMO-PROP-103-A'.","records":[],"action_card":None}
+        identifier=match.group(1)
+        try:
+            from land_intelligence import _history_for_property
+            with get_db_instance() as db:
+                row=db.execute("SELECT property_id FROM properties WHERE property_id=? OR parcel_id=? OR survey_number=?", (identifier,identifier,identifier)).fetchone()
+            if not row:
+                return {"response":f"No property matching '{identifier}' was found.","records":[],"action_card":None}
+            history=_history_for_property(row["property_id"])
+            lines=["PROPERTY HISTORY"]
+            for event in history.get("events",[]):
+                lines.append(f"- {event.get('year') or 'Year unavailable'} | {event.get('document_type')} | Owner: {event.get('owner') or 'Unknown'} | Survey: {event.get('survey_number') or 'Unknown'} | Khasra: {event.get('khasra_number') or 'Unknown'}")
+            for finding in history.get("findings",[]):
+                lines += ["", "ASSESSMENT", f"- {finding['title']}", f"- {finding['reason']}", f"- Human action: {finding['human_action']}"]
+            if not history.get("findings"):
+                lines += ["", "ASSESSMENT", "- No ownership change was detected from the linked records."]
+            lines += ["", "This is evidence-based decision support, not a legal determination. No authoritative record was changed."]
+            return {"response":"\n".join(lines),"records":[],"action_card":None}
+        except Exception:
+            return {"response":"Property history is temporarily unavailable; existing document and parcel workflows remain usable.","records":[],"action_card":None}
+
     # Existing administrative actions
     if any(k in lower for k in ["disable", "deactivate", "change role", "promote", "demote"]):
         return {"response": "For security, the AI assistant cannot prepare or execute account deactivation or role changes. Perform those administrator controls through the existing Users interface; the AI may only report user/workload information.", "records": [], "action_card": None}
