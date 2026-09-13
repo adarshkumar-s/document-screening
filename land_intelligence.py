@@ -963,6 +963,12 @@ async def import_geojson(
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(property_id) DO UPDATE SET geometry=excluded.geometry,centroid=excluded.centroid,latitude=excluded.latitude,longitude=excluded.longitude,updated_at=excluded.updated_at""",
                 (property_id,parcel_id,props.get("district"),props.get("taluka"),props.get("village"),props.get("survey_number"),props.get("gat_number"),props.get("khasra_number"),props.get("sub_division"),props.get("parent_property_id"),area,props.get("area_unit","ha"),_json(geom),_json({"latitude":lat,"longitude":lon}),lat,lon,props.get("crs","EPSG:4326"),1,props.get("geometry_source","Imported GeoJSON"),float(props.get("geometry_confidence",0.8)),props.get("data_source","User-provided dataset"),float(props.get("source_confidence",0.8)),now,now))
+            db.execute("""UPDATE properties SET location_status='PARCEL_GEOMETRY',
+                          location_source=?,location_confidence=?,location_base_latitude=?,
+                          location_base_longitude=?,location_base_source=?,location_updated_at=?
+                          WHERE property_id=?""",
+                       (props.get("geometry_source","Imported GeoJSON"),float(props.get("geometry_confidence",0.8)),
+                        lat,lon,props.get("geometry_source","Imported GeoJSON"),now,property_id))
         imported+=1
     source_id = "SRC-" + uuid.uuid4().hex[:10].upper()
     with get_db() as db:
