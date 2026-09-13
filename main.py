@@ -1,8 +1,4 @@
-"""Production ASGI entrypoint.
-
-Keeps the existing Document Screening application intact and adds only the
-new document-first mapping routes.
-"""
+"""Production ASGI entrypoint for the existing Document Screening application."""
 from fastapi import Request
 from fastapi.responses import Response
 from server import app
@@ -26,7 +22,7 @@ DOCUMENT_MAPPING_SCRIPT = b'''<script>
         var id=match[1],cell=cells[cells.length-1];if(!cell)return;
         var button=document.createElement('button');button.type='button';button.className='btn ghost';button.textContent='Map document';
         button.style.cssText='padding:4px 10px;font-size:11px;margin-left:6px;white-space:nowrap;';
-        button.onclick=function(){window.location.href='/api/land/document-map?document_id='+encodeURIComponent(id)};
+        button.onclick=function(){window.location.href='/document-map?document_id='+encodeURIComponent(id)};
         cell.appendChild(button);row.dataset.documentMapAction='1';
       });
     });
@@ -36,7 +32,7 @@ DOCUMENT_MAPPING_SCRIPT = b'''<script>
 })();
 </script>'''
 
-@app.middleware("http")
+@app.middleware('http')
 async def inject_document_mapping_action(request: Request, call_next):
     response=await call_next(request)
     if request.url.path.startswith('/api/land/document-map'):
