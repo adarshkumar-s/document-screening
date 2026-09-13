@@ -751,6 +751,7 @@ def property_detail(property_id: str, user: dict=Depends(get_current_user)):
         row=db.execute("SELECT * FROM properties WHERE property_id=? OR parcel_id=?",(property_id,property_id)).fetchone()
         if not row: raise HTTPException(404,"Property not found")
         p=_property(row,True)
+        p["location"]=_location_state(row)
         docs=db.execute("""SELECT d.id,d.filename,d.doc_type,d.mean_conf,d.status,d.created_at
                           FROM property_documents pd JOIN documents d ON d.id=pd.document_id
                           WHERE pd.property_id=? ORDER BY d.created_at DESC""",(p["property_id"],)).fetchall()
