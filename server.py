@@ -1781,6 +1781,7 @@ async def process_sample(
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
         "property_resolution": property_resolution,
+        "ownership_reasoning": ownership_reasoning,
     }
 
 
@@ -1869,6 +1870,7 @@ async def process_upload(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
+        "ownership_reasoning": ownership_reasoning,
     }
 
 
