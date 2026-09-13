@@ -56,6 +56,15 @@ def test_production_rejects_invalid_allowed_origins(raw):
         server.parse_allowed_origins(raw, production=True)
 
 
+def test_production_never_substitutes_localhost_or_wildcard_when_missing():
+    import server
+
+    assert server.parse_allowed_origins("", production=True) == []
+    assert server.parse_allowed_origins("   ", production=True) == []
+    with pytest.raises(RuntimeError):
+        server.parse_allowed_origins("*", production=True)
+
+
 def test_production_accepts_multiple_http_https_origins():
     import server
 
