@@ -1,11 +1,6 @@
 (() => {
   "use strict";
 
-  // Compatibility layer for the Land Intelligence map. The demo GeoJSON
-  // contains parcel geometry but older payloads may omit geography fields.
-  // The UI's District -> Taluka -> Village filter needs those fields on
-  // every GeoJSON feature, so enrich the response without changing the
-  // synthetic/authoritative data semantics.
   const geographyByParcel = {
     "DEMO-103-A": { district: "Demo District", taluka: "Demo Taluka", village: "Demo Village" },
     "DEMO-103-B": { district: "Demo District", taluka: "Demo Taluka", village: "Demo Village" },
@@ -21,49 +16,62 @@
       if (!requestUrl.includes("/api/demo-land/geojson")) return response;
       const payload = await response.clone().json();
       if (!payload || !Array.isArray(payload.features)) return response;
-
-      const enriched = {
+      return new Response(JSON.stringify({
         ...payload,
         features: payload.features.map(feature => {
           const props = { ...(feature.properties || {}) };
-          const parcel = props.parcel_id;
-          const geography = geographyByParcel[parcel] || {};
-          return { ...feature, properties: { ...geography, ...props } };
+          return { ...feature, properties: { ...(geographyByParcel[props.parcel_id] || {}), ...props } };
         })
-      };
-
-      return new Response(JSON.stringify(enriched), {
-        status: response.status,
-        statusText: response.statusText,
-        headers: new Headers(response.headers)
-      });
-    } catch (_) {
-      return response;
-    }
+      }), { status: response.status, statusText: response.statusText, headers: new Headers(response.headers) });
+    } catch (_) { return response; }
   };
 
-  // Keep a reference to the Leaflet instance so we can reliably invalidate
-  // its size after the page/layout has settled.
+  // The OSM public tile service is best-effort. Do not let a slow/blocked
+  // basemap make the project-owned parcel map appear to hang.
+  if (window.L && typeof window.L.tileLayer === "function") {
+    const originalTileLayer = window.L.tileLayer.bind(window.L);
+    window.L.tileLayer = (url, options = {}) => {
+      const layer = originalTileLayer(url, {
+        ...options,
+        updateWhenIdle: true,
+        updateWhenZooming: false,
+        keepBuffer: 0,
+        maxNativeZoom: Math.min(options.maxNativeZoom ?? 16, 16),
+        maxZoom: Math.min(options.maxZoom ?? 17, 17)
+      });
+      if (String(url).includes("tile.openstreetmap.org")) {
+        let settled = false;
+        layer.once("load", () => { settled = true; });
+        layer.once("tileerror", () => {
+          const status = document.getElementById("mapStatus");
+          if (status) status.textContent = "Project map ready · basemap unavailable";
+        });
+        setTimeout(() => {
+          if (settled || !layer._map) return;
+          try { layer.remove(); } catch (_) {}
+          const status = document.getElementById("mapStatus");
+          const notice = document.getElementById("mapNotice");
+          if (status) status.textContent = "Project map ready · basemap timed out";
+          if (notice) {
+            notice.textContent = "OpenStreetMap tiles are taking too long. Parcel geometry and evidence are ready to use.";
+            notice.classList.remove("hidden");
+          }
+        }, 4500);
+      }
+      return layer;
+    };
+  }
+
   if (window.L && typeof window.L.map === "function") {
     const originalMap = window.L.map.bind(window.L);
     window.L.map = (...args) => {
       const map = originalMap(...args);
       window.__landIntelligenceMap = map;
-      const invalidate = () => {
-        try { map.invalidateSize({ pan: false, debounceMoveend: true }); } catch (_) {}
-      };
+      const invalidate = () => { try { map.invalidateSize({ pan: false, debounceMoveend: true }); } catch (_) {} };
       setTimeout(invalidate, 0);
       setTimeout(invalidate, 250);
       setTimeout(invalidate, 750);
       return map;
     };
   }
-
-  window.addEventListener("load", () => {
-    const invalidate = () => {
-      try { window.__landIntelligenceMap?.invalidateSize({ pan: false, debounceMoveend: true }); } catch (_) {}
-    };
-    setTimeout(invalidate, 0);
-    setTimeout(invalidate, 500);
-  });
 })();
