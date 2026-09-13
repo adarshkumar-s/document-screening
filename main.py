@@ -7,19 +7,23 @@ from demo_land import router as demo_land_router
 from ai_governance import router as ai_approval_router
 from land_intelligence_bridge_optimized import router as land_bridge_router
 from land_intelligence_fast import router as land_fast_router
+from land_intelligence_optimized import ensure_property_indexes
+from land_intelligence_identity import ensure_store, backfill
+import threading
 
 app.include_router(demo_land_router)
 app.include_router(ai_approval_router)
 app.include_router(land_bridge_router)
 app.include_router(land_fast_router)
 
+# Database/index setup happens before serving requests, never inside the hot path.
+ensure_property_indexes()
+ensure_store()
+threading.Thread(target=backfill, kwargs={"limit": 500}, daemon=True, name="land-identity-backfill").start()
+
 LAND_INTELLIGENCE_SCRIPT = b'''<script>
 (function(){
   function tokenHeaders(){try{var t=localStorage.getItem('lrtoken');return t?{Authorization:'Bearer '+t}:{};}catch(_){return {};}}
-  function prefetchFast(id){
-    fetch('/api/land/intelligence/fast-document/'+encodeURIComponent(id),{headers:Object.assign({'Accept':'application/json'},tokenHeaders()),cache:'no-store'})
-      .catch(function(){});
-  }
   function addLandActions(){
     ['#simpleDocTable','#simpleSubmissionsTable','#staffRecordsTable'].forEach(function(selector){
       var table=document.querySelector(selector); if(!table)return;
@@ -34,7 +38,6 @@ LAND_INTELLIGENCE_SCRIPT = b'''<script>
         button.title='Open this saved document in Land Intelligence';
         button.onclick=function(){window.location.href='/land-intelligence?document_id='+encodeURIComponent(id);};
         cell.appendChild(button); row.dataset.liAction='1';
-        prefetchFast(id);
       });
     });
   }
