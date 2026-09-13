@@ -102,7 +102,7 @@ def _validate_target(p):
     action=p["action_type"]; ids=p["target_ids"]
     if action not in ACTION_REGISTRY: raise HTTPException(400,"Action type is not registered.")
     if not ids and action not in {"CREATE_AI_TASK"}: raise HTTPException(400,"At least one target is required.")
-    if action in {"REQUEST_REPROCESSING","PROPOSE_FIELD_CORRECTION","PROPOSE_STATUS_CHANGE","ASSIGN_AI_TASK","REQUEST_REVIEW","ESCALATE_RECORD"}:
+    if action in {"REQUEST_REPROCESSING","PROPOSE_FIELD_CORRECTION","PROPOSE_STATUS_CHANGE","ASSIGN_AI_TASK","REQUEST_REVIEW","ESCALATE_RECORD","CREATE_VERIFICATION_CASE"}:
         with s.get_db() as db:
             for rid in ids:
                 if not db.execute("SELECT id FROM documents WHERE id=?",(str(rid),)).fetchone():
