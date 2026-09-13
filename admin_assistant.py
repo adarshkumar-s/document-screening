@@ -763,7 +763,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     # Read-only location intelligence and governed pin proposals.
     if any(k in lower for k in ["where is", "location", "show on map", "map location"]) and any(k in lower for k in ["property", "parcel", "survey", "record"]):
         import re
-        match = re.search(r"(?:property|parcel|survey|record|document)\\s*(?:id|number|no\\.?)?\\s*[:#-]?\\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        match = re.search(r"(?:property|parcel|survey|record|document)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
         if not match:
             return {"response":"Please include a property or parcel identifier, for example: 'Where is property DEMO-PROP-103-A?'","records":[],"action_card":None}
         identifier=match.group(1)
@@ -793,8 +793,8 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
 
     if "set exact pin" in lower or "pin this property" in lower:
         import re
-        match = re.search(r"(?:property|parcel|record)\\s*(?:id|number|no\\.?)?\\s*[:#-]?\\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
-        coords = re.search(r"(-?\\d{1,3}(?:\\.\\d+)?)\\s*[, ]\\s*(-?\\d{1,3}(?:\\.\\d+)?)", prompt)
+        match = re.search(r"(?:property|parcel|record)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        coords = re.search(r"(-?\\d{1,3}(?:\.\\d+)?)\s*[, ]\s*(-?\\d{1,3}(?:\.\\d+)?)", prompt)
         if not match or not coords:
             return {"response":"To prepare an exact-pin proposal, provide the property/parcel ID and coordinates, for example: 'Set exact pin for DEMO-PROP-103-A at 28.6221, 77.1050'.","records":[],"action_card":None}
         pid, lat, lon = match.group(1), float(coords.group(1)), float(coords.group(2))
@@ -814,7 +814,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
 
     if "clear exact pin" in lower or "remove exact pin" in lower:
         import re
-        match = re.search(r"(?:property|parcel|record)\\s*(?:id|number|no\\.?)?\\s*[:#-]?\\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
+        match = re.search(r"(?:property|parcel|record)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})", prompt, re.I)
         if not match:
             return {"response":"Please include the property or parcel ID whose exact pin should be cleared.","records":[],"action_card":None}
         pid=match.group(1)
