@@ -70,8 +70,14 @@ function renderProperty(p){
     ["Source",p.data_source],["Geometry source",p.geometry_source],["Confidence",Math.round((p.source_confidence||p.geometry_confidence||0)*100)+"%"],
     ["Resolution status",p.resolution_status||"DEMO / SYNTHETIC"]
   ];
+  const history=p.ownership_history||{events:[],findings:[],relationships:[]};
+  const historyRows=(history.events||[]).map(e=>'<div class="timeline-item"><i class="timeline-dot"></i><div><strong>'+esc(e.year||"Year unavailable")+' · '+esc(e.document_type)+'</strong><div class="muted">Owner: '+esc(valueOrDash(e.owner))+' · Survey: '+esc(valueOrDash(e.survey_number))+' · Khasra: '+esc(valueOrDash(e.khasra_number))+' · Area: '+esc(valueOrDash(e.area))+'</div></div></div>').join("");
+  const findingRows=(history.findings||[]).map(f=>'<div class="finding"><strong>'+esc(f.title)+'</strong><br><span class="muted">'+esc(f.reason)+'</span><br><b>Human action:</b> '+esc(f.human_action)+'</div>').join("");
   $("propertyPanel").innerHTML='<div class="property-head"><div><span class="eyebrow">PROPERTY INTELLIGENCE</span><h3>'+esc(p.property_id)+'</h3></div>'+badge("DEMO / SYNTHETIC")+'</div>'+
     '<div class="intel-grid">'+fields.map(([a,b])=>'<div class="kv"><small>'+esc(a)+'</small><b>'+esc(valueOrDash(b))+'</b></div>').join("")+'</div>'+
+    '<div class="subhead">Ownership history</div>'+
+    '<div class="timeline">'+(historyRows||'<span class="muted">No ownership events detected.</span>')+'</div>'+
+    (findingRows?'<div class="subhead">Ownership assessment</div>'+findingRows:'')+
     '<div class="subhead">Linked documents</div>'+
     (docs.length?docs.map(d=>'<button type="button" class="result" data-doc="'+esc(d.id)+'"><strong>'+esc(d.filename)+'</strong><span class="muted">'+esc(d.doc_type)+' · OCR '+Math.round((d.ocr_confidence||0)*100)+'% · '+esc(d.verification_status)+'</span></button>').join(""):'<span class="muted">No linked document is available.</span>')+
     '<div class="subhead">Neighbouring parcels</div>'+
@@ -85,6 +91,7 @@ function renderEvidence(p){
     (doc?'<div class="evidence-section"><div class="finding"><strong>Verification state:</strong> '+esc(doc.verification_status)+'<br><span class="muted">Human review remains authoritative.</span></div><button type="button" class="btn secondary" id="comparePrimary" style="margin-top:8px">Run document ↔ parcel comparison</button></div>':'<p class="muted">No linked document is available for this parcel.</p>')+
     '<div class="evidence-section"><div class="subhead">Provenance</div>'+((p.provenance||[]).slice(0,8).map(x=>'<div class="kv" style="margin-top:6px"><small>'+esc(x.field_name)+' · '+esc(x.source)+'</small><b>'+esc(x.value)+' · '+Math.round((x.confidence||0)*100)+'% confidence</b></div>').join("")||'<span class="muted">No provenance entries.</span>')+'</div>'+
     '<div class="evidence-section"><div class="subhead">Timeline</div><div class="timeline">'+((p.timeline||[]).map(x=>'<div class="timeline-item"><i class="timeline-dot"></i><div><strong>'+esc(x.event_type)+'</strong><div class="muted">'+esc(x.description)+'</div></div></div>').join("")||'<span class="muted">No recorded events.</span>')+'</div></div>'+
+    '<div class="evidence-section"><div class="subhead">Ownership reasoning</div>'+(((p.ownership_history||{}).findings||[]).map(f=>'<div class="finding"><strong>'+esc(f.title)+'</strong><br>'+esc(f.reason)+'<br><b>Recommendation:</b> '+esc(f.human_action)+'</div>').join("")||'<span class="muted">No ownership-change finding.</span>')+'</div>'+
     '<div class="evidence-section"><div class="finding"><strong>Human verification:</strong> Evidence is decision support only. Do not treat confidence as legal truth.</div></div>';
   if(doc)$("comparePrimary").onclick=()=>compareDoc(doc.id,p.property_id);
 }
