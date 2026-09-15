@@ -453,7 +453,7 @@
               <div style="font-size:12px;color:var(--muted);margin-top:4px">Supported formats: PDF, JPG, PNG, TIFF</div>
               <input type="file" id="staffFileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
             </div>
-            <div style="margin:12px 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <div class="staff-upload-options" style="margin:12px 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
               <div>
                 <span style="font-size:12px;font-weight:700">Document Type:</span>
                 <select id="staffDocTypeSelect" style="padding:4px 8px;border-radius:4px;border:1px solid var(--gov-border)">
@@ -464,7 +464,34 @@
                 </select>
               </div>
               <div>
-                <span style="font-size:12px;font-weight:700">Language / Script:</span>
+                <label for="staffStateSelect" style="font-size:12px;font-weight:700">State / Land Record System:</label>
+                <select id="staffStateSelect" style="max-width:220px">
+                  <option value="" selected>Select State</option>
+                  <option value="Andhra Pradesh">Andhra Pradesh</option>
+                  <option value="Bihar">Bihar</option>
+                  <option value="Chhattisgarh">Chhattisgarh</option>
+                  <option value="Gujarat">Gujarat</option>
+                  <option value="Haryana">Haryana</option>
+                  <option value="Himachal Pradesh">Himachal Pradesh</option>
+                  <option value="Jharkhand">Jharkhand</option>
+                  <option value="Karnataka">Karnataka</option>
+                  <option value="Kerala">Kerala</option>
+                  <option value="Madhya Pradesh">Madhya Pradesh</option>
+                  <option value="Maharashtra">Maharashtra</option>
+                  <option value="Odisha">Odisha</option>
+                  <option value="Punjab">Punjab</option>
+                  <option value="Rajasthan">Rajasthan</option>
+                  <option value="Tamil Nadu">Tamil Nadu</option>
+                  <option value="Telangana">Telangana</option>
+                  <option value="Uttar Pradesh">Uttar Pradesh</option>
+                  <option value="Uttarakhand">Uttarakhand</option>
+                  <option value="West Bengal">West Bengal</option>
+                  <option value="Delhi">Delhi</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label for="staffLangSelect" style="font-size:12px;font-weight:700">Language / Script:</label>
                 <select id="staffLangSelect" style="max-width:200px">
                   <option value="auto">Auto-Detect Script</option>
                   <option value="eng">English</option>
@@ -490,6 +517,9 @@
                   <option value="bod">Tibetan (བོད་ཡིག)</option>
                 </select>
               </div>
+            </div>
+            <div id="staffStateHelper" class="hidden" style="margin:-4px 0 10px;color:var(--muted);font-size:11px">
+              State-specific screening rules and land-record terminology will be applied where available.
             </div>
             <div id="staffProcessing" class="hidden simple-spinner-box">
               <span class="spinner"></span>
@@ -730,7 +760,7 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/app.js?v=30"></script>
+<script src="js/app.js?v=31"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->

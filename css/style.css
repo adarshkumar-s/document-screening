@@ -757,3 +757,10 @@ body.administration-open { overflow: hidden; }
   cursor: pointer;
 }
 .administration-logout:hover, .administration-logout:focus-visible { background: #fef2f2; border-color: #dc2626; }
+
+/* Keep the upload metadata controls responsive without changing the existing form layout. */
+.staff-upload-options select { max-width: 100%; }
+@media (max-width: 700px) {
+  .staff-upload-options > div { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .staff-upload-options select { width: 100%; }
+}

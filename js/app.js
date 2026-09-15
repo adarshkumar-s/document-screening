@@ -832,6 +832,11 @@ if(stDrop){
 }
 if(stFi){ stFi.onchange = () => { if(stFi.files.length) handleStaffUpload(stFi.files[0]); }; }
 
+const staffStateSelect = $('#staffStateSelect');
+if(staffStateSelect){
+  staffStateSelect.onchange = () => $('#staffStateHelper')?.classList.toggle('hidden', !staffStateSelect.value);
+}
+
 async function handleStaffUpload(file){
   $('#staffProcessing').classList.remove('hidden');
   $('#staffUploadEditor').classList.add('hidden');
@@ -839,9 +844,10 @@ async function handleStaffUpload(file){
   fd.append('file', file);
   const lang = $('#staffLangSelect')?.value || 'auto';
   const docType = $('#staffDocTypeSelect')?.value || 'Land Record';
+  const state = $('#staffStateSelect')?.value || '';
 
   try{
-    const r = await fetch(authUrl(`/api/process?lang=${encodeURIComponent(lang)}&doc_type=${encodeURIComponent(docType)}`),{
+    const r = await fetch(authUrl(`/api/process?lang=${encodeURIComponent(lang)}&doc_type=${encodeURIComponent(docType)}&state=${encodeURIComponent(state)}`),{
       method:'POST', headers: token ? {'Authorization':'Bearer '+token} : {}, body: fd
     });
     const d = await r.json();
@@ -853,6 +859,11 @@ async function handleStaffUpload(file){
 
 function populateStaffEditor(doc){
   currentStaffEditingDocId = doc.id;
+  const savedState = doc.metadata?.state;
+  if(savedState && staffStateSelect){
+    staffStateSelect.value = savedState;
+    $('#staffStateHelper')?.classList.remove('hidden');
+  }
   const grid = $('#staffFieldsGrid');
   grid.innerHTML = '';
   const f = doc.fields || {};
@@ -932,6 +943,8 @@ async function openStaffReview(id){
     const box = $('#staffReviewCard');
     const f = d.fields || {};
     const ai = d.ai_decision_support || {};
+    const selectedState = d.metadata?.state || '';
+    const stateSummary = selectedState ? ` | State / Land Record System: ${escapeHtml(selectedState)}` : '';
 
     const recStyles = {
       'ROUTINE_CLEAR': 'background:#dcfce7;color:#15803d;border:1px solid #86efac',
@@ -944,7 +957,7 @@ async function openStaffReview(id){
       <div class="card-header">
         <div>
           <h3 class="card-title">Review Document: #${d.id}</h3>
-          <div style="font-size:12px;color:var(--muted)">File: ${escapeHtml(d.filename)} | Type: ${escapeHtml(d.doc_type || 'Land Record')} | Submitter: ${escapeHtml(d.uploaded_by)} | Status: ${d.status}</div>
+          <div style="font-size:12px;color:var(--muted)">File: ${escapeHtml(d.filename)} | Type: ${escapeHtml(d.doc_type || 'Land Record')}${stateSummary} | Submitter: ${escapeHtml(d.uploaded_by)} | Status: ${d.status}</div>
         </div>
         <button class="btn ghost" onclick="switchStaffTab('queue')">✕ Back to Queue</button>
       </div>

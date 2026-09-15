@@ -375,6 +375,7 @@ def init_db():
                 cleaned_ocr_text TEXT NOT NULL DEFAULT '',
                 detected_language TEXT NOT NULL DEFAULT 'unknown',
                 original_fields TEXT NOT NULL DEFAULT '{}',
+                metadata TEXT NOT NULL DEFAULT '{}',
                 uploaded_by TEXT NOT NULL DEFAULT 'SYSTEM',
                 reviewer_comments TEXT NOT NULL DEFAULT '',
                 created_at REAL NOT NULL,
@@ -431,6 +432,18 @@ def init_db():
                     except Exception:
                         pass
                 print(f"[TABLE INIT WARNING] {e}")
+
+        # Older databases predate document metadata. Keep the migration additive
+        # so existing uploads remain readable and new state selections are optional.
+        try:
+            if db.is_pg:
+                db.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'")
+            else:
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(documents)").fetchall()}
+                if "metadata" not in columns:
+                    db.execute("ALTER TABLE documents ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
+        except Exception as e:
+            print(f"[DOCUMENT METADATA MIGRATION WARNING] {e}")
 
         try:
             if db.is_pg:
@@ -1786,13 +1799,33 @@ def get_samples():
     os.makedirs(samples_dir, exist_ok=True)
     return {"samples": sorted([f for f in os.listdir(samples_dir) if not f.startswith(".")])}
 
+def build_document_metadata(state: Optional[str]) -> Dict[str, Any]:
+    """Store optional upload context without changing the shared OCR pipeline."""
+    selected_state = str(state or "").strip()
+    if not selected_state:
+        return {}
+    return {"state": selected_state[:120]}
+
+
+def decode_document_metadata(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        decoded = json.loads(value or "{}")
+        return decoded if isinstance(decoded, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 @app.post("/api/process/sample/{name}")
 async def process_sample(
     name: str,
     doc_type: Optional[str] = Query("Land Record"),
     lang: Optional[str] = Query("auto"),
+    state: Optional[str] = Query(None),
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
+    document_metadata = build_document_metadata(state)
     sample_path = os.path.join(BASE_DIR, "samples", os.path.basename(name))
     if not os.path.isfile(sample_path):
         raise HTTPException(status_code=404, detail="Sample not found")
@@ -1819,8 +1852,8 @@ async def process_sample(
             INSERT INTO documents (
                 id, filename, doc_type, mean_conf, verdict, status, languages, pages,
                 fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
-                detected_language, original_fields, uploaded_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id, name, doc_type or parsed["doc_type"], parsed["mean_conf"], parsed["validation"]["verdict"],
@@ -1829,7 +1862,8 @@ async def process_sample(
                 json.dumps(parsed["validation"], ensure_ascii=False),
                 json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["original_fields"], ensure_ascii=False), user["email"], now, now
+                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(document_metadata, ensure_ascii=False),
+                user["email"], now, now
             )
         )
 
@@ -1863,6 +1897,7 @@ async def process_sample(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
+        "metadata": document_metadata,
         "property_resolution": property_resolution,
         "ownership_reasoning": ownership_reasoning,
     }
@@ -1873,8 +1908,10 @@ async def process_upload(
     file: UploadFile = File(...),
     doc_type: Optional[str] = Query("Land Record"),
     lang: Optional[str] = Query("auto"),
+    state: Optional[str] = Query(None),
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
+    document_metadata = build_document_metadata(state)
     content = await file.read()
     if not content:
         raise HTTPException(status_code=422, detail="Empty file")
@@ -1909,8 +1946,8 @@ async def process_upload(
             INSERT INTO documents (
                 id, filename, doc_type, mean_conf, verdict, status, languages, pages,
                 fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
-                detected_language, original_fields, uploaded_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id, filename, doc_type or parsed["doc_type"], parsed["mean_conf"], parsed["validation"]["verdict"],
@@ -1919,7 +1956,8 @@ async def process_upload(
                 json.dumps(parsed["validation"], ensure_ascii=False),
                 json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["original_fields"], ensure_ascii=False), user["email"], now, now
+                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(document_metadata, ensure_ascii=False),
+                user["email"], now, now
             )
         )
 
@@ -1953,6 +1991,7 @@ async def process_upload(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
+        "metadata": document_metadata,
         "ownership_reasoning": ownership_reasoning,
     }
 
@@ -2027,13 +2066,19 @@ def get_my_records(user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VE
             cur = db.execute("SELECT * FROM documents WHERE uploaded_by=? ORDER BY created_at DESC", (user["email"],))
         else:
             cur = db.execute("SELECT * FROM documents ORDER BY created_at DESC")
-        return {"documents": [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in cur.fetchall()]}
+        return {"documents": [
+            {**dict(r), "fields": json.loads(r["fields"] or "{}"), "metadata": decode_document_metadata(r["metadata"])}
+            for r in cur.fetchall()
+        ]}
 
 @app.get("/api/documents/queue")
 def get_verification_queue(user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
     with get_db() as db:
         cur = db.execute("SELECT * FROM documents WHERE status=? ORDER BY created_at ASC", (STATUS_PENDING_VERIFICATION,))
-        return {"queue": [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in cur.fetchall()]}
+        return {"queue": [
+            {**dict(r), "fields": json.loads(r["fields"] or "{}"), "metadata": decode_document_metadata(r["metadata"])}
+            for r in cur.fetchall()
+        ]}
 
 @app.post("/api/documents/{doc_id}/review-action")
 def review_action(
@@ -2272,7 +2317,7 @@ def get_documents(
     role = user.get("role")
     with get_db() as db:
         if role == ROLE_VIEWER:
-            query = "SELECT id, filename, doc_type, status, fields, created_at, updated_at FROM documents WHERE status=?"
+            query = "SELECT id, filename, doc_type, status, fields, metadata, created_at, updated_at FROM documents WHERE status=?"
             params = [STATUS_APPROVED]
         elif role == ROLE_DATA_OFFICER:
             query = "SELECT * FROM documents WHERE uploaded_by=?"
@@ -2298,6 +2343,7 @@ def get_documents(
             item = dict(r)
             f = json.loads(item.get("fields") or "{}")
             item["fields"] = f
+            item["metadata"] = decode_document_metadata(item.get("metadata"))
             
             if role == ROLE_VIEWER:
                 item.pop("reviewer_comments", None)
@@ -2329,6 +2375,7 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
 
         doc_dict["fields"] = json.loads(doc_dict.get("fields") or "{}")
         doc_dict["ai_decision_support"] = json.loads(doc_dict.get("ai_decision_support") or "{}")
+        doc_dict["metadata"] = decode_document_metadata(doc_dict.get("metadata"))
         
         if role == ROLE_VIEWER:
             doc_dict.pop("reviewer_comments", None)
