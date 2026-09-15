@@ -248,3 +248,165 @@
 .ai-proposal-actions{display:flex;gap:8px;margin-top:10px}
 @media(max-width:900px){.ai-proposal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.ai-proposal-grid{grid-template-columns:1fr}.ai-proposal-head{align-items:flex-start;flex-direction:column}}
+
+/* ================================================================
+   AI ADMIN COMMAND-CENTER POLISH
+   Keeps the existing assistant, APIs and governance unchanged while
+   making the dashboard faster to scan during an administrator review.
+   ================================================================ */
+.admin-assistant-container {
+  padding: 16px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  border-color: #dbe4ee;
+  box-shadow: 0 5px 18px rgba(15, 23, 42, .06);
+}
+
+.admin-assistant-container .assistant-title {
+  flex-wrap: wrap;
+}
+
+.admin-assistant-container .assistant-title h3::after {
+  content: '  ·  Monitoring, risk detection & administrative assistance';
+  display: inline;
+  font-size: 10px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.admin-assistant-container .assistant-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.admin-assistant-container .assistant-chat-log {
+  max-height: 330px;
+  min-height: 120px;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+.admin-assistant-container .assistant-suggestions {
+  margin: 9px 0;
+  gap: 6px;
+}
+
+.admin-assistant-container .btn-chip {
+  transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+}
+
+.admin-assistant-container .btn-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 7px rgba(15,23,42,.08);
+}
+
+/* Make the most important admin action visually dominant without changing
+   its existing click handler. */
+.admin-assistant-container .assistant-suggestions .btn-chip:nth-of-type(4) {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+  font-weight: 800;
+}
+
+.admin-assistant-container .assistant-input-group input:focus {
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(59,130,246,.08);
+  outline: none;
+}
+
+/* Existing Administrator Overview metrics become a compact command-center
+   band directly beneath the assistant. */
+#staffStatsRow {
+  margin-top: 4px;
+}
+
+#staffStatsRow > div {
+  margin-bottom: 10px !important;
+}
+
+#staffStatsRow .stat-card {
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+
+#staffStatsRow .stat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px rgba(15,23,42,.08);
+}
+
+/* Stronger evidence hierarchy for existing AI Approval cards. */
+.ai-approval-center {
+  border-top: 3px solid var(--gov-saffron);
+}
+
+.ai-proposal-card {
+  transition: box-shadow .12s ease, border-color .12s ease;
+}
+
+.ai-proposal-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 5px 18px rgba(15,23,42,.07);
+}
+
+.ai-proposal-details summary {
+  padding: 6px 0;
+}
+
+.ai-proposal-actions .btn {
+  min-width: 112px;
+}
+
+/* Keep the existing floating task inbox prominent and readable. */
+#aiTaskFab {
+  border: 1px solid rgba(255,255,255,.14) !important;
+  box-shadow: 0 10px 28px rgba(15,23,42,.24) !important;
+}
+
+#aiTaskPanel {
+  border-color: #dbe4ee !important;
+}
+
+@media (max-width: 760px) {
+  .admin-assistant-container .assistant-title h3::after {
+    display: block;
+    margin-top: 2px;
+    width: 100%;
+  }
+  .assistant-header {
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .assistant-header-actions .btn-briefing {
+    white-space: nowrap;
+  }
+  .assistant-message {
+    max-width: 96%;
+  }
+}
+
+@media (max-width: 520px) {
+  .admin-assistant-container {
+    padding: 11px;
+  }
+  .assistant-header {
+    flex-direction: column;
+  }
+  .assistant-header-actions,
+  .assistant-header-actions .btn-briefing {
+    width: 100%;
+  }
+  .assistant-header-actions .btn-briefing {
+    justify-content: center;
+  }
+  .assistant-input-group {
+    flex-direction: column;
+  }
+  .assistant-input-group .btn {
+    width: 100%;
+  }
+}
