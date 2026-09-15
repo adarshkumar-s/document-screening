@@ -124,7 +124,8 @@
           <div style="font-size:11px;color:#fbd38d" id="userRole">Role</div>
         </div>
       </div>
-      <button class="btn ghost" style="padding:6px 12px;font-size:12px" id="logoutBtn">Logout</button>
+      <a href="/map" id="landMapNav" class="btn ghost" style="padding:6px 12px;font-size:12px;text-decoration:none">🗺 Land Records Map</a>
+      <button class="btn ghost hidden" style="padding:6px 12px;font-size:12px" id="administrationOpenBtn" type="button" aria-haspopup="dialog" aria-controls="administrationModal">Administration</button>
     </div>
   </div>
 
@@ -263,11 +264,27 @@
               <label class="field-label">Language / Script</label>
               <select id="simpleLangSelect">
                 <option value="auto">Auto-Detect Script</option>
+                <option value="eng">English</option>
                 <option value="hin">Hindi (Devanagari - खतौनी / खसरा)</option>
                 <option value="tel">Telugu (తెలుగు - పట్టా / 1-B)</option>
                 <option value="tam">Tamil (தமிழ் - பட்டா / சிட்டா)</option>
+                <option value="ben">Bengali (বাংলা)</option>
                 <option value="mar">Marathi (मराठी - 7/12)</option>
-                <option value="eng">English</option>
+                <option value="guj">Gujarati (ગુજરાતી)</option>
+                <option value="pan">Punjabi (ਪੰਜਾਬੀ)</option>
+                <option value="kan">Kannada (ಕನ್ನಡ)</option>
+                <option value="ori">Odia (ଓଡ଼ିଆ)</option>
+                <option value="urd">Urdu (اردو)</option>
+                <option value="asm">Assamese (অসমীয়া)</option>
+                <option value="mal">Malayalam (മലയാളം)</option>
+                <option value="nep">Nepali (नेपाली)</option>
+                <option value="san">Sanskrit (संस्कृत)</option>
+                <option value="snd">Sindhi (سنڌي)</option>
+                <option value="sin">Sinhala (සිංහල)</option>
+                <option value="ara">Arabic (العربية)</option>
+                <option value="fas">Persian (فارسی)</option>
+                <option value="mya">Burmese (မြန်မာ)</option>
+                <option value="bod">Tibetan (བོད་ཡིག)</option>
               </select>
             </div>
           </div>
@@ -418,23 +435,6 @@
           </div>
           <!-- ========================================== -->
 
-          <div id="staff-tab-approvals" class="hidden">
-            <div class="card ai-approval-center">
-              <div class="card-header">
-                <div>
-                  <h3 class="card-title">AI Approval Center</h3>
-                  <p style="margin:2px 0 0;font-size:12px;color:var(--muted)">AI recommendations are proposals only. Nothing consequential executes until an Administrator approves it.</p>
-                </div>
-                <button class="btn ghost" type="button" onclick="loadAiApprovals()">↻ Refresh</button>
-              </div>
-              <div class="approval-policy-banner">
-                <strong>Administrator remains the final authority.</strong>
-                <span>Every proposal is re-authorized server-side, checked against its before-state, executed only once, and written to the audit trail.</span>
-              </div>
-              <div id="aiApprovalList" class="ai-approval-list"><div class="muted">Loading proposals…</div></div>
-            </div>
-          </div>
-
           <!-- Existing Dashboard Stats Grid -->
           <div id="staffStatsRow"></div>
         </div>
@@ -453,7 +453,7 @@
               <div style="font-size:12px;color:var(--muted);margin-top:4px">Supported formats: PDF, JPG, PNG, TIFF</div>
               <input type="file" id="staffFileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
             </div>
-            <div style="margin:12px 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <div class="staff-upload-options" style="margin:12px 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
               <div>
                 <span style="font-size:12px;font-weight:700">Document Type:</span>
                 <select id="staffDocTypeSelect" style="padding:4px 8px;border-radius:4px;border:1px solid var(--gov-border)">
@@ -464,16 +464,62 @@
                 </select>
               </div>
               <div>
-                <span style="font-size:12px;font-weight:700">Language / Script:</span>
+                <label for="staffStateSelect" style="font-size:12px;font-weight:700">State / Land Record System:</label>
+                <select id="staffStateSelect" style="max-width:220px">
+                  <option value="" selected>Select State</option>
+                  <option value="Andhra Pradesh">Andhra Pradesh</option>
+                  <option value="Bihar">Bihar</option>
+                  <option value="Chhattisgarh">Chhattisgarh</option>
+                  <option value="Gujarat">Gujarat</option>
+                  <option value="Haryana">Haryana</option>
+                  <option value="Himachal Pradesh">Himachal Pradesh</option>
+                  <option value="Jharkhand">Jharkhand</option>
+                  <option value="Karnataka">Karnataka</option>
+                  <option value="Kerala">Kerala</option>
+                  <option value="Madhya Pradesh">Madhya Pradesh</option>
+                  <option value="Maharashtra">Maharashtra</option>
+                  <option value="Odisha">Odisha</option>
+                  <option value="Punjab">Punjab</option>
+                  <option value="Rajasthan">Rajasthan</option>
+                  <option value="Tamil Nadu">Tamil Nadu</option>
+                  <option value="Telangana">Telangana</option>
+                  <option value="Uttar Pradesh">Uttar Pradesh</option>
+                  <option value="Uttarakhand">Uttarakhand</option>
+                  <option value="West Bengal">West Bengal</option>
+                  <option value="Delhi">Delhi</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label for="staffLangSelect" style="font-size:12px;font-weight:700">Language / Script:</label>
                 <select id="staffLangSelect" style="max-width:200px">
                   <option value="auto">Auto-Detect Script</option>
+                  <option value="eng">English</option>
                   <option value="hin">Hindi (खतौनी / खसरा)</option>
                   <option value="tel">Telugu (పట్టా / 1-B)</option>
                   <option value="tam">Tamil (பட்டா / சிட்டா)</option>
-                  <option value="mar">Marathi (7/12)</option>
-                  <option value="eng">English</option>
+                  <option value="ben">Bengali (বাংলা)</option>
+                  <option value="mar">Marathi (मराठी)</option>
+                  <option value="guj">Gujarati (ગુજરાતી)</option>
+                  <option value="pan">Punjabi (ਪੰਜਾਬੀ)</option>
+                  <option value="kan">Kannada (ಕನ್ನಡ)</option>
+                  <option value="ori">Odia (ଓଡ଼ିଆ)</option>
+                  <option value="urd">Urdu (اردو)</option>
+                  <option value="asm">Assamese (অসমীয়া)</option>
+                  <option value="mal">Malayalam (മലയാളം)</option>
+                  <option value="nep">Nepali (नेपाली)</option>
+                  <option value="san">Sanskrit (संस्कृत)</option>
+                  <option value="snd">Sindhi (سنڌي)</option>
+                  <option value="sin">Sinhala (සිංහල)</option>
+                  <option value="ara">Arabic (العربية)</option>
+                  <option value="fas">Persian (فارسی)</option>
+                  <option value="mya">Burmese (မြန်မာ)</option>
+                  <option value="bod">Tibetan (བོད་ཡིག)</option>
                 </select>
               </div>
+            </div>
+            <div id="staffStateHelper" class="hidden" style="margin:-4px 0 10px;color:var(--muted);font-size:11px">
+              State-specific screening rules and land-record terminology will be applied where available.
             </div>
             <div id="staffProcessing" class="hidden simple-spinner-box">
               <span class="spinner"></span>
@@ -581,16 +627,7 @@
           </div>
         </div>
 
-        <div id="staff-tab-learn" class="hidden">
-          <div class="card">
-            <div class="card-header"><h3 class="card-title">Learned OCR Corrections &amp; AI Accuracy</h3></div>
-            <p style="font-size:12px;color:var(--muted);margin-top:0">Officer corrections provide helpful context to improve accuracy in future extractions.</p>
-            <table class="gov-table" id="staffLearnTable">
-              <thead><tr><th>Field</th><th>OCR Read</th><th>Corrected Value</th><th>Corrections Count</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
+
 
         <div id="staff-tab-audit" class="hidden">
           <div class="card">
@@ -605,34 +642,76 @@
           </div>
         </div>
 
+
+
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ADMINISTRATION PANEL: existing staff interfaces are mounted here once, not duplicated. -->
+<div id="administrationModal" class="administration-modal hidden" role="dialog" aria-modal="true" aria-labelledby="administrationTitle" aria-hidden="true">
+  <div class="administration-backdrop" data-administration-close="true"></div>
+  <section class="administration-dialog" role="document">
+    <header class="administration-header">
+      <div>
+        <div class="admin-eyebrow">STAFF CONTROLS</div>
+        <h2 id="administrationTitle">Administration</h2>
+        <p>Manage authorised users, account settings, and learned OCR corrections.</p>
+      </div>
+      <button type="button" class="administration-close" id="administrationCloseBtn" aria-label="Close Administration">×</button>
+    </header>
+    <div id="administrationTabs" class="administration-tabs" role="tablist" aria-label="Administration sections"></div>
+    <div id="administrationMount" class="administration-mount">
         <div id="staff-tab-users" class="hidden">
-          <div style="display:grid;grid-template-columns:320px 1fr;gap:16px">
-            <div class="card">
-              <div class="card-header"><h3 class="card-title">Create User</h3></div>
-              <div class="formfield"><label class="field-label">Name</label><input type="text" id="staffNuName"></div>
-              <div class="formfield"><label class="field-label">Email</label><input type="email" id="staffNuEmail"></div>
-              <div class="formfield"><label class="field-label">Password</label><input type="password" id="staffNuPass"></div>
-              <div class="formfield">
-                <label class="field-label">Role</label>
-                <select id="staffNuRole">
-                  <option value="VIEWER">Viewer</option>
-                  <option value="DATA_OFFICER">Data Officer</option>
-                  <option value="VERIFICATION_OFFICER">Verification Officer</option>
-                  <option value="ADMIN">Administrator</option>
-                </select>
+          <div class="users-admin-shell">
+            <div class="users-section-head">
+              <div>
+                <h3 class="users-section-title">Users</h3>
+                <p class="users-section-subtitle">Manage authorised accounts by their existing application role.</p>
               </div>
-              <button class="btn block saffron" onclick="staffCreateUser()">Create User</button>
+              <button class="btn saffron" id="staffAddUserToggle" type="button" aria-expanded="false" aria-controls="staffUserCreatePanel">+ Add User</button>
             </div>
-            <div class="card">
-              <div class="card-header"><h3 class="card-title">Users</h3></div>
-              <table class="gov-table" id="staffUsersTable">
-                <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
+
+            <div id="staffUserCreatePanel" class="staff-user-create-panel hidden" aria-label="Create user">
+              <div class="users-create-head">
+                <strong>Create User</strong>
+                <button class="users-inline-close" id="staffUserCreateClose" type="button" aria-label="Close Add User form">×</button>
+              </div>
+              <div class="users-create-grid">
+                <div class="formfield"><label class="field-label" for="staffNuName">Name</label><input type="text" id="staffNuName"></div>
+                <div class="formfield"><label class="field-label" for="staffNuEmail">Email</label><input type="email" id="staffNuEmail"></div>
+                <div class="formfield"><label class="field-label" for="staffNuPass">Password</label><input type="password" id="staffNuPass"></div>
+                <div class="formfield">
+                  <label class="field-label" for="staffNuRole">Role</label>
+                  <select id="staffNuRole">
+                    <option value="VIEWER">Viewer</option>
+                    <option value="DATA_OFFICER">Data Officer</option>
+                    <option value="VERIFICATION_OFFICER">Verification Officer</option>
+                    <option value="ADMIN">Administrator</option>
+                  </select>
+                </div>
+                <button class="btn saffron users-create-submit" id="staffCreateUserBtn" type="button">Create User</button>
+              </div>
+            </div>
+
+            <div class="users-controls">
+              <div id="staffUserRoleTabs" class="user-role-tabs" role="tablist" aria-label="Filter users by role"></div>
+              <label class="users-search-label" for="staffUserSearch">Search users
+                <input id="staffUserSearch" type="search" placeholder="Search name or email…" autocomplete="off">
+              </label>
+            </div>
+            <div class="users-list-meta"><span id="staffUserSummary" aria-live="polite">Loading users…</span><span id="staffUserFilterSummary"></span></div>
+            <div class="users-table-scroll">
+              <table class="gov-table users-table" id="staffUsersTable">
+                <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th class="users-action-heading">Actions</th></tr></thead>
                 <tbody></tbody>
               </table>
             </div>
+            <div id="staffUserPagination" class="users-pagination" aria-label="User list pagination"></div>
           </div>
         </div>
-
         <div id="staff-tab-account" class="hidden">
           <div class="card" style="max-width:480px">
             <div class="card-header"><h3 class="card-title">Account Settings</h3></div>
@@ -647,14 +726,44 @@
             <button class="btn saffron" onclick="staffChangePassword()">Update Password</button>
           </div>
         </div>
-      </div>
+        <div id="staff-tab-learn" class="hidden">
+          <div class="card">
+            <div class="card-header"><h3 class="card-title">Learned OCR Corrections &amp; AI Accuracy</h3></div>
+            <p style="font-size:12px;color:var(--muted);margin-top:0">Officer corrections provide helpful context to improve accuracy in future extractions.</p>
+            <table class="gov-table" id="staffLearnTable">
+              <thead><tr><th>Field</th><th>OCR Read</th><th>Corrected Value</th><th>Corrections Count</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+          <div id="staff-tab-approvals" class="hidden">
+            <div class="card ai-approval-center">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">AI Approval Center</h3>
+                  <p style="margin:2px 0 0;font-size:12px;color:var(--muted)">AI recommendations are proposals only. Nothing consequential executes until an Administrator approves it.</p>
+                </div>
+                <button class="btn ghost" type="button" onclick="loadAiApprovals()">↻ Refresh</button>
+              </div>
+              <div class="approval-policy-banner">
+                <strong>Administrator remains the final authority.</strong>
+                <span>Every proposal is re-authorized server-side, checked against its before-state, executed only once, and written to the audit trail.</span>
+              </div>
+              <div id="aiApprovalList" class="ai-approval-list"><div class="muted">Loading proposals…</div></div>
+            </div>
+          </div>
     </div>
-  </div>
+    <footer class="administration-footer">
+      <button class="administration-logout" id="logoutBtn" type="button">🚪 Logout</button>
+    </footer>
+  </section>
 </div>
 
 <!-- Scripts -->
-<script src="js/app.js?v=26"></script>
+<script src="js/app.js?v=31"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
+<!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->
+<script src="portal-ui.js"></script>
 </body>
 </html>

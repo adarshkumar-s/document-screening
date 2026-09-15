@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Land Records Map | Document Screening</title>
+  <meta name="description" content="Document-grounded village sheet and land-record map with offline schematic mode.">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/map.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-lockup">
+      <div class="brand-mark" aria-hidden="true">▧</div>
+      <div>
+        <div class="eyebrow">DOCUMENT SCREENING · GIS WORKSPACE</div>
+        <h1>Land Records Map <span>भूमि नक्शा</span></h1>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="userBadge" class="user-badge">Checking session…</span>
+      <a class="header-link" href="/">← Return to portal</a>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <div id="mapNotice" class="notice info" role="status">
+      <strong>Document-grounded mapping.</strong> Record positions come from uploaded fields, cached village geocoding, or an exact pin set by an authorised reviewer. This is not an authoritative cadastral record.
+    </div>
+
+    <section class="workspace-card" aria-label="Land records map">
+      <div class="workspace-head">
+        <div>
+          <div class="section-kicker">LAND RECORD LOCATOR</div>
+          <h2>Village sheet and record map</h2>
+          <p class="muted">Browse village plots, switch tile sources, work offline, and open the document history for a survey number.</p>
+        </div>
+        <div class="head-actions">
+          <button id="refreshBtn" class="btn secondary" type="button">↻ Refresh records</button>
+          <button id="backPortalBtn" class="btn ghost" type="button">Portal</button>
+        </div>
+      </div>
+
+      <div class="view-switcher" role="tablist" aria-label="Map views">
+        <button id="sheetTab" class="view-tab active" role="tab" aria-selected="true" type="button">▦ Village Sheet <span>ग्राम शीट</span></button>
+        <button id="realMapTab" class="view-tab" role="tab" aria-selected="false" type="button">⌖ Real Map <span>स्थान मानचित्र</span></button>
+        <div id="recordCount" class="view-count">Loading records…</div>
+      </div>
+      <div id="mapStats" class="map-stats" aria-live="polite">
+        <div class="stat-card"><span class="stat-label">VISIBLE RECORDS</span><strong id="statRecords">—</strong></div>
+        <div class="stat-card coverage-stat"><span class="stat-label">LOCATION COVERAGE</span><strong id="statMapped">—</strong><small id="statMappedDetail">Persisted exact locations</small></div>
+        <div class="stat-card exact-stat"><span class="stat-label">VERIFIED LOCATIONS</span><strong id="statExact">—</strong></div>
+        <div class="stat-card village-stat"><span class="stat-label">VILLAGE APPROX.</span><strong id="statVillage">—</strong></div>
+        <div class="stat-card review-stat"><span class="stat-label">REVIEW QUEUE</span><strong id="statReview">—</strong></div>
+        <div class="stat-context"><span id="statContext">Loading map coverage…</span><span id="statUnresolved" class="stat-unresolved"></span></div>
+      </div>
+
+      <div id="mapSheetView" class="sheet-view" role="tabpanel">
+        <div class="sheet-controls">
+          <label>District
+            <select id="sheetDistrict"><option value="">Loading districts…</option></select>
+          </label>
+          <label>Tehsil / Taluka
+            <select id="sheetTehsil"><option value="">Select district first</option></select>
+          </label>
+          <label>Village
+            <select id="sheetVillage"><option value="">Select tehsil first</option></select>
+          </label>
+          <label class="plot-search">Plot / survey search
+            <input id="sheetPlotSearch" type="search" placeholder="e.g. 312, 45/2, khata…" autocomplete="off">
+            <span id="plotSearchStatus" class="field-hint"></span>
+          </label>
+        </div>
+        <div class="sheet-meta">
+          <div>
+            <strong id="sheetHeader">Village sheet</strong>
+            <span id="sheetSubheader" class="muted">Select a village to see document-grounded plots.</span>
+          </div>
+          <span class="schematic-chip">▦ Schematic · no internet required</span>
+        </div>
+        <div id="sheetReferencePanel" class="reference-panel">
+          <div class="reference-head">
+            <div><span class="section-kicker">ORIENTATION LAYER</span><strong>Reference geometry and neighbouring plots</strong></div>
+            <span id="referenceGeometryStatus" class="reference-status">Loading reference layer…</span>
+          </div>
+          <div class="reference-canvas-wrap">
+            <svg id="sheetGeometrySvg" class="sheet-geometry" viewBox="0 0 900 240" role="img" aria-label="Reference-only village plot orientation"></svg>
+            <div class="orientation-key" aria-label="Orientation key"><span><i class="north-arrow">↑</i> North</span><span><i class="orientation-line"></i> Reference orientation</span></div>
+          </div>
+          <p class="reference-disclaimer"><strong>Non-authoritative cadastral reference.</strong> Shapes, survey labels, confidence, and neighbouring relationships are project-owned reference geometry only. They do not establish legal title, possession, or an official boundary.</p>
+        </div>
+        <div class="sheet-layout">
+          <div id="sheetGrid" class="sheet-grid" aria-live="polite">
+            <div class="empty-state">Loading village sheet…</div>
+          </div>
+          <aside id="plotInfo" class="plot-info empty-state" aria-live="polite">
+            Select a plot to see holders, area, source records, and neighbouring plots.
+          </aside>
+        </div>
+        <div class="disclaimer"><strong>Reference view only.</strong> The sheet is a schematic index of screened documents, not a legal boundary or title determination.</div>
+      </div>
+
+      <div id="mapMapView" class="real-map-view hidden" role="tabpanel">
+        <div class="map-toolbar">
+          <label class="search-box" aria-label="Filter records">
+            <span>⌕</span><input id="mapSearch" type="search" placeholder="Filter owner, survey, khasra, village, district…" autocomplete="off">
+          </label>
+          <label class="tile-picker">Base layer
+            <select id="mapTileSource">
+              <option value="osmhot">OpenStreetMap Humanitarian (recommended)</option>
+              <option value="esri">Esri World Imagery</option>
+              <option value="topo">OpenTopoMap</option>
+              <option value="osm">OpenStreetMap</option>
+              <option value="schematic">▦ Offline schematic</option>
+            </select>
+          </label>
+          <label class="filter-picker">Location
+            <select id="mapLocationFilter">
+              <option value="">All locations</option>
+              <option value="EXACT_PIN">Verified location</option>
+              <option value="VILLAGE_LEVEL">Approximate — village location</option>
+              <option value="UNRESOLVED">Location not available</option>
+            </select>
+          </label>
+          <label class="filter-picker">Review status
+            <select id="mapStatusFilter">
+              <option value="">All statuses</option>
+              <option value="DRAFT">Draft</option>
+              <option value="PENDING_VERIFICATION">Pending review</option>
+              <option value="RETURNED_TO_DATA_OFFICER">Returned</option>
+              <option value="APPROVED">Approved</option>
+              <option value="VERIFIED">Verified</option>
+            </select>
+          </label>
+          <button id="exportMapBtn" class="btn ghost export-btn" type="button">⇩ Export CSV</button>
+          <button id="fitRecordsBtn" class="btn ghost export-btn" type="button">⌖ Fit to records</button>
+          <label id="pinModeLabel" class="pin-toggle"><input id="mapPinMode" type="checkbox"> <span>📍 Set verified location</span></label>
+          <span id="mapRegionStatus" class="toolbar-count" aria-live="polite"></span>
+          <span id="mapCount" class="toolbar-count"></span>
+        </div>
+        <div class="map-layout">
+          <aside class="record-sidebar">
+            <div class="sidebar-head"><span>RECORDS</span><span id="mapListCount">0</span></div>
+            <div id="mapList" class="record-list"><div class="empty-state">Loading…</div></div>
+            <section id="selectedRecordPanel" class="selected-record-panel" aria-live="polite">
+              <div class="empty-state">Select a record to keep its document, location, and history in view.</div>
+            </section>
+          </aside>
+          <div class="map-stage">
+            <div id="map" aria-label="Land record map"></div>
+            <div id="mapLoadHint" class="map-overlay">Loading map library…</div>
+            <div id="mapSchematicNote" class="schematic-note hidden">▦ Schematic mode — record markers remain at their stored latitude and longitude. Works offline.</div>
+            <div id="mapFallback" class="map-fallback hidden" role="alert">
+              <strong>Map tiles unavailable.</strong> Record markers are still available. Try another source or use <button id="useSchematicBtn" type="button">offline schematic</button>.
+            </div>
+            <div id="pinHint" class="pin-hint hidden">Click the map to place an exact pin. You will be asked to confirm the change.</div>
+          </div>
+        </div>
+        <div class="map-legend" aria-label="Map legend">
+          <span><i class="legend-dot exact-dot"></i> Exact reviewer pin</span>
+          <span><i class="legend-dot village-dot"></i> Village-level approximate</span>
+          <span><i class="legend-dot unresolved-dot"></i> Unresolved</span>
+          <span class="legend-note">Export respects your role visibility.</span>
+        </div>
+        <div class="disclaimer"><strong>Source labels matter.</strong> Green pins are exact reviewer locations; amber pins are village-level geocodes; records without a resolvable position remain visible in the list.</div>
+      </div>
+    </section>
+
+    <section id="historyPanel" class="history-panel hidden" aria-live="polite">
+      <div class="history-head">
+        <div><div class="section-kicker">RECORD NAVIGATION</div><h2 id="historyTitle">Survey history</h2></div>
+        <button id="closeHistoryBtn" class="icon-btn" type="button" aria-label="Close history">×</button>
+      </div>
+      <div id="historySummary" class="history-summary"></div>
+      <div id="historyTimeline" class="history-timeline"></div>
+    </section>
+
+    <footer class="page-footer">
+      <span>Portfolio-derived mapping workflow adapted for this document-screening application.</span>
+      <span>AI, OCR, audit, authentication, and document processing remain in the portal.</span>
+    </footer>
+  </main>
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/map.js"></script>
+</body>
+</html>

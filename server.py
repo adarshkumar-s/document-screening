@@ -197,6 +197,8 @@ VALID_STATUSES = {
     STATUS_APPROVED, STATUS_RETURNED, STATUS_REJECTED
 }
 
+# Language packs installed by Dockerfile and exposed by /api/languages.
+# Keep this list as the single source of truth for the upload selectors and OCR.
 SUPPORTED_LANGUAGES = [
     {"code": "eng", "name": "English"},
     {"code": "hin", "name": "Hindi"},
@@ -208,7 +210,17 @@ SUPPORTED_LANGUAGES = [
     {"code": "pan", "name": "Punjabi"},
     {"code": "kan", "name": "Kannada"},
     {"code": "ori", "name": "Odia"},
-    {"code": "urd", "name": "Urdu"}
+    {"code": "urd", "name": "Urdu"},
+    {"code": "asm", "name": "Assamese"},
+    {"code": "mal", "name": "Malayalam"},
+    {"code": "nep", "name": "Nepali"},
+    {"code": "san", "name": "Sanskrit"},
+    {"code": "snd", "name": "Sindhi"},
+    {"code": "sin", "name": "Sinhala"},
+    {"code": "ara", "name": "Arabic"},
+    {"code": "fas", "name": "Persian"},
+    {"code": "mya", "name": "Burmese"},
+    {"code": "bod", "name": "Tibetan"},
 ]
 
 app = FastAPI(
@@ -363,6 +375,7 @@ def init_db():
                 cleaned_ocr_text TEXT NOT NULL DEFAULT '',
                 detected_language TEXT NOT NULL DEFAULT 'unknown',
                 original_fields TEXT NOT NULL DEFAULT '{}',
+                metadata TEXT NOT NULL DEFAULT '{}',
                 uploaded_by TEXT NOT NULL DEFAULT 'SYSTEM',
                 reviewer_comments TEXT NOT NULL DEFAULT '',
                 created_at REAL NOT NULL,
@@ -419,6 +432,18 @@ def init_db():
                     except Exception:
                         pass
                 print(f"[TABLE INIT WARNING] {e}")
+
+        # Older databases predate document metadata. Keep the migration additive
+        # so existing uploads remain readable and new state selections are optional.
+        try:
+            if db.is_pg:
+                db.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'")
+            else:
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(documents)").fetchall()}
+                if "metadata" not in columns:
+                    db.execute("ALTER TABLE documents ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
+        except Exception as e:
+            print(f"[DOCUMENT METADATA MIGRATION WARNING] {e}")
 
         try:
             if db.is_pg:
@@ -542,11 +567,22 @@ def clean_ocr_image(image: Image.Image) -> Image.Image:
     return enhancer.enhance(1.5)
 
 def detect_primary_script(text: str) -> str:
+    # These ranges let the expanded language set report a useful detected
+    # language/script without changing the existing field extraction rules.
     counts = {
-        "hin": sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F),
-        "tel": sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F),
-        "tam": sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF),
-        "ben": sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF)
+        "hin": sum(1 for c in text if 0x0900 <= ord(c) <= 0x097F),  # Devanagari
+        "ben": sum(1 for c in text if 0x0980 <= ord(c) <= 0x09FF),  # Bengali/Assamese
+        "pan": sum(1 for c in text if 0x0A00 <= ord(c) <= 0x0A7F),  # Gurmukhi
+        "guj": sum(1 for c in text if 0x0A80 <= ord(c) <= 0x0AFF),  # Gujarati
+        "ori": sum(1 for c in text if 0x0B00 <= ord(c) <= 0x0B7F),  # Odia
+        "tam": sum(1 for c in text if 0x0B80 <= ord(c) <= 0x0BFF),  # Tamil
+        "tel": sum(1 for c in text if 0x0C00 <= ord(c) <= 0x0C7F),  # Telugu
+        "kan": sum(1 for c in text if 0x0C80 <= ord(c) <= 0x0CFF),  # Kannada
+        "mal": sum(1 for c in text if 0x0D00 <= ord(c) <= 0x0D7F),  # Malayalam
+        "sin": sum(1 for c in text if 0x0D80 <= ord(c) <= 0x0DFF),  # Sinhala
+        "urd": sum(1 for c in text if 0x0600 <= ord(c) <= 0x06FF),  # Arabic/Persian/Urdu
+        "bod": sum(1 for c in text if 0x0F00 <= ord(c) <= 0x0FFF),  # Tibetan
+        "mya": sum(1 for c in text if 0x1000 <= ord(c) <= 0x109F),  # Myanmar
     }
     if not counts or max(counts.values()) == 0:
         return "eng"
@@ -564,11 +600,12 @@ def _rotate_image(image: Image.Image, rotation: int) -> Image.Image:
 
 
 def _ocr_languages(preferred: str = "auto") -> List[str]:
-    """Return a small, safe language list for the installed Tesseract setup."""
+    """Return Tesseract language candidates from the shared 21-language list."""
     requested = (preferred or "auto").lower().strip()
-    if requested in {"eng", "hin", "tel", "tam", "ben", "mar", "guj", "pan", "kan", "ori", "urd"}:
+    supported_codes = {item["code"] for item in SUPPORTED_LANGUAGES}
+    if requested in supported_codes:
         return [requested]
-    # Keep the existing multilingual behaviour as the first choice.
+    # Keep the existing multilingual behaviour as the first choice for auto mode.
     return ["hin+eng+tel+tam", "eng"]
 
 
@@ -829,8 +866,8 @@ def ai_prescan_document(image_bytes: bytes) -> Dict[str, Any]:
     prompt = """Inspect this land-record document image and return STRICT JSON ONLY with:
 {
   "document_type": "Land Record/Sale Deed/Khatauni/Patta/Jamabandi/Other",
-  "language": "English/Hindi/Telugu/Tamil/Bengali/Marathi/Gujarati/Punjabi/Kannada/Odia/Urdu/Mixed",
-  "script": "Latin/Devanagari/Telugu/Tamil/Bengali/Gujarati/Gurmukhi/Kannada/Odia/Urdu/Mixed",
+  "language": "English/Hindi/Telugu/Tamil/Bengali/Marathi/Gujarati/Punjabi/Kannada/Odia/Urdu/Assamese/Malayalam/Nepali/Sanskrit/Sindhi/Sinhala/Arabic/Persian/Burmese/Tibetan/Mixed",
+  "script": "Latin/Devanagari/Telugu/Tamil/Bengali/Assamese/Gujarati/Gurmukhi/Kannada/Odia/Malayalam/Sinhala/Arabic/Tibetan/Myanmar/Mixed",
   "quality": "high/medium/low",
   "layout": "table/dense_text/mixed",
   "rotation": 0,
@@ -856,15 +893,20 @@ def select_ai_ocr_strategy(prescan: Dict[str, Any], requested_lang: str = "auto"
     script = str(prescan.get("script", "Mixed")).lower()
     layout = str(prescan.get("layout", "mixed")).lower()
     quality = str(prescan.get("quality", "medium")).lower()
+    prescan_text = f"{language} {script}"
+    detected_code = next(
+        (item["code"] for item in SUPPORTED_LANGUAGES if item["name"].lower() in prescan_text or item["code"] in prescan_text),
+        None,
+    )
 
     if requested_lang and requested_lang != "auto":
         candidates = _ocr_languages(requested_lang)
-    elif "hindi" in language or "devanagari" in script:
+    elif detected_code and detected_code != "eng":
+        candidates = [f"{detected_code}+eng", "eng"]
+    elif detected_code == "eng":
+        candidates = ["eng"]
+    elif "devanagari" in script:
         candidates = ["hin+eng", "eng"]
-    elif "telugu" in language or "telugu" in script:
-        candidates = ["tel+eng", "eng"]
-    elif "tamil" in language or "tamil" in script:
-        candidates = ["tam+eng", "eng"]
     elif "mixed" in language or "mixed" in script:
         candidates = ["hin+eng+tel+tam", "eng"]
     else:
@@ -1373,7 +1415,7 @@ def evaluate_cross_document_consistency(records: List[Dict[str, Any]]) -> Dict[s
             counts["mismatched"] += 1
             field_audits.append({"field":key,"label":label,"status":"MISMATCH","values":values_by_doc,"message":"Values do not match. Requires officer review."})
 
-    from land_intelligence import analyze_ownership_history
+    from mapping import analyze_ownership_history
     ownership_reasoning = analyze_ownership_history(records)
 
     # Ownership changes are not automatically conflicts. The deterministic ownership
@@ -1578,7 +1620,7 @@ def apply_ownership_review(document_id: str, property_id: Optional[str], parsed:
     if not property_id:
         return status_value, ai_payload, {"assessment": "INSUFFICIENT_DATA", "findings": [], "relationships": []}
     try:
-        from land_intelligence import analyze_ownership_history
+        from mapping import analyze_ownership_history
         with get_db() as db:
             rows = db.execute(
                 """SELECT d.* FROM property_documents pd JOIN documents d ON d.id=pd.document_id
@@ -1757,13 +1799,33 @@ def get_samples():
     os.makedirs(samples_dir, exist_ok=True)
     return {"samples": sorted([f for f in os.listdir(samples_dir) if not f.startswith(".")])}
 
+def build_document_metadata(state: Optional[str]) -> Dict[str, Any]:
+    """Store optional upload context without changing the shared OCR pipeline."""
+    selected_state = str(state or "").strip()
+    if not selected_state:
+        return {}
+    return {"state": selected_state[:120]}
+
+
+def decode_document_metadata(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        decoded = json.loads(value or "{}")
+        return decoded if isinstance(decoded, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 @app.post("/api/process/sample/{name}")
 async def process_sample(
     name: str,
     doc_type: Optional[str] = Query("Land Record"),
     lang: Optional[str] = Query("auto"),
+    state: Optional[str] = Query(None),
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
+    document_metadata = build_document_metadata(state)
     sample_path = os.path.join(BASE_DIR, "samples", os.path.basename(name))
     if not os.path.isfile(sample_path):
         raise HTTPException(status_code=404, detail="Sample not found")
@@ -1790,8 +1852,8 @@ async def process_sample(
             INSERT INTO documents (
                 id, filename, doc_type, mean_conf, verdict, status, languages, pages,
                 fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
-                detected_language, original_fields, uploaded_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id, name, doc_type or parsed["doc_type"], parsed["mean_conf"], parsed["validation"]["verdict"],
@@ -1800,13 +1862,14 @@ async def process_sample(
                 json.dumps(parsed["validation"], ensure_ascii=False),
                 json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["original_fields"], ensure_ascii=False), user["email"], now, now
+                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(document_metadata, ensure_ascii=False),
+                user["email"], now, now
             )
         )
 
     property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
     try:
-        from land_intelligence import _resolve
+        from mapping import _resolve
         property_resolution = _resolve(parsed["fields"])
         if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
             match_property = property_resolution["matches"][0]["property"]["property_id"]
@@ -1834,6 +1897,7 @@ async def process_sample(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
+        "metadata": document_metadata,
         "property_resolution": property_resolution,
         "ownership_reasoning": ownership_reasoning,
     }
@@ -1844,8 +1908,10 @@ async def process_upload(
     file: UploadFile = File(...),
     doc_type: Optional[str] = Query("Land Record"),
     lang: Optional[str] = Query("auto"),
+    state: Optional[str] = Query(None),
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
+    document_metadata = build_document_metadata(state)
     content = await file.read()
     if not content:
         raise HTTPException(status_code=422, detail="Empty file")
@@ -1880,8 +1946,8 @@ async def process_upload(
             INSERT INTO documents (
                 id, filename, doc_type, mean_conf, verdict, status, languages, pages,
                 fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
-                detected_language, original_fields, uploaded_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id, filename, doc_type or parsed["doc_type"], parsed["mean_conf"], parsed["validation"]["verdict"],
@@ -1890,13 +1956,14 @@ async def process_upload(
                 json.dumps(parsed["validation"], ensure_ascii=False),
                 json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["original_fields"], ensure_ascii=False), user["email"], now, now
+                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(document_metadata, ensure_ascii=False),
+                user["email"], now, now
             )
         )
 
     property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
     try:
-        from land_intelligence import _resolve
+        from mapping import _resolve
         property_resolution = _resolve(parsed["fields"])
         if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
             match_property = property_resolution["matches"][0]["property"]["property_id"]
@@ -1924,6 +1991,7 @@ async def process_upload(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
+        "metadata": document_metadata,
         "ownership_reasoning": ownership_reasoning,
     }
 
@@ -1998,13 +2066,19 @@ def get_my_records(user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VE
             cur = db.execute("SELECT * FROM documents WHERE uploaded_by=? ORDER BY created_at DESC", (user["email"],))
         else:
             cur = db.execute("SELECT * FROM documents ORDER BY created_at DESC")
-        return {"documents": [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in cur.fetchall()]}
+        return {"documents": [
+            {**dict(r), "fields": json.loads(r["fields"] or "{}"), "metadata": decode_document_metadata(r["metadata"])}
+            for r in cur.fetchall()
+        ]}
 
 @app.get("/api/documents/queue")
 def get_verification_queue(user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
     with get_db() as db:
         cur = db.execute("SELECT * FROM documents WHERE status=? ORDER BY created_at ASC", (STATUS_PENDING_VERIFICATION,))
-        return {"queue": [{**dict(r), "fields": json.loads(r["fields"] or "{}")} for r in cur.fetchall()]}
+        return {"queue": [
+            {**dict(r), "fields": json.loads(r["fields"] or "{}"), "metadata": decode_document_metadata(r["metadata"])}
+            for r in cur.fetchall()
+        ]}
 
 @app.post("/api/documents/{doc_id}/review-action")
 def review_action(
@@ -2243,7 +2317,7 @@ def get_documents(
     role = user.get("role")
     with get_db() as db:
         if role == ROLE_VIEWER:
-            query = "SELECT id, filename, doc_type, status, fields, created_at, updated_at FROM documents WHERE status=?"
+            query = "SELECT id, filename, doc_type, status, fields, metadata, created_at, updated_at FROM documents WHERE status=?"
             params = [STATUS_APPROVED]
         elif role == ROLE_DATA_OFFICER:
             query = "SELECT * FROM documents WHERE uploaded_by=?"
@@ -2269,6 +2343,7 @@ def get_documents(
             item = dict(r)
             f = json.loads(item.get("fields") or "{}")
             item["fields"] = f
+            item["metadata"] = decode_document_metadata(item.get("metadata"))
             
             if role == ROLE_VIEWER:
                 item.pop("reviewer_comments", None)
@@ -2300,6 +2375,7 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
 
         doc_dict["fields"] = json.loads(doc_dict.get("fields") or "{}")
         doc_dict["ai_decision_support"] = json.loads(doc_dict.get("ai_decision_support") or "{}")
+        doc_dict["metadata"] = decode_document_metadata(doc_dict.get("metadata"))
         
         if role == ROLE_VIEWER:
             doc_dict.pop("reviewer_comments", None)
@@ -2310,28 +2386,35 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
 
 
 
-# Land Intelligence UI assets are served explicitly from the application root.
-# Keep these routes on the canonical server app so both main:app and server:app
-# resolve the same files without relying on static mounts or a fallback route.
-@app.get("/land-intelligence", include_in_schema=False)
-def land_intelligence_ui():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"), media_type="text/html")
+# The map is a narrow, explicit UI surface on the canonical app. The rest of
+# the document-screening frontend remains owned by server.py and is unchanged.
+@app.get("/map", include_in_schema=False)
+def map_ui():
+    return FileResponse(os.path.join(BASE_DIR, "map.html"), media_type="text/html")
 
-@app.get("/land-intelligence.css", include_in_schema=False)
-def land_intelligence_css():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.css"), media_type="text/css")
+@app.get("/map.css", include_in_schema=False)
+def map_css():
+    return FileResponse(os.path.join(BASE_DIR, "map.css"), media_type="text/css")
 
-@app.get("/land-intelligence.js", include_in_schema=False)
-def land_intelligence_js():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.js"), media_type="application/javascript")
+@app.get("/map.js", include_in_schema=False)
+def map_js():
+    return FileResponse(os.path.join(BASE_DIR, "map.js"), media_type="application/javascript")
+
+@app.get("/portal-ui.js", include_in_schema=False)
+def portal_ui_js():
+    return FileResponse(os.path.join(BASE_DIR, "portal-ui.js"), media_type="application/javascript")
 
 os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "static"), exist_ok=True)
 
 app.mount("/css", StaticFiles(directory=os.path.join(BASE_DIR, "css")), name="css")
 app.mount("/js", StaticFiles(directory=os.path.join(BASE_DIR, "js")), name="js")
 app.mount("/assets", StaticFiles(directory=os.path.join(BASE_DIR, "assets")), name="assets")
+# Local Leaflet assets keep the mapping UI usable in the reference repo's
+# offline/schematic mode; the map tile sources themselves remain switchable.
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 # Mount AI Admin Assistant at the end so all functions and models are fully defined
 from admin_assistant import router as assistant_router

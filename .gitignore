@@ -5,6 +5,7 @@ __pycache__/
 .vscode/
 .DS_Store
 .continue/
+.venv/
 data/uploads/
 data/*.db
 *.sqlite3

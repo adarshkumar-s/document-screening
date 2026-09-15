@@ -87,13 +87,32 @@ function routePortal(){
 
   if(isSimple) setupSimplePortal(role);
   else setupStaffPortal(role);
+  setupAdministrationPanel(role);
 }
 
 function showAuth(){ $('#authView').classList.remove('hidden'); $('#appShell').classList.add('hidden'); }
-function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); }
+function openDocumentDeepLink(){
+  const id = new URLSearchParams(window.location.search).get('open_document');
+  if(!id || !me) return;
+  // Let the existing portal route own the document/OCR/review experience.
+  window.setTimeout(()=>{
+    if(me.role === ROLE_VERIFICATION_OFFICER || me.role === ROLE_ADMIN){
+      switchStaffTab('review');
+      openStaffReview(id);
+    }else{
+      openSimpleDetail(id);
+    }
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('open_document');
+    window.history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : ''));
+  }, 0);
+}
+function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); openDocumentDeepLink(); }
 
 function doLogout(quiet){
+  if(!quiet && !window.confirm('Are you sure you want to log out?')) return;
   if(token && !quiet){ api('/api/auth/logout',{method:'POST'}).catch(()=>{}); }
+  if(typeof closeAdministration === 'function') closeAdministration();
   store_.removeItem('lrtoken'); token=null; me=null; showAuth();
 }
 
@@ -542,9 +561,7 @@ function setupStaffPortal(role){
       ['queue', '⏳ Verification Queue'],
       ['consistency', '🔍 Consistency Check'],
       ['compare', '⚖️ Comparison'],
-      ['records', '🗂️ All Records'],
-      ['learn', '🧠 AI Corrections'],
-      ['account', '⚙️ Settings']
+      ['records', '🗂️ All Records']
     ];
   } else if(isAdmin){
     tabs = [
@@ -554,11 +571,7 @@ function setupStaffPortal(role){
       ['consistency', '🔍 Consistency Check'],
       ['records', '🗂️ All Records'],
       ['compare', '⚖️ Comparison'],
-      ['learn', '🧠 AI Corrections'],
-      ['users', '👥 Users'],
-      ['audit', '🔐 Audit Trail'],
-      ['approvals', '🛡️ AI Approvals'],
-      ['account', '⚙️ Settings']
+      ['audit', '🔐 Audit Trail']
     ];
   }
 
@@ -572,12 +585,139 @@ function setupStaffPortal(role){
   switchStaffTab(tabs[0][0]);
 }
 
+let administrationOpen = false;
+let administrationTab = 'users';
+let administrationWired = false;
+let administrationOptions = [];
+
+function administrationDefinitions(role){
+  const isAdmin = role === ROLE_ADMIN;
+  const isStaff = isAdmin || role === ROLE_VERIFICATION_OFFICER;
+  const options = [];
+  // Existing role restrictions remain: Users and AI Approval are
+  // Administrator-only; Settings and AI Correction are staff features.
+  if(isAdmin) options.push({key:'users', label:'Users', pane:'staff-tab-users', load:loadStaffUsers});
+  if(isStaff){
+    options.push({key:'account', label:'Settings', pane:'staff-tab-account', load:loadStaffAccount});
+    options.push({key:'learn', label:'AI Correction', pane:'staff-tab-learn', load:loadStaffLearn});
+  }
+  if(isAdmin) options.push({key:'approvals', label:'AI Approval', pane:'staff-tab-approvals', load:() => { if(typeof loadAiApprovals === 'function') loadAiApprovals(); }});
+  return options;
+}
+
+function administrationFocusable(){
+  const modal = $('#administrationModal');
+  if(!modal) return [];
+  return [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]')]
+    .filter(node => node.offsetParent !== null);
+}
+
+function setAdministrationTab(tabName){
+  const option = administrationOptions.find(item => item.key === tabName) || administrationOptions[0];
+  if(!option) return;
+  administrationTab = option.key;
+  administrationOptions.forEach(item => {
+    const pane = $('#'+item.pane);
+    const tab = $('#administration-tab-'+item.key);
+    if(pane) pane.classList.toggle('hidden', item.key !== administrationTab);
+    if(tab){
+      const active = item.key === administrationTab;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.setAttribute('tabindex', active ? '0' : '-1');
+    }
+  });
+  // Reuse the existing loaders and DOM rather than rebuilding any feature.
+  option.load();
+}
+
+function openAdministration(selectedTab){
+  const modal = $('#administrationModal');
+  if(!modal || (!administrationOptions.length && !$('#logoutBtn'))) return;
+  administrationOpen = true;
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('administration-open');
+  // Users is the default for Administrators; callers may request a specific pane.
+  const requested = administrationOptions.find(item => item.key === selectedTab);
+  if(administrationOptions.length) setAdministrationTab(requested ? requested.key : administrationOptions[0].key);
+  $('#administrationCloseBtn')?.focus();
+}
+
+function closeAdministration(){
+  const modal = $('#administrationModal');
+  if(!modal) return;
+  administrationOpen = false;
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('administration-open');
+  const openButton = $('#administrationOpenBtn');
+  if(openButton && !openButton.classList.contains('hidden')) openButton.focus();
+}
+
+function setupAdministrationPanel(role){
+  const openButton = $('#administrationOpenBtn');
+  const modal = $('#administrationModal');
+  const tabs = $('#administrationTabs');
+  if(!openButton || !modal || !tabs) return;
+  administrationOptions = administrationDefinitions(role);
+  const canAccess = Boolean(role) && (administrationOptions.length > 0 || $('#logoutBtn'));
+  openButton.classList.toggle('hidden', !canAccess);
+  openButton.setAttribute('aria-hidden', String(!canAccess));
+  if(!canAccess){
+    closeAdministration();
+    tabs.innerHTML = '';
+    return;
+  }
+  tabs.innerHTML = administrationOptions.map(item => `<button type="button" class="administration-tab" id="administration-tab-${item.key}" role="tab" aria-controls="${item.pane}" aria-selected="false" tabindex="-1">${item.label}</button>`).join('');
+  administrationOptions.forEach(item => {
+    $('#administration-tab-'+item.key)?.addEventListener('click', () => setAdministrationTab(item.key));
+  });
+  if(!administrationWired){
+    administrationWired = true;
+    openButton.addEventListener('click', openAdministration);
+    $('#administrationCloseBtn')?.addEventListener('click', closeAdministration);
+    modal.addEventListener('click', event => {
+      if(event.target.matches('[data-administration-close="true"]')) closeAdministration();
+    });
+    document.addEventListener('keydown', event => {
+      if(!administrationOpen) return;
+      if(event.key === 'Escape'){
+        event.preventDefault();
+        closeAdministration();
+        return;
+      }
+      if(event.key === 'Tab'){
+        const focusable = administrationFocusable();
+        if(!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if(event.shiftKey && document.activeElement === first){ event.preventDefault(); last.focus(); }
+        else if(!event.shiftKey && document.activeElement === last){ event.preventDefault(); first.focus(); }
+      }
+    });
+    tabs.addEventListener('keydown', event => {
+      if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      const current = administrationOptions.findIndex(item => item.key === administrationTab);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? administrationOptions.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + administrationOptions.length) % administrationOptions.length;
+      const option = administrationOptions[next];
+      setAdministrationTab(option.key);
+      $('#administration-tab-'+option.key)?.focus();
+    });
+  }
+  // Keep all existing administration panes in the modal only. They are hidden until selected.
+  ['users','account','learn','approvals'].forEach(key => $('#staff-tab-'+key)?.classList.add('hidden'));
+  administrationOptions.forEach(item => $('#'+item.pane)?.classList.add('hidden'));
+  if(administrationOpen && administrationOptions.length) setAdministrationTab(administrationOptions[0].key);
+}
+
 function switchStaffTab(tabName){
   document.querySelectorAll('#staffTabsList .tab').forEach(t=>{
     t.classList.toggle('active', t.dataset.stab === tabName);
   });
 
-  ['dashboard','upload','queue','review','compare','consistency','records','learn','audit','users','approvals','account'].forEach(p=>{
+  ['dashboard','upload','queue','review','compare','consistency','records','audit'].forEach(p=>{
     const elPane = $('#staff-tab-' + p);
     if(elPane) elPane.classList.toggle('hidden', p !== tabName);
   });
@@ -588,12 +728,7 @@ function switchStaffTab(tabName){
   if(tabName === 'queue') loadStaffQueue();
   if(tabName === 'consistency') initConsistencyWorkspace();
   if(tabName === 'records') loadStaffRecords();
-  if(tabName === 'learn') loadStaffLearn();
   if(tabName === 'audit') loadStaffAudit();
-  if(tabName === 'approvals' && typeof loadAiApprovals === 'function') loadAiApprovals();
-  if(tabName === 'approvals') loadAiApprovals();
-  if(tabName === 'users') loadStaffUsers();
-  if(tabName === 'account') loadStaffAccount();
 }
 
 async function loadStaffDashboard(){
@@ -697,6 +832,11 @@ if(stDrop){
 }
 if(stFi){ stFi.onchange = () => { if(stFi.files.length) handleStaffUpload(stFi.files[0]); }; }
 
+const staffStateSelect = $('#staffStateSelect');
+if(staffStateSelect){
+  staffStateSelect.onchange = () => $('#staffStateHelper')?.classList.toggle('hidden', !staffStateSelect.value);
+}
+
 async function handleStaffUpload(file){
   $('#staffProcessing').classList.remove('hidden');
   $('#staffUploadEditor').classList.add('hidden');
@@ -704,9 +844,10 @@ async function handleStaffUpload(file){
   fd.append('file', file);
   const lang = $('#staffLangSelect')?.value || 'auto';
   const docType = $('#staffDocTypeSelect')?.value || 'Land Record';
+  const state = $('#staffStateSelect')?.value || '';
 
   try{
-    const r = await fetch(authUrl(`/api/process?lang=${encodeURIComponent(lang)}&doc_type=${encodeURIComponent(docType)}`),{
+    const r = await fetch(authUrl(`/api/process?lang=${encodeURIComponent(lang)}&doc_type=${encodeURIComponent(docType)}&state=${encodeURIComponent(state)}`),{
       method:'POST', headers: token ? {'Authorization':'Bearer '+token} : {}, body: fd
     });
     const d = await r.json();
@@ -718,6 +859,11 @@ async function handleStaffUpload(file){
 
 function populateStaffEditor(doc){
   currentStaffEditingDocId = doc.id;
+  const savedState = doc.metadata?.state;
+  if(savedState && staffStateSelect){
+    staffStateSelect.value = savedState;
+    $('#staffStateHelper')?.classList.remove('hidden');
+  }
   const grid = $('#staffFieldsGrid');
   grid.innerHTML = '';
   const f = doc.fields || {};
@@ -797,6 +943,8 @@ async function openStaffReview(id){
     const box = $('#staffReviewCard');
     const f = d.fields || {};
     const ai = d.ai_decision_support || {};
+    const selectedState = d.metadata?.state || '';
+    const stateSummary = selectedState ? ` | State / Land Record System: ${escapeHtml(selectedState)}` : '';
 
     const recStyles = {
       'ROUTINE_CLEAR': 'background:#dcfce7;color:#15803d;border:1px solid #86efac',
@@ -809,7 +957,7 @@ async function openStaffReview(id){
       <div class="card-header">
         <div>
           <h3 class="card-title">Review Document: #${d.id}</h3>
-          <div style="font-size:12px;color:var(--muted)">File: ${escapeHtml(d.filename)} | Type: ${escapeHtml(d.doc_type || 'Land Record')} | Submitter: ${escapeHtml(d.uploaded_by)} | Status: ${d.status}</div>
+          <div style="font-size:12px;color:var(--muted)">File: ${escapeHtml(d.filename)} | Type: ${escapeHtml(d.doc_type || 'Land Record')}${stateSummary} | Submitter: ${escapeHtml(d.uploaded_by)} | Status: ${d.status}</div>
         </div>
         <button class="btn ghost" onclick="switchStaffTab('queue')">✕ Back to Queue</button>
       </div>
@@ -1199,34 +1347,176 @@ async function loadStaffAudit(){
   }catch(e){}
 }
 
+const STAFF_USER_PAGE_SIZE = 10;
+const STAFF_USER_ROLE_DEFINITIONS = [
+  {key: 'ALL', label: 'All Users'},
+  {key: ROLE_ADMIN, label: 'Administrators'},
+  {key: ROLE_VERIFICATION_OFFICER, label: 'Verification Officers'},
+  {key: ROLE_DATA_OFFICER, label: 'Data Officers'},
+  {key: ROLE_VIEWER, label: 'Viewers'},
+];
+let staffUsersData = [];
+let staffUserRoleFilter = 'ALL';
+let staffUserSearch = '';
+let staffUserPage = 1;
+let staffUsersUiWired = false;
+
+function staffUserRoleLabel(role){
+  const known = STAFF_USER_ROLE_DEFINITIONS.find(item => item.key === role);
+  if(known) return known.label.replace(/s$/, '');
+  return String(role || 'Unknown').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
+function staffUserRoleDefinitions(){
+  const known = new Set(STAFF_USER_ROLE_DEFINITIONS.map(item => item.key));
+  const discovered = [...new Set(staffUsersData.map(user => String(user.role || '').toUpperCase()).filter(role => role && !known.has(role)))];
+  return STAFF_USER_ROLE_DEFINITIONS.concat(discovered.map(role => ({key: role, label: staffUserRoleLabel(role)})));
+}
+
+function staffUserRoleOptions(currentRole){
+  const roles = STAFF_USER_ROLE_DEFINITIONS.filter(item => item.key !== 'ALL');
+  if(currentRole && !roles.some(item => item.key === currentRole)) roles.push({key: currentRole, label: staffUserRoleLabel(currentRole)});
+  return roles.map(item => `<option value="${escapeHtml(item.key)}" ${item.key === currentRole ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('');
+}
+
+function setupStaffUsersInterface(){
+  if(staffUsersUiWired) return;
+  const addButton = $('#staffAddUserToggle');
+  const createPanel = $('#staffUserCreatePanel');
+  const closeButton = $('#staffUserCreateClose');
+  const createButton = $('#staffCreateUserBtn');
+  const search = $('#staffUserSearch');
+  if(!addButton || !createPanel || !search) return;
+  staffUsersUiWired = true;
+  const setCreatePanel = open => {
+    createPanel.classList.toggle('hidden', !open);
+    addButton.setAttribute('aria-expanded', String(open));
+    if(open) $('#staffNuName')?.focus();
+  };
+  addButton.addEventListener('click', () => setCreatePanel(createPanel.classList.contains('hidden')));
+  closeButton?.addEventListener('click', () => setCreatePanel(false));
+  createButton?.addEventListener('click', staffCreateUser);
+  search.addEventListener('input', event => {
+    staffUserSearch = event.target.value || '';
+    staffUserPage = 1;
+    renderStaffUsers();
+  });
+  document.addEventListener('click', event => {
+    if(!event.target.closest('.users-action-menu-wrap')) document.querySelectorAll('.users-action-menu').forEach(menu => menu.classList.add('hidden'));
+  });
+}
+
+function renderStaffUserRoleTabs(){
+  const root = $('#staffUserRoleTabs');
+  if(!root) return;
+  const definitions = staffUserRoleDefinitions();
+  root.innerHTML = definitions.map(item => {
+    const count = item.key === 'ALL' ? staffUsersData.length : staffUsersData.filter(user => String(user.role || '').toUpperCase() === item.key).length;
+    const active = staffUserRoleFilter === item.key;
+    return `<button type="button" class="user-role-tab${active ? ' active' : ''}" data-user-role="${escapeHtml(item.key)}" role="tab" aria-selected="${active}" tabindex="${active ? '0' : '-1'}">${escapeHtml(item.label)} <span>${count}</span></button>`;
+  }).join('');
+  root.querySelectorAll('[data-user-role]').forEach(button => button.addEventListener('click', () => {
+    staffUserRoleFilter = button.dataset.userRole;
+    staffUserPage = 1;
+    renderStaffUsers();
+  }));
+}
+
+function filteredStaffUsers(){
+  const query = staffUserSearch.trim().toLowerCase();
+  return staffUsersData.filter(user => {
+    const roleMatches = staffUserRoleFilter === 'ALL' || String(user.role || '').toUpperCase() === staffUserRoleFilter;
+    const searchMatches = !query || `${user.full_name || ''} ${user.email || ''}`.toLowerCase().includes(query);
+    return roleMatches && searchMatches;
+  });
+}
+
+function renderStaffUserPagination(totalPages){
+  const root = $('#staffUserPagination');
+  if(!root) return;
+  if(totalPages <= 1){ root.innerHTML = ''; return; }
+  const pages = new Set([1, totalPages, staffUserPage - 1, staffUserPage, staffUserPage + 1].filter(page => page >= 1 && page <= totalPages));
+  const ordered = [...pages].sort((a, b) => a - b);
+  const pageItems = [];
+  ordered.forEach((page, index) => {
+    if(index && page - ordered[index - 1] > 1) pageItems.push('<span class="users-page-ellipsis">…</span>');
+    pageItems.push(`<button type="button" class="users-page${page === staffUserPage ? ' active' : ''}" data-user-page="${page}" aria-current="${page === staffUserPage ? 'page' : 'false'}">${page}</button>`);
+  });
+  root.innerHTML = `<button type="button" class="users-page-nav" data-user-page="${staffUserPage - 1}" ${staffUserPage === 1 ? 'disabled' : ''}>Previous</button>${pageItems.join('')}<button type="button" class="users-page-nav" data-user-page="${staffUserPage + 1}" ${staffUserPage === totalPages ? 'disabled' : ''}>Next</button>`;
+  root.querySelectorAll('[data-user-page]').forEach(button => button.addEventListener('click', () => {
+    if(button.disabled) return;
+    staffUserPage = Number(button.dataset.userPage);
+    renderStaffUsers();
+  }));
+}
+
+function renderStaffUsers(){
+  const table = $('#staffUsersTable');
+  const tb = table?.querySelector('tbody');
+  if(!tb) return;
+  renderStaffUserRoleTabs();
+  const filtered = filteredStaffUsers();
+  const totalPages = Math.max(1, Math.ceil(filtered.length / STAFF_USER_PAGE_SIZE));
+  staffUserPage = Math.min(Math.max(staffUserPage, 1), totalPages);
+  const start = (staffUserPage - 1) * STAFF_USER_PAGE_SIZE;
+  const pageUsers = filtered.slice(start, start + STAFF_USER_PAGE_SIZE);
+  const summary = $('#staffUserSummary');
+  const filterSummary = $('#staffUserFilterSummary');
+  if(summary) summary.textContent = filtered.length ? `Showing ${start + 1}–${start + pageUsers.length} of ${filtered.length} users` : 'No users match this filter';
+  if(filterSummary) filterSummary.textContent = `${staffUserRoleFilter === 'ALL' ? 'All roles' : staffUserRoleLabel(staffUserRoleFilter)}${staffUserSearch.trim() ? ` · Search: ${staffUserSearch.trim()}` : ''}`;
+  if(!pageUsers.length){
+    tb.innerHTML = '<tr><td colspan="5" class="users-empty">No users match the selected role or search.</td></tr>';
+    renderStaffUserPagination(1);
+    return;
+  }
+  tb.innerHTML = pageUsers.map(user => {
+    const isSelf = me && String(user.id) === String(me.id);
+    const isActive = Boolean(user.is_active);
+    const menuLabel = isSelf ? 'Current account' : isActive ? 'Disable account' : 'Account already disabled';
+    return `<tr>
+      <td><strong>${escapeHtml(user.full_name || 'Unnamed user')}</strong></td>
+      <td>${escapeHtml(user.email || '—')}</td>
+      <td><span class="users-role-label">${escapeHtml(staffUserRoleLabel(String(user.role || '').toUpperCase()))}</span></td>
+      <td><span class="pill ${isActive ? 'valid' : 'rejected'}">${isActive ? 'Active' : 'Disabled'}</span></td>
+      <td class="users-action-cell"><div class="users-action-menu-wrap">
+        <button type="button" class="users-action-trigger" data-user-menu-toggle aria-label="Actions for ${escapeHtml(user.full_name || 'user')}" aria-expanded="false">⋮</button>
+        <div class="users-action-menu hidden" role="menu">
+          <label class="users-role-editor">Edit role<select data-user-role-select="${escapeHtml(user.id)}" data-previous="${escapeHtml(user.role || '')}" ${isSelf ? 'disabled' : ''}>${staffUserRoleOptions(String(user.role || '').toUpperCase())}</select></label>
+          <button type="button" class="users-menu-item" data-user-action-label ${isSelf || !isActive ? 'disabled' : ''}>${escapeHtml(menuLabel)}</button>
+        </div>
+      </div></td>
+    </tr>`;
+  }).join('');
+  tb.querySelectorAll('[data-user-menu-toggle]').forEach(button => button.addEventListener('click', event => {
+    event.stopPropagation();
+    const menu = button.parentElement.querySelector('.users-action-menu');
+    tb.querySelectorAll('.users-action-menu').forEach(item => { if(item !== menu) item.classList.add('hidden'); });
+    const open = menu.classList.toggle('hidden');
+    button.setAttribute('aria-expanded', String(!open));
+  }));
+  tb.querySelectorAll('[data-user-role-select]').forEach(select => select.addEventListener('change', () => staffChangeRole(select.dataset.userRoleSelect, select)));
+  tb.querySelectorAll('[data-user-action-label]').forEach(button => button.addEventListener('click', () => {
+    const row = button.closest('tr');
+    const select = row?.querySelector('[data-user-role-select]');
+    const user = staffUsersData.find(item => String(item.id) === String(select?.dataset.userRoleSelect));
+    if(user && me && String(user.id) !== String(me.id) && user.is_active) staffDeactivateUser(user.id);
+  }));
+  renderStaffUserPagination(totalPages);
+}
+
 async function loadStaffUsers(){
+  setupStaffUsersInterface();
   try{
     const d = await api('/api/users');
-    const tb = $('#staffUsersTable tbody'); tb.innerHTML = '';
-    (d.users||[]).forEach(u=>{
-      const isSelf = (me && u.id === me.id);
-      const roleSelectHtml = isSelf ? `
-        <span class="chip" style="font-weight:700">${escapeHtml(u.role)}</span>
-      ` : `
-        <select class="staff-role-select" onchange="staffChangeRole('${u.id}', this)" data-previous="${escapeHtml(u.role)}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--gov-border);font-size:12px">
-          <option value="VIEWER" ${u.role==='VIEWER'?'selected':''}>Viewer</option>
-          <option value="DATA_OFFICER" ${u.role==='DATA_OFFICER'?'selected':''}>Data Officer</option>
-          <option value="VERIFICATION_OFFICER" ${u.role==='VERIFICATION_OFFICER'?'selected':''}>Verification Officer</option>
-          <option value="ADMIN" ${u.role==='ADMIN'?'selected':''}>Administrator</option>
-        </select>
-      `;
-
-      tb.innerHTML += `
-        <tr>
-          <td><b>${escapeHtml(u.full_name)}</b></td>
-          <td>${escapeHtml(u.email)}</td>
-          <td>${roleSelectHtml}</td>
-          <td><span class="pill ${u.is_active?'valid':'rejected'}">${u.is_active?'Active':'Disabled'}</span></td>
-          <td>${!isSelf ? `<button class="btn danger" onclick="staffDeactivateUser('${u.id}')" style="padding:2px 6px;font-size:11px">Deactivate</button>` : '—'}</td>
-        </tr>
-      `;
-    });
-  }catch(e){}
+    staffUsersData = Array.isArray(d.users) ? d.users : [];
+    renderStaffUsers();
+  }catch(e){
+    staffUsersData = [];
+    const summary = $('#staffUserSummary');
+    if(summary) summary.textContent = 'Users could not be loaded';
+    const tb = $('#staffUsersTable tbody');
+    if(tb) tb.innerHTML = '<tr><td colspan="5" class="users-empty">Users could not be loaded for this session.</td></tr>';
+  }
 }
 
 async function staffChangeRole(uid, selectEl){

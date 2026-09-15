@@ -16,6 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-kan \
     tesseract-ocr-ori \
     tesseract-ocr-urd \
+    tesseract-ocr-asm \
+    tesseract-ocr-mal \
+    tesseract-ocr-nep \
+    tesseract-ocr-san \
+    tesseract-ocr-snd \
+    tesseract-ocr-sin \
+    tesseract-ocr-ara \
+    tesseract-ocr-fas \
+    tesseract-ocr-mya \
+    tesseract-ocr-bod \
     libpq-dev \
     gcc \
     && rm -rf /var/lib/apt/lists/*
@@ -32,8 +42,8 @@ ENV APP_ENV=production
 ENV OMP_THREAD_LIMIT=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 ENV PORT=10000
-ENV MAP_TILE_URL=https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
-ENV MAP_ATTRIBUTION="© OpenStreetMap contributors"
+ENV MAP_TILE_URL=https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png
+ENV MAP_ATTRIBUTION="© OpenStreetMap contributors · HOT tiles courtesy of Humanitarian OpenStreetMap Team"
 ENV LAND_AREA_TOLERANCE_HA=0.05
 
 EXPOSE 10000

@@ -1,16 +1,17 @@
-"""Document-grounded synthetic land intelligence and mapping services.
+"""Portfolio-derived document mapping and narrowly scoped compatibility support.
 
-The application treats parcel geometry and resolution as evidence, not as legal
-ownership or cadastral truth.  The default records are project-owned synthetic
-fixtures so the mapping workspace can run without a government data dependency.
-Authorized GeoJSON imports remain explicitly labelled with provenance and are
-never silently treated as authoritative.
+The public mapping surface is the document map and history workflow. A small
+internal compatibility layer remains because the canonical OCR/AI/audit code
+uses governed property resolution, ownership signals, and exact-location
+helpers. Those helpers do not register the retired Land Intelligence routes or
+serve the replacement map UI.
 """
 from __future__ import annotations
 
+import csv
 import difflib
+import io
 import json
-import os
 import re
 import time
 import unicodedata
@@ -19,15 +20,9 @@ import urllib.request
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
-
-try:
-    from shapely.geometry import mapping as shapely_mapping
-    from shapely.geometry import shape as shapely_shape
-except Exception:  # pragma: no cover - the dependency is declared in requirements.txt
-    shapely_mapping = None
-    shapely_shape = None
 
 from server import (
     ROLE_ADMIN,
@@ -40,30 +35,22 @@ from server import (
     require_roles,
 )
 
+map_router = APIRouter(prefix="/api/map", tags=["Document Map"])
+document_history_router = APIRouter(prefix="/api", tags=["Document History"])
 
-router = APIRouter(prefix="/api/land", tags=["Land Intelligence"])
+MAP_NOMINATIM_USER_AGENT = "Document-Screening-Portfolio-Map/1.0"
+MAP_GEOCODE_TTL_SECONDS = 7 * 24 * 60 * 60
+_map_geocode_cache: Dict[str, Dict[str, Any]] = {}
+_map_last_geocode_request = 0.0
 
-AREA_TOLERANCE_HA = float(os.getenv("LAND_AREA_TOLERANCE_HA", "0.05"))
-MAX_IMPORT_BYTES = 10 * 1024 * 1024
-MAX_IMPORT_FEATURES = 5000
-NOMINATIM_USER_AGENT = "DILRMP-Land-Intelligence/1.0"
-_last_nominatim_request = 0.0
-_geocode_cache: Dict[str, Dict[str, Any]] = {}
 
-IDENTITY_FIELDS = (
-    "survey_number",
-    "gat_number",
-    "khasra_number",
-    "sub_division",
-    "village",
-    "taluka",
-    "district",
-)
+def _now() -> float:
+    return time.time()
+
+
 LAND_IDENTIFIER_FIELDS = ("survey_number", "gat_number", "khasra_number")
 
 
-# These are intentionally schematic coordinates.  They are not copied from a
-# government record and are only used to make the local demo map inspectable.
 _SYNTHETIC_PROPERTIES = [
     {
         "property_id": "DEMO-PROP-103-A",
@@ -176,15 +163,6 @@ _SYNTHETIC_PROPERTIES = [
 ]
 
 
-PROPERTY_COLUMNS = (
-    "property_id", "parcel_id", "district", "taluka", "village", "survey_number",
-    "gat_number", "khasra_number", "sub_division", "parent_property_id", "area",
-    "area_unit", "geometry", "centroid", "latitude", "longitude", "crs", "georeferenced",
-    "geometry_source", "geometry_confidence", "data_source", "source_confidence",
-    "created_at", "updated_at",
-)
-
-
 class LocationUpdate(BaseModel):
     """An exact pin update, or an empty body to restore the base location."""
 
@@ -197,26 +175,6 @@ class LocationUpdate(BaseModel):
         if (self.latitude is None) != (self.longitude is None):
             raise ValueError("latitude and longitude must be supplied together")
         return self
-
-
-class GeocodeRequest(BaseModel):
-    village: str = Field(min_length=1, max_length=200)
-    taluka: Optional[str] = Field(default=None, max_length=200)
-    district: Optional[str] = Field(default=None, max_length=200)
-    state: Optional[str] = Field(default=None, max_length=200)
-
-
-class CaseCreate(BaseModel):
-    property_id: str = Field(min_length=1, max_length=120)
-    title: str = Field(default="Human verification required", max_length=240)
-    findings: List[Dict[str, Any]] = Field(default_factory=list)
-    warnings: List[Dict[str, Any]] = Field(default_factory=list)
-    comparison_results: List[Dict[str, Any]] = Field(default_factory=list)
-    assigned_officer: Optional[str] = Field(default=None, max_length=120)
-
-
-def _now() -> float:
-    return time.time()
 
 
 def _json(value: Any) -> str:
@@ -370,9 +328,27 @@ def _ensure_column(db: Any, column: str, definition: str) -> None:
         pass
 
 
+def _ensure_document_column(db: Any, column: str, definition: str) -> None:
+    """Add mapping-only document coordinates without touching OCR fields."""
+    try:
+        if db.is_pg:
+            db.execute(f"ALTER TABLE documents ADD COLUMN IF NOT EXISTS {column} {definition}")
+            return
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(documents)").fetchall()}
+        if column not in columns:
+            db.execute(f"ALTER TABLE documents ADD COLUMN {column} {definition}")
+    except Exception:
+        # Startup can race with another worker.  Keep the migration idempotent.
+        pass
+
+
 def _ensure_tables() -> None:
     """Create/migrate the local land schema and seed synthetic parcel geometry."""
     with get_db() as db:
+        # The coordinates belong to the mapping layer only.  Existing OCR,
+        # validation, and audit columns remain untouched.
+        _ensure_document_column(db, "lat", "REAL")
+        _ensure_document_column(db, "lon", "REAL")
         db.execute(
             """CREATE TABLE IF NOT EXISTS properties (
                 property_id TEXT PRIMARY KEY,
@@ -786,390 +762,6 @@ def _history_for_property(property_id: str) -> Dict[str, Any]:
     return analyze_ownership_history(records)
 
 
-def _document_for_user(document_id: str, user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    with get_db() as db:
-        row = db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Document record not found.")
-    document = dict(row)
-    if user:
-        if user.get("role") == ROLE_VIEWER and document.get("status") != "APPROVED":
-            raise HTTPException(status_code=403, detail="Viewer access is limited to approved records.")
-        if user.get("role") == ROLE_DATA_OFFICER and document.get("uploaded_by") != user.get("email"):
-            raise HTTPException(status_code=403, detail="Data Officers can only access their own submissions.")
-    document["fields"] = _parse_json(document.get("fields"), {})
-    return document
-
-
-def _document_property_checks(document: Dict[str, Any], property_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    fields = document.get("fields") or {}
-    checks: List[Dict[str, Any]] = []
-    field_specs = (
-        ("survey_number", "Survey number", ("survey_number",)),
-        ("gat_number", "Gat number", ("gat_number",)),
-        ("khasra_number", "Khasra number", ("khasra_number",)),
-        ("sub_division", "Subdivision", ("sub_division", "subdivision")),
-        ("village", "Village", ("village",)),
-        ("taluka", "Taluka", ("taluka", "tehsil")),
-        ("district", "District", ("district",)),
-    )
-    for key, label, keys in field_specs:
-        document_value = _field_value(fields, *keys)
-        parcel_value = str(property_data.get(key) or "")
-        document_confidence = _field_confidence(fields, *keys)
-        parcel_confidence = property_data.get("source_confidence")
-        if not document_value or not parcel_value:
-            status_value = "INSUFFICIENT EVIDENCE"
-        elif _key_for(key, document_value) == _key_for(key, parcel_value):
-            status_value = "CONSISTENT"
-        else:
-            status_value = "CONFLICT"
-        checks.append({
-            "field": key,
-            "label": label,
-            "document": document_value or None,
-            "parcel": parcel_value or None,
-            "status": status_value,
-            "source": "Uploaded document → OCR" if document_value else "No extracted document value",
-            "confidence": document_confidence if document_confidence is not None else parcel_confidence,
-            "document_confidence": document_confidence,
-            "parcel_confidence": parcel_confidence,
-        })
-
-    document_area = _number(_field_value(fields, "area", "land_area", "plot_area"))
-    parcel_area = _number(property_data.get("area"))
-    difference = round(abs(document_area - parcel_area), 2) if document_area is not None and parcel_area is not None else None
-    area_status = "INSUFFICIENT EVIDENCE"
-    if difference is not None:
-        area_status = "CONSISTENT" if difference <= AREA_TOLERANCE_HA else "REVIEW REQUIRED"
-    checks.append({
-        "field": "area",
-        "label": "Area",
-        "document": document_area,
-        "parcel": parcel_area,
-        "difference": difference,
-        "tolerance": AREA_TOLERANCE_HA,
-        "status": area_status,
-        "source": "Uploaded document → OCR" if document_area is not None else "No extracted document value",
-        "confidence": _field_confidence(fields, "area", "land_area", "plot_area") or property_data.get("source_confidence"),
-        "document_confidence": _field_confidence(fields, "area", "land_area", "plot_area"),
-        "parcel_confidence": property_data.get("source_confidence"),
-    })
-    return checks
-
-
-def compare_document_property(document: Dict[str, Any], property_data: Dict[str, Any]) -> Dict[str, Any]:
-    checks = _document_property_checks(document, property_data)
-    statuses = {check["status"] for check in checks}
-    if "CONFLICT" in statuses:
-        overall = "CONFLICT"
-    elif "REVIEW REQUIRED" in statuses:
-        overall = "REVIEW REQUIRED"
-    elif "INSUFFICIENT EVIDENCE" in statuses:
-        overall = "INSUFFICIENT EVIDENCE"
-    else:
-        overall = "CONSISTENT"
-    return {
-        "document_id": document.get("id"),
-        "property_id": property_data.get("property_id"),
-        "overall_status": overall,
-        "identity_match": "CONFLICT" if "CONFLICT" in statuses else ("CONSISTENT" if overall == "CONSISTENT" else "REVIEW REQUIRED"),
-        "area_difference": next((c.get("difference") for c in checks if c["field"] == "area"), None),
-        "transfer_risk": "REVIEW REQUIRED" if _is_transfer_document(document) else "LOW",
-        "checks": checks,
-        "explanation": "Comparison is neutral evidence assistance. It is not a legal ownership, authenticity, or fraud determination.",
-    }
-
-
-def _features(rows: Sequence[Any]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "type": "Feature",
-            "id": row["property_id"],
-            "geometry": _geometry_from_row(row),
-            "properties": {
-                "property_id": row["property_id"],
-                "parcel_id": row["parcel_id"],
-                "district": row["district"],
-                "taluka": row["taluka"],
-                "village": row["village"],
-                "survey_number": row["survey_number"],
-                "gat_number": row["gat_number"],
-                "khasra_number": row["khasra_number"],
-                "sub_division": row["sub_division"],
-                "area": row["area"],
-                "area_unit": row["area_unit"],
-                "geometry_confidence": row["geometry_confidence"],
-                "data_source": row["data_source"],
-                "authoritative": False,
-            },
-        }
-        for row in rows
-    ]
-
-
-def _filtered_property_rows(
-    q: Optional[str] = None,
-    district: Optional[str] = None,
-    taluka: Optional[str] = None,
-    village: Optional[str] = None,
-    limit: int = 500,
-    offset: int = 0,
-) -> Tuple[List[Any], int]:
-    with get_db() as db:
-        rows = db.execute("SELECT * FROM properties ORDER BY district,village,parcel_id").fetchall()
-    needle = _normalise(q)
-    filtered = []
-    for row in rows:
-        values = " ".join(str(row[key] or "") for key in ("property_id", "parcel_id", "survey_number", "gat_number", "khasra_number", "village", "taluka", "district"))
-        if needle and needle not in _normalise(values):
-            continue
-        if district and _normalise(row["district"]) != _normalise(district):
-            continue
-        if taluka and _normalise(row["taluka"]) != _normalise(taluka):
-            continue
-        if village and _normalise(row["village"]) != _normalise(village):
-            continue
-        filtered.append(row)
-    total = len(filtered)
-    return filtered[max(0, offset): max(0, offset) + max(1, min(limit, 1000))], total
-
-
-@router.get("/search")
-def search_properties(q: str = Query("", max_length=200), limit: int = Query(100, ge=1, le=1000), user: Dict[str, Any] = Depends(get_current_user)):
-    rows, total = _filtered_property_rows(q=q, limit=limit)
-    return {"results": [_property_dict(row, include_geometry=False) for row in rows], "total": total}
-
-
-@router.get("/properties")
-def list_properties(
-    q: Optional[str] = Query(None, max_length=200),
-    district: Optional[str] = Query(None, max_length=200),
-    taluka: Optional[str] = Query(None, max_length=200),
-    village: Optional[str] = Query(None, max_length=200),
-    limit: int = Query(500, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
-    user: Dict[str, Any] = Depends(get_current_user),
-):
-    rows, total = _filtered_property_rows(q, district, taluka, village, limit, offset)
-    return {"properties": [_property_dict(row, include_geometry=False) for row in rows], "total": total, "limit": limit, "offset": offset}
-
-
-@router.get("/properties/{property_id}")
-def property_detail(property_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    property_data = _property_by_id(property_id)
-    if not property_data:
-        raise HTTPException(status_code=404, detail="Property not found.")
-    with get_db() as db:
-        provenance_rows = db.execute("SELECT field_name,value,source,confidence,created_at FROM provenance WHERE property_id=? ORDER BY field_name", (property_data["property_id"],)).fetchall()
-        timeline_rows = db.execute("SELECT id,event_type,description,source,created_at FROM property_timeline WHERE property_id=? ORDER BY created_at ASC", (property_data["property_id"],)).fetchall()
-        linked_rows = db.execute(
-            "SELECT d.id,d.filename,d.doc_type,d.status,d.mean_conf,d.fields,d.created_at FROM documents d JOIN property_documents pd ON pd.document_id=d.id WHERE pd.property_id=? ORDER BY d.created_at ASC",
-            (property_data["property_id"],),
-        ).fetchall()
-        neighbour_rows = db.execute(
-            "SELECT * FROM properties WHERE property_id<>? AND village=? ORDER BY parcel_id",
-            (property_data["property_id"], property_data.get("village")),
-        ).fetchall()
-    documents = []
-    for row in linked_rows:
-        item = dict(row)
-        item["fields"] = _parse_json(item.get("fields"), {})
-        documents.append(item)
-    history = _history_for_property(property_data["property_id"])
-    property_data.update({
-        "provenance": [dict(row) for row in provenance_rows],
-        "timeline": [dict(row) for row in timeline_rows],
-        "documents": documents,
-        "neighbors": [_property_dict(row, include_geometry=False) for row in neighbour_rows],
-        "ownership_history": history,
-        "findings": history.get("findings", []),
-        "tasks": [],
-        "legal_authority": False,
-    })
-    return property_data
-
-
-@router.get("/geojson")
-def property_geojson(
-    district: Optional[str] = Query(None, max_length=200),
-    taluka: Optional[str] = Query(None, max_length=200),
-    village: Optional[str] = Query(None, max_length=200),
-    user: Dict[str, Any] = Depends(get_current_user),
-):
-    rows, _ = _filtered_property_rows(district=district, taluka=taluka, village=village, limit=1000)
-    return {
-        "type": "FeatureCollection",
-        "features": _features(rows),
-        "metadata": {
-            "label": "Project-owned synthetic/demo land data",
-            "authoritative": False,
-            "crs": "EPSG:4326",
-            "source": "Synthetic/demo dataset or authorized local import",
-        },
-    }
-
-
-@router.get("/map/records")
-def map_records(
-    district: Optional[str] = Query(None, max_length=200),
-    taluka: Optional[str] = Query(None, max_length=200),
-    village: Optional[str] = Query(None, max_length=200),
-    user: Dict[str, Any] = Depends(get_current_user),
-):
-    rows, _ = _filtered_property_rows(district=district, taluka=taluka, village=village, limit=1000)
-    return {
-        "records": [
-            {
-                "property_id": row["property_id"],
-                "parcel_id": row["parcel_id"],
-                "survey_number": row["survey_number"],
-                "district": row["district"],
-                "taluka": row["taluka"],
-                "village": row["village"],
-                "location": _location_from_row(row),
-            }
-            for row in rows
-        ],
-        "metadata": {"authoritative": False, "source": "Synthetic/demo dataset or authorized local import"},
-    }
-
-
-@router.get("/geography")
-def geography(user: Dict[str, Any] = Depends(get_current_user)):
-    rows, _ = _filtered_property_rows(limit=1000)
-    tree: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
-    for row in rows:
-        district = row["district"] or "Unknown district"
-        taluka = row["taluka"] or "Unknown taluka"
-        village = row["village"] or "Unknown village"
-        tree.setdefault(district, {}).setdefault(taluka, {}).setdefault(village, {"parcel_count": 0})
-        tree[district][taluka][village]["parcel_count"] += 1
-    return {"geography": tree, "metadata": {"authoritative": False}}
-
-
-@router.get("/village-sheet")
-def village_sheet(
-    district: Optional[str] = Query(None, max_length=200),
-    taluka: Optional[str] = Query(None, max_length=200),
-    village: Optional[str] = Query(None, max_length=200),
-    user: Dict[str, Any] = Depends(get_current_user),
-):
-    rows, _ = _filtered_property_rows(district=district, taluka=taluka, village=village, limit=1000)
-    return {
-        "parcels": [_property_dict(row) for row in rows],
-        "metadata": {
-            "authoritative": False,
-            "label": "Project-owned schematic village sheet; not an authoritative cadastral record.",
-        },
-    }
-
-
-@router.get("/dashboard")
-def land_dashboard(user: Dict[str, Any] = Depends(get_current_user)):
-    with get_db() as db:
-        total = db.execute("SELECT COUNT(*) AS c FROM properties").fetchone()["c"]
-        docs = db.execute("SELECT COUNT(*) AS c FROM property_documents").fetchone()["c"]
-        cases = db.execute("SELECT COUNT(*) AS c FROM verification_cases WHERE status NOT IN ('CLOSED','COMPLETED')").fetchone()["c"]
-        findings = db.execute("SELECT COUNT(*) AS c FROM verification_findings WHERE status='OPEN'").fetchone()["c"]
-    return {
-        "total_properties": total,
-        "documents_processed": docs,
-        "pending_verification": cases,
-        "review_required": findings,
-        "conflicts": 0,
-        "no_parcel_match": 0,
-        "low_confidence": 1,
-        "completed_cases": 0,
-        "data_authoritative": False,
-    }
-
-
-@router.get("/investigate/{property_id}")
-def investigate_property(property_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    return property_detail(property_id, user)
-
-
-@router.get("/resolve/document/{document_id}")
-def resolve_document(document_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    document = _document_for_user(document_id, user)
-    return {"document_id": document_id, "resolution": _resolve(document.get("fields") or {}), "legal_authority": False}
-
-
-@router.get("/compare/{document_id}/{property_id}")
-def compare_route(document_id: str, property_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    document = _document_for_user(document_id, user)
-    property_data = _property_by_id(property_id)
-    if not property_data:
-        raise HTTPException(status_code=404, detail="Property not found.")
-    return compare_document_property(document, property_data)
-
-
-@router.post("/cases")
-def create_case(req: CaseCreate, user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
-    property_data = _property_by_id(req.property_id)
-    if not property_data:
-        raise HTTPException(status_code=404, detail="Property not found.")
-    case_id = "CASE-" + uuid.uuid4().hex[:10].upper()
-    now = _now()
-    with get_db() as db:
-        db.execute(
-            """INSERT INTO verification_cases(case_id,property_id,status,assigned_officer,findings,warnings,comparison_results,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (case_id, property_data["property_id"], "OPEN", req.assigned_officer,
-             _json(req.findings), _json(req.warnings), _json(req.comparison_results), now, now),
-        )
-        for finding in req.findings:
-            db.execute(
-                """INSERT INTO verification_findings(finding_id,property_id,case_id,finding_type,severity,status,title,evidence,created_by,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                ("FND-" + uuid.uuid4().hex[:10].upper(), property_data["property_id"], case_id,
-                 str(finding.get("type") or finding.get("finding_type") or "REVIEW"),
-                 str(finding.get("severity") or "WARNING"), "OPEN",
-                 str(finding.get("title") or req.title), _json(finding), user.get("full_name", "user"), now, now),
-            )
-        db.execute(
-            "INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",
-            (uuid.uuid4().hex, property_data["property_id"], "VERIFICATION_CASE_CREATED", req.title, "Human verification workflow", now),
-        )
-    log_audit(user.get("full_name", user.get("email", "user")), "VERIFICATION_CASE_CREATED", f"Created verification case {case_id}.", property_data["property_id"])
-    return get_case(case_id, user)
-
-
-def _case_item(row: Any) -> Dict[str, Any]:
-    item = dict(row)
-    for key in ("findings", "warnings", "comparison_results"):
-        item[key] = _parse_json(item.get(key), [])
-    return item
-
-
-def get_case(case_id: str, user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    with get_db() as db:
-        row = db.execute("SELECT * FROM verification_cases WHERE case_id=?", (case_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Verification case not found.")
-        tasks = db.execute("SELECT * FROM verification_tasks WHERE case_id=? ORDER BY created_at", (case_id,)).fetchall()
-    item = _case_item(row)
-    item["tasks"] = [dict(task) for task in tasks]
-    item["legal_authority"] = False
-    return item
-
-
-@router.get("/cases")
-def list_cases(status_filter: Optional[str] = Query(None, alias="status"), user: Dict[str, Any] = Depends(get_current_user)):
-    with get_db() as db:
-        if status_filter:
-            rows = db.execute("SELECT * FROM verification_cases WHERE status=? ORDER BY updated_at DESC", (status_filter.upper(),)).fetchall()
-        else:
-            rows = db.execute("SELECT * FROM verification_cases ORDER BY updated_at DESC").fetchall()
-    return {"cases": [_case_item(row) for row in rows], "total": len(rows)}
-
-
-@router.get("/cases/{case_id}")
-def case_detail(case_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    return get_case(case_id, user)
-
-
 def _apply_location(property_id: str, request: LocationUpdate, actor: Dict[str, Any]) -> Dict[str, Any]:
     role = actor.get("role")
     if not role:
@@ -1227,162 +819,540 @@ def update_property_location(property_id: str, request: LocationUpdate, actor: D
     return _apply_location(property_id, request, actor)
 
 
-@router.put("/properties/{property_id}/location")
-@router.post("/properties/{property_id}/location")
-def set_property_location(property_id: str, request: LocationUpdate, user: Dict[str, Any] = Depends(get_current_user)):
-    property_data = _apply_location(property_id, request, user)
-    return {"property": property_data, "location": property_data.get("location")}
+def _map_document_visible(row: Any, user: Dict[str, Any]) -> bool:
+    """Apply the same document visibility rules as the canonical API."""
+    role = user.get("role")
+    approved = str(row["status"] or "").upper() in {"APPROVED", "VERIFIED", "AUTO_APPROVED"}
+    if role == ROLE_VIEWER:
+        return approved
+    if role == ROLE_DATA_OFFICER:
+        return row["uploaded_by"] == user.get("email")
+    return True
 
 
-@router.delete("/properties/{property_id}/location")
-def clear_property_location(property_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    property_data = _apply_location(property_id, LocationUpdate(reason="Cleared by authorized reviewer"), user)
-    return {"property": property_data, "location": property_data.get("location")}
+def _map_document_item(row: Any) -> Dict[str, Any]:
+    fields = _parse_json(row["fields"], {}) or {}
+    lat = row["lat"] if "lat" in row.keys() else None
+    lon = row["lon"] if "lon" in row.keys() else None
+    has_exact_pin = lat is not None and lon is not None
+    village = _field_value(fields, "village")
+    validation = _parse_json(row["validation"], {}) if "validation" in row.keys() else {}
+    if not isinstance(validation, dict):
+        validation = {}
+    persisted_source = row["location_source"] if "location_source" in row.keys() else None
+    persisted_confidence = row["location_confidence"] if "location_confidence" in row.keys() else None
+    verified_by = row["location_verified_by"] if "location_verified_by" in row.keys() else None
+    verified_at = row["location_verified_at"] if "location_verified_at" in row.keys() else None
+    location_status = "EXACT_PIN" if has_exact_pin else ("VILLAGE_LEVEL" if village else "UNRESOLVED")
+    location_source = (persisted_source or "Authorised reviewer pin") if has_exact_pin else ("Document village fields; geocode on request" if village else None)
+    item = {
+        "id": row["id"],
+        "filename": row["filename"],
+        "doc_type": row["doc_type"] or "Land Record",
+        "status": row["status"],
+        "owner": _field_value(fields, "owner_name"),
+        "father": _field_value(fields, "father_name"),
+        "survey": _field_value(fields, "survey_number"),
+        "khasra": _field_value(fields, "khasra_number"),
+        "khata": _field_value(fields, "khata_number"),
+        "plot": _field_value(fields, "plot_number"),
+        "area": _field_value(fields, "area"),
+        "village": village,
+        "tehsil": _field_value(fields, "tehsil", "taluka"),
+        "district": _field_value(fields, "district"),
+        "state": _field_value(fields, "state"),
+        "year": _field_value(fields, "khatauni_year", "year", "document_date"),
+        "lat": float(lat) if lat is not None else None,
+        "lon": float(lon) if lon is not None else None,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"] if "updated_at" in row.keys() else row["created_at"],
+        "location_status": location_status,
+        "location_state": "VERIFIED_LOCATION" if location_status == "EXACT_PIN" else ("APPROXIMATE_VILLAGE_LOCATION" if location_status == "VILLAGE_LEVEL" else "LOCATION_NOT_AVAILABLE"),
+        "location_label": "VERIFIED LOCATION" if location_status == "EXACT_PIN" else ("APPROXIMATE — VILLAGE LOCATION" if location_status == "VILLAGE_LEVEL" else "LOCATION NOT AVAILABLE"),
+        "location_source": location_source,
+        "location_confidence": float(persisted_confidence) if persisted_confidence is not None else None,
+        "location_verified_by": verified_by if has_exact_pin else None,
+        "location_verified_at": verified_at if has_exact_pin else None,
+        "location_reason": row["location_reason"] if "location_reason" in row.keys() else None,
+        "location_provenance": {
+            "status": location_status,
+            "source": location_source,
+            "confidence": float(persisted_confidence) if persisted_confidence is not None else None,
+            "verified_by": verified_by if has_exact_pin else None,
+            "verified_at": verified_at if has_exact_pin else None,
+            "query": None,
+        },
+        "review_required": str(row["status"] or "").upper() not in {"APPROVED", "VERIFIED", "AUTO_APPROVED"},
+        "validation_issues": len(validation.get("issues") or []) if isinstance(validation.get("issues"), list) else 0,
+    }
+    return item
 
 
-@router.post("/geocode")
-def geocode(request: GeocodeRequest, user: Dict[str, Any] = Depends(get_current_user)):
-    global _last_nominatim_request
-    parts = [request.village, request.taluka, request.district, request.state, "India"]
-    query = ", ".join(part for part in parts if part)
-    cache_key = _normalise(query)
-    cached = _geocode_cache.get(cache_key)
-    if cached is not None:
-        return {**cached, "cached": True}
+def _map_location_audit_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """Read reviewer/at metadata from the existing audit trail.
+
+    Document coordinates remain the only persisted document location fields.
+    Verification identity and time are intentionally derived from the existing
+    audit table rather than duplicated in the OCR document schema.
+    """
+    if not document_ids:
+        return {}
+    wanted = {str(value) for value in document_ids}
     with get_db() as db:
-        row = db.execute("SELECT * FROM geocode_cache WHERE cache_key=?", (cache_key,)).fetchone()
-    if row:
-        cached_result = {
-            "status": row["status"], "latitude": row["latitude"], "longitude": row["longitude"],
-            "display_name": row["display_name"], "query": query,
+        rows = db.execute(
+            """SELECT doc_id, ts, username, action, detail
+               FROM audit
+               WHERE action IN ('location_set', 'location_cleared')
+               ORDER BY ts DESC, id DESC"""
+        ).fetchall()
+    result: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        doc_id = str(row["doc_id"] or "")
+        if doc_id not in wanted or doc_id in result:
+            continue
+        result[doc_id] = {
+            "verified_by": row["username"] if row["action"] == "location_set" else None,
+            "verified_at": row["ts"] if row["action"] == "location_set" else None,
+            "action": row["action"],
+            "detail": row["detail"],
         }
-        _geocode_cache[cache_key] = cached_result
+    return result
+
+
+def _map_property_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """Return explicitly linked reference geometry without making it authoritative.
+
+    A property link is intentionally kept separate from a document's exact pin:
+    synthetic/reference geometry must never turn an unresolved document into a
+    verified parcel location.
+    """
+    if not document_ids:
+        return {}
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT pd.document_id, p.*
+               FROM property_documents pd
+               JOIN properties p ON p.property_id = pd.property_id
+               ORDER BY pd.linked_at DESC"""
+        ).fetchall()
+    result: Dict[str, Dict[str, Any]] = {}
+    wanted = {str(value) for value in document_ids}
+    for row in rows:
+        document_id = str(row["document_id"])
+        if document_id in wanted and document_id not in result:
+            result[document_id] = _property_dict(row)
+    return result
+
+
+def _map_visible_records(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM documents ORDER BY created_at DESC LIMIT 10000").fetchall()
+    visible = [row for row in rows if _map_document_visible(row, user)]
+    records = [_map_document_item(row) for row in visible]
+    document_ids = [str(record["id"]) for record in records]
+    audit_context = _map_location_audit_context(document_ids)
+    property_context = _map_property_context(document_ids)
+    for record in records:
+        audit_item = audit_context.get(str(record["id"]))
+        has_coordinates = record.get("lat") is not None and record.get("lon") is not None
+        record["location_audit_available"] = bool(audit_item)
+        record["location_provenance"]["audit_available"] = bool(audit_item)
+        if has_coordinates:
+            if audit_item and audit_item.get("action") == "location_set":
+                record["location_verified_by"] = audit_item.get("verified_by")
+                record["location_verified_at"] = audit_item.get("verified_at")
+                detail = str(audit_item.get("detail") or "")
+                record["location_reason"] = detail.split(" Reason: ", 1)[1] if " Reason: " in detail else None
+                record["location_provenance"].update({
+                    "verified_by": record["location_verified_by"],
+                    "verified_at": record["location_verified_at"],
+                })
+        property_item = property_context.get(str(record["id"]))
+        if not property_item:
+            record["reference_geometry"] = None
+            record["reference_property"] = None
+            continue
+        record["reference_geometry"] = property_item.get("geometry")
+        record["reference_property"] = {
+            "property_id": property_item.get("property_id"),
+            "parcel_id": property_item.get("parcel_id"),
+            "survey_number": property_item.get("survey_number"),
+            "sub_division": property_item.get("sub_division"),
+            "area": property_item.get("area"),
+            "area_unit": property_item.get("area_unit"),
+            "geometry_source": property_item.get("geometry_source"),
+            "geometry_confidence": property_item.get("geometry_confidence"),
+            "data_source": property_item.get("data_source"),
+            "location": property_item.get("location"),
+            "synthetic": "synthetic" in str(property_item.get("data_source") or "").casefold()
+                or "synthetic" in str(property_item.get("geometry_source") or "").casefold(),
+        }
+    return records
+
+
+def _map_record_matches(record: Dict[str, Any], *, q: str = "", district: str = "", tehsil: str = "", village: str = "", status: str = "", location: str = "") -> bool:
+    if q and q not in " ".join(str(record.get(key) or "") for key in (
+        "id", "filename", "owner", "father", "survey", "khasra", "khata", "plot", "area",
+        "village", "tehsil", "district", "state", "doc_type", "status")).casefold():
+        return False
+    for key, expected in (("district", district), ("tehsil", tehsil), ("village", village), ("status", status)):
+        if expected and _normalise(record.get(key)) != _normalise(expected):
+            return False
+    if location and _normalise(record.get("location_status")) != _normalise(location):
+        return False
+    return True
+
+
+def _map_summary(records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    statuses = {"EXACT_PIN": 0, "VILLAGE_LEVEL": 0, "UNRESOLVED": 0}
+    for record in records:
+        statuses[record.get("location_status") or "UNRESOLVED"] = statuses.get(record.get("location_status") or "UNRESOLVED", 0) + 1
+    total = len(records)
+    exact = statuses.get("EXACT_PIN", 0)
+    return {
+        "records": total,
+        "exact_pins": exact,
+        "village_level": statuses.get("VILLAGE_LEVEL", 0),
+        "unresolved": statuses.get("UNRESOLVED", 0),
+        # Coverage is based only on persisted, reviewer-set coordinates. A
+        # village name or a reference polygon is not counted as an exact map.
+        "mapped_records": exact,
+        "mapped_percent": round((exact / total) * 100, 1) if total else 0.0,
+        "location_coverage_percent": round((exact / total) * 100, 1) if total else 0.0,
+        "review_required": sum(1 for record in records if record.get("review_required")),
+        "approved": sum(1 for record in records if not record.get("review_required")),
+        "villages": len({normalise for normalise in (_normalise(record.get("village")) for record in records) if normalise}),
+        "districts": len({normalise for normalise in (_normalise(record.get("district")) for record in records) if normalise}),
+        "surveys": len({normalise for normalise in (_land_number(record.get("survey")) for record in records) if normalise}),
+    }
+
+
+@map_router.get("/records")
+def map_records(
+    q: str = Query("", max_length=200),
+    district: str = Query("", max_length=200),
+    tehsil: str = Query("", max_length=200),
+    village: str = Query("", max_length=200),
+    status: str = Query("", max_length=80),
+    location: str = Query("", max_length=40),
+    limit: int = Query(5000, ge=1, le=10000),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return Portfolio-style document map records with server-side filters.
+
+    Exact coordinates are human-set pins. Records without a pin remain useful
+    because their village/district fields can be geocoded and cached at
+    village level. The summary metadata lets a future client render a map
+    dashboard without downloading a second dataset.
+    """
+    all_records = _map_visible_records(user)
+    filtered = [record for record in all_records if _map_record_matches(
+        record, q=_normalise(q), district=district, tehsil=tehsil, village=village,
+        status=status, location=location)]
+    return {
+        "records": filtered[:limit],
+        "total": len(filtered),
+        "metadata": {
+            "authoritative": False,
+            "source": "Screened document fields and authorised reviewer pins",
+            "summary": _map_summary(all_records),
+            "filters": {"q": q, "district": district, "tehsil": tehsil, "village": village, "status": status, "location": location},
+        },
+    }
+
+
+@map_router.get("/summary")
+def map_summary(user: Dict[str, Any] = Depends(get_current_user)):
+    """Compact map dashboard metrics for the portal and integrations."""
+    records = _map_visible_records(user)
+    return {"summary": _map_summary(records), "metadata": {"authoritative": False}}
+
+
+@map_router.get("/properties")
+def map_properties(
+    village: str = Query("", max_length=200),
+    tehsil: str = Query("", max_length=200),
+    district: str = Query("", max_length=200),
+    survey: str = Query("", max_length=120),
+    limit: int = Query(500, ge=1, le=5000),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Return explicitly stored reference geometry for the Village Sheet.
+
+    The response is deliberately labelled non-authoritative.  These records
+    are useful for orientation and comparison only; they are never presented
+    as legal cadastral boundaries or as a substitute for a document pin.
+    """
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM properties ORDER BY village, survey_number, property_id LIMIT 5000").fetchall()
+    filtered = []
+    for row in rows:
+        if village and _normalise(row["village"]) != _normalise(village):
+            continue
+        if tehsil and _normalise(row["taluka"]) != _normalise(tehsil):
+            continue
+        if district and _normalise(row["district"]) != _normalise(district):
+            continue
+        if survey and _land_number(survey).casefold() not in _land_number(row["survey_number"]).casefold():
+            continue
+        item = _property_dict(row)
+        item["synthetic"] = (
+            "synthetic" in str(item.get("data_source") or "").casefold()
+            or "synthetic" in str(item.get("geometry_source") or "").casefold()
+        )
+        item["authoritative"] = False
+        item["disclaimer"] = "Reference geometry only; not an authoritative cadastral boundary or legal title."
+        filtered.append(item)
+    return {
+        "properties": filtered[:limit],
+        "total": len(filtered),
+        "metadata": {
+            "authoritative": False,
+            "source": "Project-owned reference geometry",
+            "disclaimer": "Reference geometry only; not an authoritative cadastral boundary or legal title.",
+        },
+    }
+
+
+@map_router.get("/export.csv")
+def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
+    """Download a review-friendly map register without exposing hidden records."""
+    output = io.StringIO(newline="")
+    output.write("\\ufeff")
+    writer = csv.DictWriter(output, fieldnames=(
+        "id", "filename", "doc_type", "status", "owner", "survey", "khasra", "khata", "plot",
+        "area", "village", "tehsil", "district", "state", "year", "lat", "lon",
+        "location_status", "location_state", "location_label", "location_source", "location_confidence",
+        "location_verified_by", "location_verified_at", "location_audit_available", "review_required"), extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(_map_visible_records(user))
+    return Response(content=output.getvalue(), media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": "attachment; filename=land-map-register.csv",
+        "Cache-Control": "no-store",
+    })
+
+
+@map_router.put("/records/{doc_id}/location")
+def map_set_document_location(
+    doc_id: str,
+    payload: Dict[str, Any],
+    user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
+):
+    """Set or clear an exact document pin with an audit event."""
+    raw_lat = payload.get("lat", payload.get("latitude"))
+    raw_lon = payload.get("lon", payload.get("longitude"))
+    reason = str(payload.get("reason") or "").strip()[:500]
+    if (raw_lat is None) != (raw_lon is None):
+        raise HTTPException(status_code=400, detail="lat and lon must be supplied together (or both be null).")
+    actor = user.get("full_name", user.get("email", "user"))
+    changed_at = _now()
+    with get_db() as db:
+        row = db.execute("SELECT id, lat, lon FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Record not found.")
+        previous = (row["lat"], row["lon"])
+        if raw_lat is None:
+            db.execute(
+                "UPDATE documents SET lat=NULL, lon=NULL, updated_at=? WHERE id=?",
+                (changed_at, doc_id),
+            )
+            detail = "Document GIS pin cleared; previous coordinates were (%s, %s)." % previous
+            if reason:
+                detail += " Reason: %s" % reason
+            action = "location_cleared"
+            result = {
+                "ok": True, "lat": None, "lon": None,
+                "location_status": "LOCATION_NOT_AVAILABLE",
+                "location_source": None,
+                "location_verified_by": None,
+                "location_verified_at": None,
+            }
+        else:
+            try:
+                latitude, longitude = float(raw_lat), float(raw_lon)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="lat/lon must be numbers (or null to clear).")
+            if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+                raise HTTPException(status_code=400, detail="lat must be -90..90 and lon -180..180.")
+            db.execute(
+                "UPDATE documents SET lat=?, lon=?, updated_at=? WHERE id=?",
+                (latitude, longitude, changed_at, doc_id),
+            )
+            detail = "Document GIS pin changed from (%s, %s) to (%.6f, %.6f)." % (previous[0], previous[1], latitude, longitude)
+            if reason:
+                detail += " Reason: %s" % reason
+            action = "location_set"
+            result = {
+                "ok": True, "lat": latitude, "lon": longitude,
+                "location_status": "VERIFIED_LOCATION",
+                "location_source": "Authorised reviewer pin",
+                "location_verified_by": actor,
+                "location_verified_at": changed_at,
+            }
+    log_audit(actor, action, detail, doc_id)
+    return result
+
+
+def _public_geocode_result(value: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: item for key, item in value.items() if not key.startswith("_")}
+
+
+@map_router.post("/geocode")
+def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_current_user)):
+    """Geocode a free-form village query with a cached Nominatim request."""
+    global _map_last_geocode_request
+    query = str(payload.get("query") or "").strip()
+    if not query or len(query) > 200:
+        raise HTTPException(status_code=400, detail="query required (max 200 chars)")
+    key = _normalise(query)
+    cached = _map_geocode_cache.get(key)
+    if cached is not None and (_now() - float(cached.get("_cached_at", 0))) < MAP_GEOCODE_TTL_SECONDS:
+        return {**_public_geocode_result(cached), "cached": True}
+    _map_geocode_cache.pop(key, None)
+    # Reuse the persistent land cache where possible, but do not alter its
+    # structured response shape.
+    with get_db() as db:
+        cached_row = db.execute("SELECT latitude, longitude, display_name, status, created_at FROM geocode_cache WHERE cache_key=?", (key,)).fetchone()
+    if cached_row and cached_row["status"] == "RESOLVED" and (_now() - float(cached_row["created_at"] or 0)) < MAP_GEOCODE_TTL_SECONDS:
+        cached_result = {
+            "query": query,
+            "lat": cached_row["latitude"],
+            "lon": cached_row["longitude"],
+            "display_name": cached_row["display_name"],
+            "source": "Nominatim persistent cache",
+        }
+        _map_geocode_cache[key] = {**cached_result, "_cached_at": _now()}
         return {**cached_result, "cached": True}
 
-    elapsed = _now() - _last_nominatim_request
-    if _last_nominatim_request and elapsed < 1.0:
-        time.sleep(max(0.0, 1.0 - elapsed))
-    params = urllib.parse.urlencode({"q": query, "format": "jsonv2", "limit": 1, "countrycodes": "in"})
+    elapsed = _now() - _map_last_geocode_request
+    if _map_last_geocode_request and elapsed < 1.1:
+        time.sleep(max(0.0, 1.1 - elapsed))
+    params = urllib.parse.urlencode({"format": "jsonv2", "limit": 1, "q": query, "countrycodes": "in"})
     request_obj = urllib.request.Request(
         "https://nominatim.openstreetmap.org/search?" + params,
-        headers={"User-Agent": NOMINATIM_USER_AGENT, "Accept": "application/json"},
+        headers={"User-Agent": MAP_NOMINATIM_USER_AGENT, "Accept": "application/json"},
     )
-    _last_nominatim_request = _now()
-    status_value = "UNRESOLVED"
-    latitude = longitude = display_name = None
+    _map_last_geocode_request = _now()
+    data = []
     try:
-        with urllib.request.urlopen(request_obj, timeout=8) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        if isinstance(payload, list) and payload:
-            latitude = _number(payload[0].get("lat"))
-            longitude = _number(payload[0].get("lon"))
-            display_name = payload[0].get("display_name")
-            if latitude is not None and longitude is not None:
-                status_value = "RESOLVED"
+        with urllib.request.urlopen(request_obj, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
     except Exception:
-        # A geocoder outage must not result in fabricated coordinates.
-        status_value = "UNRESOLVED"
-    result = {"status": status_value, "latitude": latitude, "longitude": longitude, "display_name": display_name, "query": query}
-    _geocode_cache[cache_key] = result
-    with get_db() as db:
-        db.execute(
-            """INSERT INTO geocode_cache(cache_key,village,taluka,district,state,latitude,longitude,display_name,status,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,
-               display_name=excluded.display_name,status=excluded.status,created_at=excluded.created_at""",
-            (cache_key, request.village, request.taluka, request.district, request.state, latitude, longitude, display_name, status_value, _now()),
-        )
-    return {**result, "cached": False}
-
-
-def _validate_geometry(feature: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    geometry = feature.get("geometry")
-    if not isinstance(geometry, dict) or geometry.get("type") not in {"Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon"}:
-        raise HTTPException(status_code=422, detail="Every GeoJSON feature must contain a supported geometry.")
-    if shapely_shape is not None:
-        try:
-            geom = shapely_shape(geometry)
-            if geom.is_empty or not geom.is_valid:
-                raise HTTPException(status_code=422, detail="GeoJSON contains an empty or invalid geometry.")
-            geometry = shapely_mapping(geom)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid GeoJSON geometry: {exc}")
-    return geometry, feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-
-
-@router.post("/import-geojson")
-async def import_geojson(file: UploadFile = File(...), user: Dict[str, Any] = Depends(get_current_user)):
-    raw = await file.read(MAX_IMPORT_BYTES + 1)
-    if len(raw) > MAX_IMPORT_BYTES:
-        raise HTTPException(status_code=422, detail="GeoJSON file exceeds the 10 MB import limit.")
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=422, detail="GeoJSON upload is not valid UTF-8 JSON.")
-    if not isinstance(payload, dict) or payload.get("type") != "FeatureCollection":
-        raise HTTPException(status_code=422, detail="Only GeoJSON FeatureCollection uploads are supported.")
-    crs = payload.get("crs")
-    if crs:
-        name = ((crs.get("properties") or {}).get("name") if isinstance(crs, dict) else "") or ""
-        if str(name).upper().replace("::", ":") not in {"EPSG:4326", "URN:OGC:DEF:CRS:OGC:1.3:CRS84", "CRS84"}:
-            raise HTTPException(status_code=422, detail="Only EPSG:4326/CRS84 GeoJSON is supported; reproject the file before import.")
-    features = payload.get("features")
-    if not isinstance(features, list) or len(features) > MAX_IMPORT_FEATURES:
-        raise HTTPException(status_code=422, detail="GeoJSON feature count is invalid or exceeds the import limit.")
-    prepared = []
-    for index, feature in enumerate(features):
-        if not isinstance(feature, dict):
-            raise HTTPException(status_code=422, detail=f"Feature {index + 1} is not an object.")
-        geometry, properties = _validate_geometry(feature)
-        parcel_id = str(properties.get("parcel_id") or properties.get("parcelId") or properties.get("property_id") or "").strip()
-        if not parcel_id:
-            raise HTTPException(status_code=422, detail=f"Feature {index + 1} is missing parcel_id/property_id.")
-        prepared.append((parcel_id, geometry, properties))
-    if user.get("role") not in {ROLE_VERIFICATION_OFFICER, ROLE_ADMIN}:
-        raise HTTPException(status_code=403, detail="Only Verification Officers or Administrators can import parcel data.")
-
-    now = _now()
-    with get_db() as db:
-        for parcel_id, geometry, properties in prepared:
-            property_id = str(properties.get("property_id") or ("PROP-" + re.sub(r"[^A-Za-z0-9_-]", "-", parcel_id))).strip()
-            area = _number(properties.get("area"))
-            latitude = _number(properties.get("latitude"))
-            longitude = _number(properties.get("longitude"))
-            if latitude is None or longitude is None:
-                try:
-                    if shapely_shape is not None:
-                        centroid = shapely_shape(geometry).centroid
-                        longitude, latitude = centroid.x, centroid.y
-                except Exception:
-                    latitude = longitude = None
+        return {"query": query, "lat": None, "lon": None, "display_name": None,
+                "error": "geocoding unavailable (offline?) - try again later", "cached": False}
+    if not isinstance(data, list) or not data:
+        result = {"query": query, "lat": None, "lon": None, "display_name": None,
+                  "error": "no match found for '%s'" % query}
+    else:
+        latitude, longitude = _number(data[0].get("lat")), _number(data[0].get("lon"))
+        result = {"query": query, "lat": latitude, "lon": longitude,
+                  "display_name": data[0].get("display_name"), "source": "Nominatim", "cached": False}
+    _map_geocode_cache[key] = {**{k: v for k, v in result.items() if k != "cached"}, "_cached_at": _now()}
+    # Persist only valid coordinate results in the shared cache. An unresolved
+    # network response should be retried later rather than frozen indefinitely.
+    if result.get("lat") is not None and result.get("lon") is not None:
+        with get_db() as db:
             db.execute(
-                """INSERT INTO properties(property_id,parcel_id,district,taluka,village,survey_number,gat_number,khasra_number,
-                   sub_division,parent_property_id,area,area_unit,geometry,centroid,latitude,longitude,crs,georeferenced,
-                   geometry_source,geometry_confidence,data_source,source_confidence,created_at,updated_at,location_status,
-                   location_source,location_confidence,location_base_latitude,location_base_longitude,location_base_source)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(property_id) DO UPDATE SET parcel_id=excluded.parcel_id,district=excluded.district,taluka=excluded.taluka,
-                   village=excluded.village,survey_number=excluded.survey_number,gat_number=excluded.gat_number,khasra_number=excluded.khasra_number,
-                   sub_division=excluded.sub_division,area=excluded.area,area_unit=excluded.area_unit,geometry=excluded.geometry,
-                   centroid=excluded.centroid,latitude=excluded.latitude,longitude=excluded.longitude,crs=excluded.crs,georeferenced=1,
-                   geometry_source=excluded.geometry_source,geometry_confidence=excluded.geometry_confidence,data_source=excluded.data_source,
-                   source_confidence=excluded.source_confidence,updated_at=excluded.updated_at,location_status='PARCEL_GEOMETRY',
-                   location_source=excluded.location_source,location_confidence=excluded.location_confidence,location_base_latitude=excluded.location_base_latitude,
-                   location_base_longitude=excluded.location_base_longitude,location_base_source=excluded.location_base_source""",
-                (property_id, parcel_id, properties.get("district"), properties.get("taluka") or properties.get("tehsil"), properties.get("village"),
-                 properties.get("survey_number"), properties.get("gat_number"), properties.get("khasra_number"), properties.get("sub_division"),
-                 properties.get("parent_property_id"), area, properties.get("area_unit") or "ha", _json(geometry),
-                 _json([longitude, latitude]) if latitude is not None and longitude is not None else None, latitude, longitude, "EPSG:4326", 1,
-                 f"GeoJSON import: {file.filename or 'uploaded file'}", float(properties.get("geometry_confidence") or 0.8),
-                 str(properties.get("data_source") or "Authorized local GeoJSON import"), float(properties.get("source_confidence") or 0.8),
-                 now, now, "PARCEL_GEOMETRY", f"GeoJSON import: {file.filename or 'uploaded file'}", float(properties.get("source_confidence") or 0.8),
-                 latitude, longitude, f"GeoJSON import: {file.filename or 'uploaded file'}"),
+                """INSERT INTO geocode_cache(cache_key,village,taluka,district,state,latitude,longitude,display_name,status,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET latitude=excluded.latitude,
+                   longitude=excluded.longitude,display_name=excluded.display_name,status=excluded.status,created_at=excluded.created_at""",
+                (key, query, "", "", "", result["lat"], result["lon"], result.get("display_name"), "RESOLVED", _now()),
             )
-    return {"imported": len(prepared), "authoritative": False, "source": file.filename or "uploaded file"}
+    return result
 
 
-# Ensure the default application database has the mapping schema when the
-# module is loaded. Tests and deployments that swap DB_PATH call this function
-# again; all migrations are idempotent.
+def _history_item(row: Any) -> Dict[str, Any]:
+    item = _map_document_item(row)
+    audit_item = _map_location_audit_context([str(item["id"])]).get(str(item["id"]))
+    if item["lat"] is not None and item["lon"] is not None and audit_item and audit_item.get("action") == "location_set":
+        item["location_verified_by"] = audit_item.get("verified_by")
+        item["location_verified_at"] = audit_item.get("verified_at")
+    item["location_audit_available"] = bool(audit_item)
+    return {
+        "id": item["id"], "filename": item["filename"], "doc_type": item["doc_type"],
+        "status": item["status"], "owner": item["owner"], "father": item["father"],
+        "survey": item["survey"], "khasra": item["khasra"], "khata": item["khata"],
+        "area": item["area"], "village": item["village"], "tehsil": item["tehsil"],
+        "district": item["district"], "state": item["state"], "year": item["year"],
+        "lat": item["lat"], "lon": item["lon"], "location_status": item["location_status"],
+        "location_state": item["location_state"], "location_label": item["location_label"],
+        "location_source": item["location_source"], "location_confidence": item["location_confidence"],
+        "location_verified_by": item.get("location_verified_by"), "location_verified_at": item.get("location_verified_at"),
+        "location_audit_available": item["location_audit_available"],
+        "created_at": item["created_at"],
+    }
+
+
+def _history_summary(items: Sequence[Dict[str, Any]], ownership: Dict[str, Any]) -> Dict[str, Any]:
+    owners = []
+    changes = []
+    transfer_documents = []
+    previous_owner = ""
+    for item in items:
+        owner = str(item.get("owner") or "").strip()
+        if owner and _normalise(owner) not in {_normalise(value) for value in owners}:
+            owners.append(owner)
+        if owner and previous_owner and _normalise(owner) != _normalise(previous_owner):
+            changes.append({"from": previous_owner, "to": owner, "document_id": item.get("id"), "year": item.get("year")})
+        if owner:
+            previous_owner = owner
+        if _is_transfer_document(item):
+            transfer_documents.append(item.get("id"))
+    return {
+        "record_count": len(items),
+        "owners": owners,
+        "owner_changes": changes,
+        "transfer_documents": transfer_documents,
+        "assessment": ownership.get("assessment", "INSUFFICIENT_DATA"),
+        "review_required": bool(ownership.get("findings") or ownership.get("relationships")),
+        "disclaimer": "A history signal supports review; it does not establish title or legal ownership.",
+    }
+
+
+@document_history_router.get("/documents/{doc_id}/history")
+def document_history(doc_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    """Return a complete survey/village passbook, including the current record."""
+    with get_db() as db:
+        current = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        if not _map_document_visible(current, user):
+            raise HTTPException(status_code=403, detail="You do not have access to this record.")
+        current_fields = _parse_json(current["fields"], {}) or {}
+        survey = _field_value(current_fields, "survey_number")
+        village = _field_value(current_fields, "village")
+        rows = db.execute("SELECT * FROM documents ORDER BY created_at ASC").fetchall()
+    if survey:
+        survey_key = _land_number(survey).casefold()
+        village_key = _normalise(village)
+        rows = [
+            row for row in rows
+            if _map_document_visible(row, user)
+            and _land_number(_field_value(_parse_json(row["fields"], {}) or {}, "survey_number")).casefold() == survey_key
+            and (not village_key or _normalise(_field_value(_parse_json(row["fields"], {}) or {}, "village")) == village_key)
+        ]
+    else:
+        rows = [current]
+    items = [_history_item(row) for row in rows]
+    def _history_sort_key(item: Dict[str, Any]) -> Tuple[int, str]:
+        match = re.search(r"\b(19\d{2}|20\d{2})\b", str(item.get("year") or ""))
+        return (int(match.group(1)) if match else 9999, str(item.get("id") or ""))
+    items.sort(key=_history_sort_key)
+    # Keep the Portfolio passbook useful for transfer-aware review: ownership
+    # changes are surfaced as deterministic signals, never auto-approved.
+    ownership_records = []
+    for row in rows:
+        item = dict(row)
+        item["fields"] = _parse_json(item.get("fields"), {}) or {}
+        ownership_records.append(item)
+    ownership_history = analyze_ownership_history(ownership_records) if ownership_records else {"assessment": "INSUFFICIENT_DATA", "events": [], "findings": [], "relationships": []}
+    return {"survey": survey, "village": village, "current_id": doc_id,
+            "items": items, "including_current": any(item["id"] == doc_id for item in items),
+            "ownership_history": ownership_history,
+            "history_summary": _history_summary(items, ownership_history)}
+
+
+
+# Run the compatibility schema migration once at import. The canonical app
+# calls this again after test/deployment DB swaps; all operations are idempotent.
 _ensure_tables()

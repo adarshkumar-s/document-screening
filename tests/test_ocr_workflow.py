@@ -10,6 +10,16 @@ os.environ.setdefault("APP_ENV", "test")
 import server
 
 
+def test_supported_language_catalog_has_21_tesseract_choices():
+    codes = [item["code"] for item in server.SUPPORTED_LANGUAGES]
+    assert len(codes) == 21
+    assert len(set(codes)) == 21
+    for code in ("asm", "mal", "nep", "san", "snd", "sin", "ara", "fas", "mya", "bod"):
+        assert server._ocr_languages(code) == [code]
+    strategy = server.select_ai_ocr_strategy({"language": "Malayalam", "script": "Malayalam", "layout": "mixed", "quality": "high"})
+    assert strategy["lang"] == "mal+eng"
+
+
 def login(client):
     response = client.post("/api/auth/login", json={"email": "admin@landrec.gov.in", "password": "Admin@123"})
     assert response.status_code == 200
@@ -22,7 +32,34 @@ def test_filename_is_never_an_owner_name():
     assert any("Record-holder" in issue["msg"] for issue in result["validation"]["issues"])
 
 
+def test_upload_persists_optional_state_metadata(monkeypatch, tmp_path):
+    server.DB_PATH = str(tmp_path / "state-metadata.db")
+    server.init_db()
+    client = TestClient(server.app)
+    headers = login(client)
+
+    def fake_pipeline(_content, filename, *_args):
+        return server.extract_fields_from_ocr("Owner Name: State Test\nVillage: Testville", filename)
+
+    monkeypatch.setattr(server, "run_ocr_pipeline", fake_pipeline)
+    image = io.BytesIO(); Image.new("RGB", (20, 20), "white").save(image, "PNG")
+    uploaded = client.post(
+        "/api/process?state=Maharashtra&doc_type=Land%20Record&lang=auto",
+        headers=headers,
+        files={"file": ("state-record.png", image.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200
+    doc_id = uploaded.json()["id"]
+    assert uploaded.json()["metadata"] == {"state": "Maharashtra"}
+
+    retrieved = client.get(f"/api/documents/{doc_id}", headers=headers)
+    assert retrieved.status_code == 200
+    assert retrieved.json()["metadata"] == {"state": "Maharashtra"}
+    assert server.build_document_metadata("") == {}
+
+
 def test_english_fields_are_extracted_from_ocr_text():
+
     text = "Owner Name: Alice Sharma\nFather's Name: Mohan Sharma\nVillage: Greenfield\nDistrict: Pune\nKhasra No: 45/2\nArea: 1.25 Acres\nDate: 01/09/2026"
     fields = server.extract_fields_from_ocr(text, "unrelated-name.jpeg")["fields"]
     assert fields["owner_name"]["value"] == "Alice Sharma"

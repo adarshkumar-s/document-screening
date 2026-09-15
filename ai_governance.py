@@ -272,7 +272,7 @@ def _execute(proposal, admin):
             db.execute("UPDATE ai_tasks SET assigned_to=?,status='PENDING',updated_at=? WHERE id=?",(u["id"],time.time(),tid))
             return {"task_id":tid,"assigned_to":u["id"]}
         if action in {"SET_PROPERTY_LOCATION","CLEAR_PROPERTY_LOCATION"}:
-            from land_intelligence import LocationUpdate, update_property_location
+            from mapping import LocationUpdate, update_property_location
             for rid in ids:
                 req = LocationUpdate(
                     latitude=after.get("latitude") if action=="SET_PROPERTY_LOCATION" else None,
@@ -311,7 +311,7 @@ def _execute(proposal, admin):
                 db.execute("UPDATE documents SET status=?,updated_at=? WHERE id=?",(new_status,time.time(),rid))
             return {"records":ids,"status":new_status}
         if action=="CREATE_VERIFICATION_CASE":
-            from land_intelligence import _ensure_tables
+            from mapping import _ensure_tables
             _ensure_tables()
             cases = []
             grouped = {}
