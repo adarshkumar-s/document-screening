@@ -839,6 +839,7 @@
           <div class="li-report-done">
             <b>${esc(t('reportTitle'))}</b> — ${esc(t('reportReference'))}: <span class="mono">${esc(reference)}</span>
             <a class="btn saffron" style="padding:4px 10px;font-size:12px;text-decoration:none" href="${esc(d.html_url)}" target="_blank" rel="noopener">${esc(t('openReport'))}</a>
+            <a class="btn ghost" style="padding:4px 10px;font-size:12px;text-decoration:none" href="${esc(d.pdf_url || (d.html_url + '/report.pdf'))}" target="_blank" rel="noopener">⬇ PDF</a>
           </div>`;
       } else {
         window.open(d.html_url, '_blank');

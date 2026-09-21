@@ -1658,6 +1658,7 @@ def generate_land_verification_report(req: ReportCreate, user: Dict[str, Any] = 
         )
     _audit(user, "REPORT_GENERATED", f"Land Record Verification Report {reference} generated for land {land['land_id']} (survey {land.get('survey')}, {land.get('village')})", document_id or None)
     return {"reference_no": reference, "report": payload, "html_url": f"/api/reports/land-verification/{reference}",
+            "pdf_url": f"/api/reports/land-verification/{reference}/report.pdf",
             "qr_url": f"/api/reports/land-verification/{reference}/qr.png"}
 
 
@@ -1769,3 +1770,46 @@ def report_qr(reference: str, user: Dict[str, Any] = Depends(require_roles(*REVI
         return Response(content=buffer.getvalue(), media_type="image/png")
     except Exception:
         raise HTTPException(status_code=503, detail="QR generation requires the optional 'qrcode' dependency.")
+
+
+@report_router.get("/land-verification/{reference}/report.pdf")
+def report_pdf(reference: str, user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES))):
+    """Land Record Verification Report as a PDF (reviewer/admin only, audited).
+
+    The PDF carries the record/document ID, owner, survey/khasra, area,
+    village/tehsil/district, verification/risk/encumbrance/mutation status,
+    supporting documents, timestamp, reviewer, verification reference and a QR
+    that encodes the safe report reference only."""
+    from fastapi.responses import Response
+
+    ensure_land_tables()
+    with get_db() as db:
+        row = db.execute("SELECT * FROM land_reports WHERE reference_no=?", (_text(reference),)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    payload = _parse_json(row["payload"], {})
+    try:
+        from report_pdf import render_verification_report_pdf
+        qr_png = None
+        try:
+            import io as _io
+
+            import qrcode
+
+            image = qrcode.make(f"/api/reports/land-verification/{_text(reference)}?format=json", box_size=4, border=2)
+            buffer = _io.BytesIO()
+            image.save(buffer, format="PNG")
+            qr_png = buffer.getvalue()
+        except Exception:
+            qr_png = None
+        content = render_verification_report_pdf(payload, qr_png)
+    except Exception as exc:
+        print(f"[REPORT PDF WARNING] {exc}")
+        raise HTTPException(status_code=500, detail="PDF rendering failed.")
+    _audit(user, "REPORT_PDF_DOWNLOADED", f"Land Record Verification Report {reference} downloaded as PDF")
+    filename = f"land_verification_report_{_text(reference)}.pdf"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
