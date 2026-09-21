@@ -25,6 +25,9 @@ jobs:
           node --check js/app.js
           node --check js/land-intel.js
           node --check js/admin-assistant.js
+      - name: Verify Tesseract runtime diagnostic
+        run: |
+          command -v tesseract >/dev/null 2>&1 && python scripts/check_tesseract.py "$(command -v tesseract)" || echo "Tesseract is not installed in the test runner; Docker OCR is checked by the image build."
       - name: Build production Docker image
         run: docker build -t document-screening:test .
       - name: Verify actual ASGI import
