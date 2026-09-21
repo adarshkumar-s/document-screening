@@ -10,6 +10,7 @@ pytesseract
 psycopg2-binary
 python-multipart
 shapely
+qrcode[pil]
 pytest
 httpx
 argon2-cffi>=23.1,<26

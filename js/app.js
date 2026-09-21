@@ -107,7 +107,19 @@ function openDocumentDeepLink(){
     window.history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : ''));
   }, 0);
 }
-function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); openDocumentDeepLink(); }
+function openLandDeepLink(){
+  const landId = new URLSearchParams(window.location.search).get('land_id');
+  if(!landId || !me || !window.LandIntel) return;
+  if(me.role !== ROLE_VERIFICATION_OFFICER && me.role !== ROLE_ADMIN) return;
+  // Land Intelligence detail lives in the existing staff portal routing.
+  window.setTimeout(()=>{
+    window.LandIntel.openLand(landId);
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('land_id');
+    window.history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : ''));
+  }, 0);
+}
+function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); openDocumentDeepLink(); openLandDeepLink(); }
 
 function doLogout(quiet){
   if(!quiet && !window.confirm('Are you sure you want to log out?')) return;
@@ -561,7 +573,8 @@ function setupStaffPortal(role){
       ['queue', '⏳ Verification Queue'],
       ['consistency', '🔍 Consistency Check'],
       ['compare', '⚖️ Comparison'],
-      ['records', '🗂️ All Records']
+      ['records', '🗂️ All Records'],
+      ['landintel', '🗺 Land Intelligence']
     ];
   } else if(isAdmin){
     tabs = [
@@ -571,6 +584,7 @@ function setupStaffPortal(role){
       ['consistency', '🔍 Consistency Check'],
       ['records', '🗂️ All Records'],
       ['compare', '⚖️ Comparison'],
+      ['landintel', '🗺 Land Intelligence'],
       ['audit', '🔐 Audit Trail']
     ];
   }
@@ -602,6 +616,7 @@ function administrationDefinitions(role){
     options.push({key:'learn', label:'AI Correction', pane:'staff-tab-learn', load:loadStaffLearn});
   }
   if(isAdmin) options.push({key:'approvals', label:'AI Approval', pane:'staff-tab-approvals', load:() => { if(typeof loadAiApprovals === 'function') loadAiApprovals(); }});
+  if(isAdmin) options.push({key:'datamanagement', label:'Data Management', pane:'staff-tab-datamanagement', load:() => { if(window.LandIntel) window.LandIntel.renderDataManagement(); }});
   return options;
 }
 
@@ -717,7 +732,7 @@ function switchStaffTab(tabName){
     t.classList.toggle('active', t.dataset.stab === tabName);
   });
 
-  ['dashboard','upload','queue','review','compare','consistency','records','audit'].forEach(p=>{
+  ['dashboard','upload','queue','review','compare','consistency','records','audit','landintel'].forEach(p=>{
     const elPane = $('#staff-tab-' + p);
     if(elPane) elPane.classList.toggle('hidden', p !== tabName);
   });
@@ -729,6 +744,7 @@ function switchStaffTab(tabName){
   if(tabName === 'consistency') initConsistencyWorkspace();
   if(tabName === 'records') loadStaffRecords();
   if(tabName === 'audit') loadStaffAudit();
+  if(tabName === 'landintel' && window.LandIntel) window.LandIntel.renderWorkspace();
 }
 
 async function loadStaffDashboard(){
@@ -1027,6 +1043,9 @@ async function openStaffReview(id){
     box.innerHTML = html;
     const scanImage = box.querySelector('#staffScanImage');
     if(scanImage) loadProtectedDocumentImage(scanImage, d.id);
+    // Land Intelligence panel (encumbrance check + deterministic risk) is
+    // appended to the existing review card without touching its layout.
+    if(window.LandIntel && d.land_context) window.LandIntel.attachDocumentLandContext(box, d);
     switchStaffTab('review');
   }catch(e){ alert(e.message); }
 }
@@ -1048,7 +1067,11 @@ async function staffExecuteDecision(id, action){
       method: 'POST',
       body: JSON.stringify({action, comments, corrections})
     });
-    alert(`Action recorded: ${res.new_status}`);
+    // Deterministic land-level workflow signal (active encumbrance / HIGH_RISK
+    // land). Informational only — the recorded action stands; the officer is
+    // pointed at the encumbrance/risk review workflow.
+    const landWarning = (window.LandIntel && window.LandIntel.landRiskWarningMessage) ? window.LandIntel.landRiskWarningMessage(res) : null;
+    alert(landWarning ? `Action recorded: ${res.new_status}\n\n${landWarning}` : `Action recorded: ${res.new_status}`);
     switchStaffTab('queue');
   }catch(e){ alert(e.message); }
 }

@@ -12,3 +12,4 @@ data/*.db
 .env
 .env.*
 !.env.example
+data/backup_before_restore_*/

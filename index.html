@@ -558,6 +558,12 @@
           <div class="card" id="staffReviewCard"></div>
         </div>
 
+        <div id="staff-tab-landintel" class="hidden">
+          <!-- Land Intelligence workspace: Records / Mutations / Encumbrances / Risk Review / Reports.
+               Rendered by js/land-intel.js on top of the existing APIs and RBAC. -->
+          <div id="landIntelWorkspace"></div>
+        </div>
+
         <div id="staff-tab-consistency" class="hidden">
           <div class="card">
             <div class="card-header">
@@ -752,6 +758,11 @@
               <div id="aiApprovalList" class="ai-approval-list"><div class="muted">Loading proposals…</div></div>
             </div>
           </div>
+        <div id="staff-tab-datamanagement" class="hidden">
+          <!-- Administration → Data Management: full backup and safe restore (Administrator only).
+               Rendered by js/land-intel.js; every action is audited server-side. -->
+          <div id="landDataManagement"></div>
+        </div>
     </div>
     <footer class="administration-footer">
       <button class="administration-logout" id="logoutBtn" type="button">🚪 Logout</button>
@@ -760,7 +771,9 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/app.js?v=31"></script>
+<!-- Land Intelligence workspace (Records / Mutations / Encumbrances / Risk / Reports + Data Management) -->
+<script src="js/land-intel.js"></script>
+<script src="js/app.js?v=32"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->

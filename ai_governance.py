@@ -33,6 +33,11 @@ ACTION_REGISTRY = {
     "ESCALATE_RECORD",
     "SET_PROPERTY_LOCATION",
     "CLEAR_PROPERTY_LOCATION",
+    # Land Intelligence integration: AI may PROPOSE a mutation application.
+    # Nothing is created until an administrator approves it here, and the
+    # mutation's completion itself stays a separate, human, safety-gated
+    # action. This reuses the single existing approval system.
+    "CREATE_MUTATION_APPLICATION",
 }
 
 class ProposalCreate(BaseModel):
@@ -103,7 +108,7 @@ def _validate_target(p):
     s=_server()
     action=p["action_type"]; ids=p["target_ids"]
     if action not in ACTION_REGISTRY: raise HTTPException(400,"Action type is not registered.")
-    if not ids and action not in {"CREATE_AI_TASK"}: raise HTTPException(400,"At least one target is required.")
+    if not ids and action not in {"CREATE_AI_TASK","CREATE_MUTATION_APPLICATION"}: raise HTTPException(400,"At least one target is required.")
     if action in {"REQUEST_REPROCESSING","PROPOSE_FIELD_CORRECTION","PROPOSE_STATUS_CHANGE","ASSIGN_AI_TASK","REQUEST_REVIEW","ESCALATE_RECORD","CREATE_VERIFICATION_CASE"}:
         with s.get_db() as db:
             for rid in ids:
@@ -121,6 +126,15 @@ def _validate_target(p):
                 raise HTTPException(400,"SET_PROPERTY_LOCATION requires latitude and longitude.")
             if not (-90 <= float(lat) <= 90 and -180 <= float(lon) <= 180):
                 raise HTTPException(400,"Property coordinates are outside WGS84 bounds.")
+    if action == "CREATE_MUTATION_APPLICATION":
+        proposed = p.get("proposed_state") or p.get("after") or {}
+        if not str(proposed.get("survey_number") or proposed.get("khasra_number") or proposed.get("village") or "").strip():
+            raise HTTPException(400,"CREATE_MUTATION_APPLICATION requires a survey/khasra number or village to identify the land.")
+        if not str(proposed.get("new_owner") or "").strip():
+            raise HTTPException(400,"CREATE_MUTATION_APPLICATION requires the proposed new owner.")
+        allowed_reasons = {"SALE","GIFT","INHERITANCE","PARTITION","MERGER","COURT_DECREE","OTHER"}
+        if str(proposed.get("reason_type") or "SALE").upper() not in allowed_reasons:
+            raise HTTPException(400,"Mutation type is not registered.")
     if action in {"ASSIGN_AI_TASK","REASSIGN_AI_TASK"}:
         assigned_values=[]
         proposed = p.get("proposed_state") or p.get("after") or {}
@@ -281,6 +295,17 @@ def _execute(proposal, admin):
                 )
                 update = update_property_location(rid, req, admin)
             return {"properties": ids, "location_status": "EXACT_PIN" if action=="SET_PROPERTY_LOCATION" else "RESTORED"}
+
+        if action=="CREATE_MUTATION_APPLICATION":
+            # Governed mutation creation: executes the same server-side
+            # creation path as the manual queue (same validation, same risk
+            # snapshot, same audit). Completion remains a separate human action.
+            from land_intel import MutationCreate, create_mutation
+            payload = {key: value for key, value in after.items() if key in MutationCreate.model_fields}
+            payload["documents"] = [str(rid) for rid in ids if rid]
+            result = create_mutation(MutationCreate(**payload), admin)
+            mutation = result["mutation"]
+            return {"mutations": [mutation["id"]], "mutation_no": mutation["mutation_no"], "status": mutation["status"]}
 
         if action=="REQUEST_REPROCESSING":
             for rid in ids:
