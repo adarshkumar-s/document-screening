@@ -46,6 +46,91 @@ The old Land Intelligence UI, credential-free demo router/assets, and old mappin
 
 The upload and staff OCR selectors expose 21 Tesseract language packs: English, Hindi, Telugu, Tamil, Bengali, Marathi, Gujarati, Punjabi, Kannada, Odia, Urdu, Assamese, Malayalam, Nepali, Sanskrit, Sindhi, Sinhala, Arabic, Persian, Burmese, and Tibetan. Auto-detection retains the existing multilingual fallback and never changes the document validation or approval rules.
 
+## Land Intelligence extension (encumbrances, mutations, land risk, reports)
+
+The following extend the canonical screening flow **without replacing it**. OCR,
+AI governance, RBAC, the audit trail, the verification queue and the map are
+untouched; the extension reuses their helpers (document visibility, audit,
+property resolution).
+
+- **Encumbrance register** — loans/mortgages recorded against a parcel
+  (survey + village key, optional khasra) with `ACTIVE / RELEASED / UNKNOWN`
+  status, lender, reference number, amount, dates, evidence document and full
+  audit coverage. Verifier/Admin write; every authenticated user reads.
+- **Mutation workflow** — a governed namantaran/ferfar application queue
+  (`RECEIVED → UNDER_REVIEW → VERIFIED → COMPLETED` or `REJECTED`) with an
+  event log per mutation, document checklist, reviewer notes, and completion
+  as a **human, Administrator-only** action. Completion records an audited
+  register event; it never rewrites OCR document fields.
+- **Deterministic land-risk engine** — rule-based signals computed from local
+  data only: `ACTIVE_ENCUMBRANCE`, `SALE_DURING_ENCUMBRANCE`,
+  `OWNER_CONFLICT_YEAR`, `OWNER_CHANGE_NO_MUTATION`, `PENDING_MUTATION`,
+  `REJECTED_MUTATION`, `AREA_JUMP`, `DUPLICATE_CONFLICT`,
+  `REJECTED_CONFLICT_COPY`, `CHAIN_GAP`, `SUSPICIOUS_MUTATION_SEQUENCE`,
+  `LOW_QUALITY_EXTRACTION`. Verdicts map to `CLEAR / REVIEW / HIGH_RISK` and
+  always carry evidence (documents, encumbrances, mutations). This is a
+  workflow signal — never a legally authoritative fraud determination.
+- **Approval safety gate** — completing a mutation on land with an active
+  encumbrance returns `409` with the lender/reference/amount evidence and is
+  blocked in the UI behind an explicit human confirmation. RBAC is never
+  bypassed and blocked attempts are audited.
+- **Verification integration** — the existing document detail API carries a
+  `land_context` panel (encumbrance banner + risk verdict) rendered inside the
+  existing review card; approving a document on encumbered/high-risk land
+  returns a `land_risk_warning` workflow signal.
+- **Land record details** — one aggregated view per parcel: property, current
+  owner, ownership history (documents + completed mutations), mutations,
+  encumbrances, risk, documents, map link and (admin-only) the audit trail.
+- **Verification reports** — `LAND RECORD VERIFICATION REPORT` (printable HTML
+  + JSON) with a machine-readable QR that identifies the report reference only.
+  The report explicitly states it is **not** an official government title
+  certificate. Reviewer/Admin generate; reviewer/admin view; audited.
+- **Map show mode** — the existing map gains a `Show: Selected record`
+  (default, only the selected record is emphasized) / `Show: All records`
+  toggle. Filters, neighbouring plots, exact/approximate locations and the
+  non-authoritative geometry disclaimers are unchanged.
+- **Tile resilience** — fallback sequence is now OSM Humanitarian → OSM mirror
+  (openstreetmap.de) → Esri → OpenTopoMap → OSM → offline schematic. No new
+  external dependency.
+- **Data Management (Administration)** — admin-only full backup (ZIP with
+  `manifest.json`, portable logical export of every application table —
+  documents/OCR state, verification state, AI governance, land records, map
+  data, mutations, encumbrances, risk registers, audit trail, users — plus
+  every uploaded scan) and a safe restore that validates the archive and
+  manifest, writes an automatic safety copy of the current data first, then
+  restores, verifies counts, and audits every step. Member sanitisation
+  rejects path traversal; RBAC rejects non-admins with 403.
+- **Demo scenarios** — ten deterministic, admin-governed fixtures
+  (`POST /api/admin/demo/seed`) covering clean records, valid mutations,
+  active encumbrances, ownership changes without mutations, conflicts, area
+  jumps, pending/rejected mutations, low-quality OCR and duplicates. All demo
+  artifacts are tagged and removable via `DELETE /api/admin/demo/data`
+  without touching production data.
+
+### New API surface
+
+```
+GET/POST            /api/encumbrances
+GET/PUT             /api/encumbrances/{id}
+POST                /api/encumbrances/{id}/release
+GET/POST            /api/mutations
+GET                 /api/mutations/{id}            (+ /events)
+POST                /api/mutations/{id}/review     (verifier/admin)
+POST                /api/mutations/{id}/complete   (admin only; safety gate)
+GET                 /api/land-records              (paginated, role-scoped)
+GET                 /api/land-records/{land_id}    (detail; risk via /risk)
+GET                 /api/land-records/risk-review  (verifier/admin)
+GET                 /api/land-records/{land_id}/encumbrances | /mutations
+POST                /api/reports/land-verification
+GET                 /api/reports/land-verification/{ref}(.qr.png)
+GET/POST/DELETE     /api/admin/demo/scenarios | /seed | /data   (admin only)
+GET                 /api/admin/data-management/backup(/manifest) (admin only)
+POST                /api/admin/data-management/restore            (admin only)
+```
+
+`documents` gaining `land_context` and `review-action` returning an optional
+`land_risk_warning` are the only changes to existing APIs; both are additive.
+
 ## Routes
 
 ### Mapping UI

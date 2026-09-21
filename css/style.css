@@ -764,3 +764,77 @@ body.administration-open { overflow: hidden; }
   .staff-upload-options > div { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .staff-upload-options select { width: 100%; }
 }
+
+/* ==========================================================================
+   LAND INTELLIGENCE workspace (js/land-intel.js)
+   Extends the existing visual language using the same government tokens.
+   ========================================================================== */
+.li-subtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 2px solid var(--gov-border-light); margin: 10px 0 14px; }
+.li-subtab {
+  padding: 7px 14px; font-size: 12px; font-weight: 700; color: var(--muted);
+  background: transparent; border: none; border-bottom: 3px solid transparent; cursor: pointer;
+}
+.li-subtab:hover, .li-subtab:focus-visible { color: var(--gov-navy); }
+.li-subtab.active { color: var(--gov-navy); border-bottom-color: var(--gov-saffron); }
+
+.li-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.li-count { font-size: 11px; color: var(--muted); }
+.li-empty { text-align: center; padding: 18px; color: var(--muted); font-size: 13px; list-style: none; }
+.li-sub { font-size: 11px; color: var(--muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.li-chip { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 800; letter-spacing: .3px; }
+.li-clear { background: var(--gov-green-light); color: var(--gov-green); border: 1px solid #86efac; }
+.li-ok { background: var(--gov-green-light); color: var(--gov-green); border: 1px solid #86efac; }
+.li-review { background: var(--gov-gold-light); color: var(--gov-gold); border: 1px solid #fde68a; }
+.li-high { background: var(--err-light); color: var(--err); border: 1px solid #fca5a5; }
+.li-muted { background: #f1f5f9; color: var(--muted); border: 1px solid var(--gov-border-light); }
+
+.li-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
+.li-card { border: 1px solid var(--gov-border); border-radius: 8px; padding: 14px; background: #fff; }
+.li-card h4 { margin: 0 0 8px; font-size: 12.5px; color: var(--gov-navy); letter-spacing: .4px; text-transform: uppercase; }
+.li-kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; border-bottom: 1px dashed var(--gov-border-light); }
+.li-kv:last-child { border-bottom: none; }
+.li-kv span { color: var(--muted); }
+
+.li-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.li-detail-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.li-gate-banner { margin-top: 10px; padding: 10px 12px; border: 1px solid #fca5a5; background: var(--err-light); border-radius: 8px; font-size: 12.5px; color: #991b1b; }
+
+.li-history { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; }
+.li-history-item { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--gov-border-light); font-size: 12.5px; }
+.li-history-item:last-child { border-bottom: none; }
+.li-history-year { min-width: 46px; font-weight: 800; color: var(--gov-navy); font-size: 12px; }
+
+.li-flag-list { list-style: none; margin: 0; padding: 0; }
+.li-flag { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; font-size: 12.5px; }
+.li-flag-high { background: var(--err-light); border: 1px solid #fca5a5; }
+.li-flag-review { background: var(--gov-gold-light); border: 1px solid #fde68a; }
+.li-flag-info { background: #f1f5f9; border: 1px solid var(--gov-border-light); }
+.li-code { font-size: 10px; background: rgba(15, 23, 42, .08); padding: 1px 6px; border-radius: 4px; }
+.li-evidence-wrap { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.li-evidence { font-size: 11px; background: #fff; border: 1px solid var(--gov-border-light); padding: 2px 8px; border-radius: 5px; }
+
+.li-mutation-list { display: grid; gap: 12px; }
+.li-mutation-card { border: 1px solid var(--gov-border); border-radius: 8px; padding: 14px; background: #fff; }
+.li-mutation-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.li-mutation-parties { text-align: right; font-size: 12.5px; }
+.li-mutation-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+.li-docs { display: flex; gap: 6px; flex-wrap: wrap; }
+.li-doc-link { border: 1px solid var(--gov-border-light); cursor: pointer; }
+.li-mutation-signals { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; }
+.li-mutation-actions { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 12px; border-top: 1px dashed var(--gov-border-light); padding-top: 10px; align-items: center; }
+
+.li-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.li-form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; color: var(--gov-navy); }
+.li-form-grid input, .li-form-grid select, .li-form-grid textarea {
+  padding: 7px 9px; border: 1px solid var(--gov-border); border-radius: 5px; font-size: 12.5px; font-weight: 400;
+}
+
+.li-overlay { position: fixed; inset: 0; background: rgba(9, 26, 44, .55); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
+.li-overlay.hidden { display: none; }
+.li-dialog { background: #fff; border-radius: 10px; padding: 20px; max-width: 640px; width: 100%; box-shadow: var(--shadow-lg); max-height: 90vh; overflow-y: auto; }
+.li-dialog h3 { margin: 0 0 8px; color: var(--err); font-size: 16px; }
+.li-confirm { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; margin-top: 12px; }
+
+.li-report-done { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border: 1px solid #86efac; background: var(--gov-green-light); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }

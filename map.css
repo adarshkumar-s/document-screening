@@ -294,3 +294,10 @@ label select:focus, label input:focus { border-color: #3182b7; box-shadow: 0 0 0
 @media (max-width: 540px) {
   .history-actions { grid-column: 2; justify-self: start; }
 }
+
+/* Show mode (Selected record / All records) */
+.show-mode-picker { width: 150px; }
+#mapShowModeStatus { font-size: 11px; color: var(--muted, #64748b); font-weight: 600; }
+@media (max-width: 900px) {
+  .show-mode-picker { width: 100%; }
+}

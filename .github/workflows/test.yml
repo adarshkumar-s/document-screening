@@ -23,6 +23,7 @@ jobs:
           node --check map.js
           node --check portal-ui.js
           node --check js/app.js
+          node --check js/land-intel.js
           node --check js/admin-assistant.js
       - name: Build production Docker image
         run: docker build -t document-screening:test .

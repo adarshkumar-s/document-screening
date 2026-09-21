@@ -108,10 +108,17 @@
           <label class="tile-picker">Base layer
             <select id="mapTileSource">
               <option value="osmhot">OpenStreetMap Humanitarian (recommended)</option>
+              <option value="osmde">OSM mirror (openstreetmap.de)</option>
               <option value="esri">Esri World Imagery</option>
               <option value="topo">OpenTopoMap</option>
               <option value="osm">OpenStreetMap</option>
               <option value="schematic">▦ Offline schematic</option>
+            </select>
+          </label>
+          <label class="filter-picker show-mode-picker">Show
+            <select id="mapShowMode" aria-label="Record show mode">
+              <option value="selected" selected>● Selected record</option>
+              <option value="all">○ All records</option>
             </select>
           </label>
           <label class="filter-picker">Location
@@ -136,6 +143,7 @@
           <button id="fitRecordsBtn" class="btn ghost export-btn" type="button">⌖ Fit to records</button>
           <label id="pinModeLabel" class="pin-toggle"><input id="mapPinMode" type="checkbox"> <span>📍 Set verified location</span></label>
           <span id="mapRegionStatus" class="toolbar-count" aria-live="polite"></span>
+          <span id="mapShowModeStatus" class="toolbar-count"></span>
           <span id="mapCount" class="toolbar-count"></span>
         </div>
         <div class="map-layout">

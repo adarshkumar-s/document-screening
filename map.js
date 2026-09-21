@@ -34,6 +34,9 @@
     geocodeRunning: false,
     fitted: false,
     mapUserMoved: false,
+    // Show mode (Phase: map improvement). Default is 'selected record' so the
+    // map stays calm; switching to 'all records' shows every filtered record.
+    showMode: 'selected',
   };
 
   const TILE_SOURCES = {
@@ -43,6 +46,15 @@
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors · HOT tiles courtesy of <a href="https://www.hotosm.org/" target="_blank" rel="noreferrer">Humanitarian OpenStreetMap Team</a>',
       subdomains: 'abc',
       maxNativeZoom: 19,
+    },
+    osmde: {
+      // OSM Standard mirror (openstreetmap.de). Added as a fallback hop when
+      // the primary OSM endpoints are unreachable, without adding any SDK.
+      label: 'OSM mirror (openstreetmap.de)',
+      url: 'https://{s}.tile.openstreetmap.de/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors · mirror openstreetmap.de',
+      subdomains: 'abc',
+      maxNativeZoom: 18,
     },
     osm: {
       label: 'OpenStreetMap',
@@ -65,7 +77,10 @@
   };
   const TILE_SOURCE_STORAGE_KEY = 'documentScreeningMapTileSource';
   const LEGACY_TILE_SOURCE_STORAGE_KEY = 'portfolioMapTileSource';
-  const TILE_FALLBACK_ORDER = ['osmhot', 'esri', 'topo', 'osm', 'schematic'];
+  // Resilient tile sequence: primary OSM (HOT) → OSM mirror → Esri →
+  // OpenTopoMap → OSM standard → offline schematic. No external dependency
+  // is introduced; every hop is a plain tile URL and schematic needs nothing.
+  const TILE_FALLBACK_ORDER = ['osmhot', 'osmde', 'esri', 'topo', 'osm', 'schematic'];
   // UI copy intentionally retains the familiar "set exact pin" wording for
   // existing integrations and accessibility checks; the state label is now
   // presented as VERIFIED LOCATION to users.
@@ -650,7 +665,7 @@
   }
 
   function setTileSource(source) {
-    state.tileSource = ['osmhot', 'esri', 'topo', 'osm', 'schematic'].includes(source) ? source : 'osmhot';
+    state.tileSource = ['osmhot', 'osmde', 'esri', 'topo', 'osm', 'schematic'].includes(source) ? source : 'osmhot';
     saveTileSource();
     if (!state.mapReady) return;
     removeTileLayer();
@@ -712,16 +727,18 @@
     }
   }
 
-  function markerFor(record) {
+  function markerFor(record, options = {}) {
     const coordinate = recordCoordinate(record);
     if (!coordinate || !state.mapReady) return null;
     const exact = coordinate.exact;
+    const emphasized = !!options.emphasized;
     const marker = window.L.circleMarker([coordinate.lat, coordinate.lon], {
-      radius: exact ? 8 : 6,
-      color: exact ? '#15803d' : '#b45309',
-      fillColor: exact ? '#22c55e' : '#f59e0b',
+      radius: emphasized ? 11 : (exact ? 8 : 6),
+      color: emphasized ? '#1d4ed8' : (exact ? '#15803d' : '#b45309'),
+      fillColor: emphasized ? '#3b82f6' : (exact ? '#22c55e' : '#f59e0b'),
       fillOpacity: .88,
-      weight: 2,
+      weight: emphasized ? 3 : 2,
+      className: emphasized ? 'map-marker-selected' : undefined,
     });
     marker.bindPopup(`<div class="popup-title">${esc(record.owner || record.filename || `Record #${record.id}`)}</div>
       <div class="popup-detail"><strong>${esc(exact ? 'VERIFIED LOCATION' : 'APPROXIMATE — VILLAGE LOCATION')}</strong><br>Survey: ${esc(record.survey || record.khasra || '—')}<br>Village: ${esc(record.village || '—')}<br>Source: ${esc(exact ? (record.location_source || 'Authorised reviewer pin') : 'Cached village geocode')}<br>Status: ${esc(record.status || '—')}</div>
@@ -730,17 +747,52 @@
     return marker;
   }
 
+  // SHOW MODE ---------------------------------------------------------------
+  // 'selected' (default): only the currently selected record is emphasized;
+  //                       no stray dots while nothing is selected.
+  // 'all':                every filtered record is shown, as before.
+  // Existing filters, neighbouring plots, and exact/approximate handling are
+  // unchanged; the mode only decides WHICH markers are drawn.
+  function showModeRecords() {
+    const filtered = filteredMapRecords();
+    if (state.showMode !== 'selected') return { records: filtered, emphasizedId: null };
+    if (!state.selectedId) return { records: [], emphasizedId: null };
+    const selected = filtered.find((record) => String(record.id) === String(state.selectedId))
+      || recordById(state.selectedId);
+    return { records: selected ? [selected] : [], emphasizedId: selected ? String(selected.id) : null };
+  }
+
   function renderMarkers() {
     if (!state.markers) return;
     state.markers.clearLayers();
     state.markerById.clear();
-    filteredMapRecords().forEach((record) => {
-      const marker = markerFor(record);
+    const { records, emphasizedId } = showModeRecords();
+    records.forEach((record) => {
+      const marker = markerFor(record, { emphasized: String(record.id) === emphasizedId });
       if (!marker) return;
       marker.addTo(state.markers);
       state.markerById.set(String(record.id), marker);
     });
     $('mapLoadHint').classList.add('hidden');
+    updateShowModeStatus();
+  }
+
+  function updateShowModeStatus() {
+    const node = $('mapShowModeStatus');
+    if (!node) return;
+    if (state.showMode === 'selected') {
+      node.textContent = state.selectedId
+        ? 'Show: Selected record'
+        : 'Show: Selected record — select a record to see its position';
+    } else {
+      node.textContent = 'Show: All records';
+    }
+  }
+
+  function setShowMode(mode) {
+    state.showMode = mode === 'all' ? 'all' : 'selected';
+    renderMarkers();
+    if (!state.mapUserMoved) fitMap(true);
   }
 
   function regionLabel(records) {
@@ -766,15 +818,15 @@
 
   function fitMap(force = false) {
     if (!state.mapReady) return;
-    const records = filteredMapRecords();
+    const { records } = showModeRecords();
     if (state.mapUserMoved && !force) {
-      updateMapRegionStatus(records, records.map(recordCoordinate).filter(Boolean));
+      updateMapRegionStatus(filteredMapRecords(), filteredMapRecords().map(recordCoordinate).filter(Boolean));
       return;
     }
     const coordinates = records.map(recordCoordinate).filter(Boolean);
     updateMapRegionStatus(records, coordinates);
     if (!coordinates.length) {
-      state.map.setView([22.5, 80.2], 5);
+      if (state.showMode === 'all') state.map.setView([22.5, 80.2], 5);
       state.fitted = false;
       return;
     }
@@ -852,6 +904,8 @@
     state.selectedId = record.id;
     renderRecordList();
     renderSelectedRecord();
+    // Selected-record show mode: redraw so only the selected marker shows.
+    renderMarkers();
     const marker = state.markerById.get(String(record.id));
     if (marker && state.map) {
       state.map.setView(marker.getLatLng(), Math.max(state.map.getZoom(), 14), { animate: true });
@@ -1023,7 +1077,8 @@
       // Do not geocode every unresolved village on initial load. Exact pins,
       // cached results, and unresolved records render immediately; geocoding is
       // only triggered by an explicit record action.
-      const requestedId = new URLSearchParams(window.location.search).get('document_id');
+      const requestedId = new URLSearchParams(window.location.search).get('document_id')
+        || new URLSearchParams(window.location.search).get('open_record');
       if (requestedId && recordById(requestedId)) {
         switchView('map');
         selectRecord(requestedId);
@@ -1053,6 +1108,8 @@
     $('exportMapBtn').addEventListener('click', exportMapCsv);
     $('fitRecordsBtn').addEventListener('click', () => { state.mapUserMoved = false; state.fitted = false; fitMap(true); });
     $('mapTileSource').addEventListener('change', (event) => setTileSource(event.target.value));
+    const showMode = $('mapShowMode');
+    if (showMode) showMode.addEventListener('change', (event) => setShowMode(event.target.value));
     $('mapPinMode').addEventListener('change', (event) => {
       state.pinMode = event.target.checked;
       $('pinHint').classList.toggle('hidden', !state.pinMode);

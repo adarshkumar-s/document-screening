@@ -2136,7 +2136,31 @@ def review_action(
             (new_st, req.comments or "", json.dumps(fields, ensure_ascii=False), time.time(), doc_id)
         )
     log_audit(user["full_name"], f"VERIFICATION_{req.action.upper()}", f"Marked doc #{doc_id} as {new_st}", doc_id)
-    return {"status": "ok", "new_status": new_st}
+
+    # Land-level workflow signal: approving a document on encumbered/high-risk
+    # land must warn the officer (deterministic signal; human remains the
+    # authority). This never blocks the documented review action itself.
+    land_risk_warning = None
+    if new_st == STATUS_APPROVED:
+        try:
+            from land_intel import document_land_context
+            with get_db() as db:
+                row = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+            if row:
+                context_row = dict(row)
+                context_row["fields"] = json.loads(context_row.get("fields") or "{}")
+                context = document_land_context(context_row, user)
+                if context.get("matched") and (context.get("active_encumbrance_count") or context.get("risk_verdict") == "HIGH_RISK"):
+                    land_risk_warning = {
+                        "code": "LAND_RISK_PRESENT",
+                        "risk_verdict": context.get("risk_verdict"),
+                        "active_encumbrance_count": context.get("active_encumbrance_count"),
+                        "message": "This document belongs to land with an active encumbrance or HIGH_RISK signals. "
+                                   "Complete mutation/encumbrance review before relying on this approval.",
+                    }
+        except Exception as exc:
+            print(f"[LAND RISK WARNING] {exc}")
+    return {"status": "ok", "new_status": new_st, "land_risk_warning": land_risk_warning}
 
 @app.post("/api/documents/compare")
 async def run_document_comparison(
@@ -2382,7 +2406,18 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
             doc_dict.pop("ocr_text", None)
             doc_dict.pop("cleaned_ocr_text", None)
 
+        # Land Intelligence context (encumbrance check + deterministic risk)
+        # attached to the existing document-detail API so the Verification
+        # Queue sees land-level signals without a parallel approval system.
+        try:
+            from land_intel import document_land_context
+            doc_dict["land_context"] = document_land_context(doc_dict, user)
+        except Exception as exc:
+            print(f"[LAND CONTEXT WARNING] {exc}")
+            doc_dict["land_context"] = {"matched": False, "unavailable": True}
+
         return doc_dict
+
 
 
 

@@ -883,6 +883,8 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
             "query": None,
         },
         "review_required": str(row["status"] or "").upper() not in {"APPROVED", "VERIFIED", "AUTO_APPROVED"},
+        # Mean OCR confidence (percent) carried for land-risk quality signals.
+        "mean_conf": row["mean_conf"] if "mean_conf" in row.keys() else None,
         "validation_issues": len(validation.get("issues") or []) if isinstance(validation.get("issues"), list) else 0,
     }
     return item
