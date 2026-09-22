@@ -1,3 +1,77 @@
+let saSessionId = null;
+let saAdminLabel = null;
+
+function saIsActive() { return !!saSessionId; }
+
+function setSaHeader(active, label) {
+  const title=document.querySelector('#adminAssistantWidget .assistant-title h3');
+  const badge=document.querySelector('#adminAssistantWidget .badge-read-only');
+  const briefing=document.getElementById('btnGenerateBriefing');
+  if (title) title.textContent=active ? 'SA · Superior Administrator AI' : 'AI Admin Assistant';
+  if (badge) { badge.textContent=active ? (label || 'SA') : 'Administrator'; badge.className=active ? 'badge-read-only sa-live-badge' : 'badge-read-only'; }
+  if (briefing) briefing.textContent=active ? '📊 SA Activity Report' : '📊 Generate System Briefing';
+  if (briefing) briefing.onclick=active ? showSaReport : triggerSystemBriefing;
+}
+
+async function beginSaActivation(code) {
+  try {
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate-options',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,administrator:''}});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
+    renderSaIdentityOptions(d.options || [], code);
+    document.getElementById('saActivationModal')?.classList.remove('hidden');
+  } catch(e) {
+    appendAssistantMessage(e.message || 'SA activation failed.','error-bubble');
+  }
+}
+
+function renderSaIdentityOptions(options, code) {
+  const root=document.getElementById('saIdentityOptions'); if(!root) return;
+  root.replaceChildren();
+  options.forEach(o=>{
+    const b=document.createElement('button'); b.type='button'; b.className='sa-identity-card';
+    b.innerHTML='<span class="sa-avatar">'+String(o.name||'?').charAt(0)+'</span><strong></strong><small>Administrator</small>';
+    b.querySelector('strong').textContent=o.name;
+    b.onclick=()=>activateSaIdentity(code,o.name,b);
+    root.appendChild(b);
+  });
+}
+
+async function activateSaIdentity(code,name,button) {
+  document.querySelectorAll('.sa-identity-card').forEach(b=>b.disabled=true);
+  try {
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,administrator:name})});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
+    saSessionId=d.session_id; saAdminLabel=d.admin;
+    closeSaActivation(); setSaHeader(true,saAdminLabel);
+    appendAssistantMessage('SA activated as '+saAdminLabel+'. I can now plan and coordinate work across the registered website features. Consequential actions still stop at the Administrator Approval Center before execution.','assistant-bubble');
+  } catch(e) {
+    const box=document.getElementById('saActivationError'); if(box){box.textContent=e.message;box.classList.remove('hidden');}
+  } finally { document.querySelectorAll('.sa-identity-card').forEach(b=>b.disabled=false); }
+}
+
+function closeSaActivation(){ document.getElementById('saActivationModal')?.classList.add('hidden'); }
+async function exitSaMode(){
+  if(!saSessionId) return;
+  try{await fetchAssistant('/api/admin/assistant/sa/end',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:saSessionId,query:''})});}catch(_){}
+  saSessionId=null; saAdminLabel=null; setSaHeader(false);
+  appendAssistantMessage('SA session ended. Normal Admin Assistant mode restored.','assistant-bubble');
+}
+
+async function showSaReport(){
+  if(!saSessionId) return;
+  try{
+    const r=await fetchAssistant('/api/admin/assistant/sa/report?session_id='+encodeURIComponent(saSessionId),{credentials:'same-origin'});
+    const d=await r.json(); if(!r.ok) throw new Error(d.detail||'Unable to load SA report.');
+    const root=document.getElementById('saReportList'); const panel=document.getElementById('saReportPanel');
+    const admin=document.getElementById('saReportAdmin'); if(admin) admin.textContent=' · '+(d.admin||'');
+    if(root){ root.replaceChildren(); (d.events||[]).forEach(ev=>{const row=document.createElement('div');row.className='sa-report-row';row.innerHTML='<b></b><span></span><small></small>';row.querySelector('b').textContent=ev.event_type;row.querySelector('span').textContent=ev.detail;row.querySelector('small').textContent=new Date(Number(ev.created_at||0)*1000).toLocaleString('en-IN');root.appendChild(row);});}
+    panel?.classList.remove('hidden');
+  }catch(e){appendAssistantMessage(e.message||'Unable to load SA report.','error-bubble');}
+}
+function closeSaReport(){document.getElementById('saReportPanel')?.classList.add('hidden');}
+
 function assistantToken() {
   try { return window.localStorage.getItem("lrtoken") || ""; } catch (_) { return ""; }
 }
@@ -41,11 +115,22 @@ async function handleAssistantSubmit(event) {
 
   try {
     
-    const response = await fetchAssistant("/api/admin/assistant/query", {
+    let endpoint="/api/admin/assistant/query";
+    let body={query:query};
+    // SA is a hidden mode trigger. "SA" uses the configured activation code;
+    // "SA <code>" also works when the deployment uses a non-SA secret.
+    if(/^SA$/i.test(query) || /^SA\\s+.+/i.test(query)){
+      const code=/^SA\\s+(.+)/i.test(query) ? query.replace(/^SA\\s+/i,'') : 'SA';
+      input.value="";
+      await beginSaActivation(code);
+      loading.style.display="none"; submitBtn.disabled=false; return;
+    }
+    if(saSessionId){ endpoint="/api/admin/assistant/sa/query"; body={session_id:saSessionId,query:query}; }
+    const response = await fetchAssistant(endpoint, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: query })
+      body: JSON.stringify(body)
     });
 
     const data = await response.json();
@@ -54,7 +139,7 @@ async function handleAssistantSubmit(event) {
       return;
     }
 
-    appendAssistantMessage(data.response, "assistant-bubble", data.records);
+    appendAssistantMessage(data.response, data.mode === "SA" ? "assistant-bubble sa-response" : "assistant-bubble", data.records);
 
     if (data.action_card) {
       renderConfirmationCard(data.action_card);
