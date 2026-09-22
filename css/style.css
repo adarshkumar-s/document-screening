@@ -838,3 +838,26 @@ body.administration-open { overflow: hidden; }
 .li-confirm { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; margin-top: 12px; }
 
 .li-report-done { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border: 1px solid #86efac; background: var(--gov-green-light); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+
+/* --- Land Intelligence: litigation, timeline, due diligence, demo data --- */
+.li-filter { padding: 7px 9px; border: 1px solid var(--gov-border); border-radius: 6px; font-size: 12.5px; background: #fff; color: var(--gov-navy); max-width: 210px; }
+.li-filter:focus-visible { outline: 2px solid var(--gov-saffron); outline-offset: 1px; }
+
+.li-why { border-left: 3px solid var(--gov-saffron); background: #fffaf2; padding: 8px 12px; margin: 8px 0; border-radius: 0 6px 6px 0; }
+.li-why-title { display: block; font-size: 11px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase; color: #92400e; margin-bottom: 4px; }
+.li-why ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.li-why li { margin: 2px 0; }
+
+.li-timeline { list-style: none; margin: 6px 0 0; padding: 0 0 0 6px; }
+.li-timeline-item { position: relative; display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 0 0 12px 18px; border-left: 2px solid var(--gov-border-light); }
+.li-timeline-item:last-child { border-left-color: transparent; padding-bottom: 2px; }
+.li-timeline-dot { position: absolute; left: -6px; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--gov-navy); border: 2px solid #fff; box-shadow: 0 0 0 1px var(--gov-border); }
+.li-timeline-when { font-size: 11.5px; font-weight: 800; color: var(--muted); letter-spacing: .3px; padding-top: 1px; }
+.li-timeline-refs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.li-timeline-court_case .li-timeline-dot { background: #b91c1c; }
+.li-timeline-encumbrance .li-timeline-dot { background: #1d4ed8; }
+.li-timeline-mutation .li-timeline-dot { background: #15803d; }
+.li-timeline-current .li-timeline-dot { background: var(--gov-saffron); }
+
+.li-dd-summary { border: 1px solid #93c5fd; background: #f8fbff; }
+.li-card-risk { border-left: 4px solid var(--err); }

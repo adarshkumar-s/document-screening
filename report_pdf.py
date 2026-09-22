@@ -165,6 +165,8 @@ def render_verification_report_pdf(report: Dict[str, Any], qr_png: Optional[byte
         ("Risk status", report.get("risk_status") or "-"),
         ("Encumbrance status", report.get("encumbrance_status") or "-"),
         ("Mutation status", report.get("mutation_status") or "-"),
+        ("Litigation status", report.get("litigation_status") or "NONE"),
+        ("Active court cases", report.get("active_court_case_count") or 0),
         ("Generated (UTC)", time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(float(report.get("generated_at") or time.time())))),
         ("Reviewer", report.get("reviewer") or "-"),
         ("Audit / reference ID", reference),
@@ -186,6 +188,49 @@ def render_verification_report_pdf(report: Dict[str, Any], qr_png: Optional[byte
         pdf.y -= 13
     if len(flags) > 14:
         pdf.text(left + 6, 8, f"... and {len(flags) - 14} more signals (see the HTML/JSON report).", gray=0.4)
+        pdf.y -= 12
+
+    pdf.ensure_space(24)
+    pdf.y -= 8
+    pdf.text(left, 12, "COURT CASES / LITIGATION", bold=True, gray=0.2)
+    pdf.y -= 13
+    litigation_status = _pdf_safe(report.get("litigation_status") or "NONE", 24)
+    try:
+        active_case_count = int(report.get("active_court_case_count") or 0)
+    except (TypeError, ValueError):
+        active_case_count = 0
+    if active_case_count:
+        banner = f"ACTIVE LITIGATION - {active_case_count} active case(s) recorded"
+    elif litigation_status != "NONE":
+        banner = f"{litigation_status} - no active case"
+    else:
+        banner = "NO COURT CASES REGISTERED (not a court-certified litigation search)"
+    pdf.text(left + 6, 9, banner, bold=True, gray=0.25 if active_case_count else 0.4)
+    pdf.y -= 13
+    cases: List[Dict[str, Any]] = list(report.get("court_cases") or [])
+    if not cases:
+        pdf.text(left + 6, 8.5, "- Nothing recorded against this parcel in the local litigation register.", gray=0.4)
+        pdf.y -= 12
+    for case in cases[:8]:
+        pdf.ensure_space(33)
+        status = _pdf_safe(case.get("status") or "UNKNOWN", 12)
+        closed = _pdf_safe(case.get("closed_date") or "")
+        head = " ".join(part for part in (
+            _pdf_safe(case.get("case_number")),
+            f"[{status}{': ' + closed if closed else ''}]",
+            _pdf_safe(case.get("case_type") or "CIVIL"),
+            _pdf_safe(case.get("court_name") or "", 60),
+        ) if part)
+        pdf.text(left + 6, 8.5, _pdf_safe(head, 150))
+        pdf.y -= 10
+        pdf.text(left + 6, 8, _pdf_safe(f"      Parties: {case.get('parties') or '-'}", 150), gray=0.35)
+        pdf.y -= 10
+        outcome = case.get("decision_summary") or case.get("relief_sought") or ""
+        if outcome:
+            pdf.text(left + 6, 8, _pdf_safe(f"      Outcome: {outcome}", 150), gray=0.35)
+            pdf.y -= 10
+    if len(cases) > 8:
+        pdf.text(left + 6, 8, f"... and {len(cases) - 8} more registered case(s).", gray=0.4)
         pdf.y -= 12
 
     pdf.ensure_space(24)
