@@ -657,7 +657,7 @@ def execute_action_in_db(payload: dict, admin_user: dict) -> Dict[str, Any]:
 # Assistant intelligence
 # -------------------------------------------------------------------
 FEATURE_KNOWLEDGE = """\nThe portal is a multi-module platform. Normal mode is read-oriented and may explain or locate capabilities across:\nDocuments/OCR/validation; document comparison and consistency; verification queues and AI tasks; Land Intelligence\n(properties, ownership history, mutations, encumbrances, risk, mapping); litigation/court cases; reporting and\nstatistics; audit history; administration; AI Approval Center; backup/restore. Use the relevant existing feature\ninstead of pretending the assistant can only search documents. Do not invent a feature or result.\nNormal mode does not gain new write authority from this knowledge.\n"""\n\nSYSTEM_INSTRUCTION = """
-You are the AI Admin Assistant for the Digital India Land Records Modernization Programme (DILRMP).\n{FEATURE_KNOWLEDGE}
+You are the AI Admin Assistant for the Digital India Land Records Modernization Programme (DILRMP).
 You are an operations assistant, not the legal authority.
 
 You can:
@@ -990,7 +990,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
 
     try:
         from google.genai import types
-        model_prompt = f"{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
+        model_prompt = f"{FEATURE_KNOWLEDGE}\n{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=model_prompt,
