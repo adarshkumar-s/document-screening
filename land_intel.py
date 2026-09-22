@@ -275,6 +275,12 @@ def ensure_land_tables() -> None:
     _schema_ready = True
 
 
+# Run the migration NOW, at import/startup: CREATE TABLE / CREATE INDEX can
+# block on a large database, so DDL belongs to process start, never to the
+# first request. Later calls (including inside request paths) are no-ops.
+ensure_land_tables()
+
+
 # ---------------------------------------------------------------------------
 # land record registry (documents grouped by survey + village identity)
 # ---------------------------------------------------------------------------
@@ -389,32 +395,53 @@ def _land_of_document_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return _group_land_records([record])[land_id]
 
 
-def _land_register_rows(land: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Encumbrance + mutation rows that apply to this land (survey-level
-    register entries match any village on the survey, mirroring land_records)."""
-    survey = _text(land.get("survey"))
-    village = _text(land.get("village"))
+def _register_entry_matches(row: Any, survey_n: str, village_n: str) -> bool:
+    """Register-entry/parcel matching: the survey number must match and a
+    village only narrows the result when the entry recorded one."""
+    row_survey = _normalise_land(row["survey_number"] or row["khasra_number"])
+    if not row_survey or row_survey != survey_n:
+        return False
+    row_village = _normalise_land(row["village"])
+    if row_village and village_n and row_village != village_n:
+        return False
+    return True
+
+
+def _register_index() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Both registers in ONE pair of queries, already projected.
+
+    Endpoints that touch many parcels (records index, risk review) fetch the
+    registers once and let :func:`_land_register_rows` filter per parcel, so
+    query count stays constant instead of growing with the portfolio.
+    """
+    ensure_land_tables()
     with get_db() as db:
         enc_rows = db.execute("SELECT * FROM land_encumbrances ORDER BY COALESCE(start_date,'') DESC, created_at DESC").fetchall()
         mut_rows = db.execute("SELECT * FROM land_mutations ORDER BY created_at DESC").fetchall()
+    return [_encumbrance_dict(row) for row in enc_rows], [_mutation_dict(row) for row in mut_rows]
 
-    def enc_matches(row: Any) -> bool:
-        row_survey = _normalise_land(row["survey_number"] or row["khasra_number"])
-        row_village = _normalise_land(row["village"])
-        land_survey = _normalise_land(survey)
-        land_village = _normalise_land(village)
-        survey_match = bool(row_survey) and row_survey == land_survey
-        if not survey_match:
-            return False
-        if row_village and land_village and row_village != land_village:
-            return False
-        return True
 
-    def mut_matches(row: Any) -> bool:
-        return enc_matches(row)
+def _land_register_rows(land: Dict[str, Any], registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None
+                        ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Encumbrance + mutation rows that apply to this land (survey-level
+    register entries match any village on the survey, mirroring land_records).
 
-    encumbrances = [_encumbrance_dict(row) for row in enc_rows if enc_matches(row)]
-    mutations = [_mutation_dict(row) for row in mut_rows if mut_matches(row)]
+    ``registers`` may carry the pre-fetched full registers from
+    :func:`_register_index`; filtering then happens purely in memory and the
+    result is identical to the query-per-parcel path.
+    """
+    survey_n = _normalise_land(land.get("survey"))
+    village_n = _normalise_land(land.get("village"))
+    if registers is None:
+        with get_db() as db:
+            enc_rows = db.execute("SELECT * FROM land_encumbrances ORDER BY COALESCE(start_date,'') DESC, created_at DESC").fetchall()
+            mut_rows = db.execute("SELECT * FROM land_mutations ORDER BY created_at DESC").fetchall()
+        encumbrances = [_encumbrance_dict(row) for row in enc_rows if _register_entry_matches(row, survey_n, village_n)]
+        mutations = [_mutation_dict(row) for row in mut_rows if _register_entry_matches(row, survey_n, village_n)]
+        return encumbrances, mutations
+    all_encumbrances, all_mutations = registers
+    encumbrances = [row for row in all_encumbrances if _register_entry_matches(row, survey_n, village_n)]
+    mutations = [row for row in all_mutations if _register_entry_matches(row, survey_n, village_n)]
     return encumbrances, mutations
 
 
@@ -1053,7 +1080,8 @@ def _risk_records(land: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 
-def compute_land_risk(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
+def compute_land_risk(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
+                      registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
     """Deterministic, rule-based land risk assessment.
 
     The engine answers: does local evidence (documents, the encumbrance
@@ -1061,11 +1089,12 @@ def compute_land_risk(land: Dict[str, Any], *, case_index: Optional[Dict[Any, Li
     conditions a human verifier must review? It is a workflow signal only —
     never a legal determination.
 
-    `case_index` lets a caller that scores many parcels share ONE grouped
-    query over the litigation register instead of querying per parcel.
+    `case_index` and `registers` let a caller that scores many parcels share
+    ONE grouped query per register instead of querying per parcel; the scored
+    result is identical either way.
     """
     ensure_land_tables()
-    encumbrances, mutations = _land_register_rows(land)
+    encumbrances, mutations = _land_register_rows(land, registers)
     records = _risk_records(land)
     flags: List[Dict[str, Any]] = []
 
@@ -1343,8 +1372,9 @@ def compute_land_risk(land: Dict[str, Any], *, case_index: Optional[Dict[Any, Li
 # land-record APIs
 # ---------------------------------------------------------------------------
 
-def _register_states(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
-    encumbrances, mutations = _land_register_rows(land)
+def _register_states(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
+                     registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
+    encumbrances, mutations = _land_register_rows(land, registers)
     active = [item for item in encumbrances if _text(item.get("status")).upper() == "ACTIVE"]
     cases = _land_court_cases(land, case_index)
     active_cases = [case for case in cases if _text(case.get("status")).upper() == "ACTIVE"]
@@ -1374,8 +1404,9 @@ def _mutation_rollup_status(mutations: Sequence[Dict[str, Any]]) -> str:
     return sorted(statuses)[0] or "NONE"
 
 
-def _land_summary(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
-    state = _register_states(land, case_index=case_index)
+def _land_summary(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
+                  registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
+    state = _register_states(land, case_index=case_index, registers=registers)
     latest = (land.get("records") or [{}])[-1]
     return {
         "land_id": land["land_id"],
@@ -1444,7 +1475,8 @@ def list_land_records(
     """
     lands = _land_records_index(user)
     case_index = _court_case_index()
-    items = [_land_summary(land, case_index=case_index) for land in lands.values()]
+    registers = _register_index()
+    items = [_land_summary(land, case_index=case_index, registers=registers) for land in lands.values()]
     needle = _text(q).casefold()
     if needle:
         items = [item for item in items if needle in " ".join(str(item.get(key) or "") for key in (
@@ -1484,12 +1516,13 @@ def risk_review(
     """
     lands = _land_records_index(user)
     case_index = _court_case_index()
+    registers = _register_index()
     results = []
     for land in lands.values():
         if not (land.get("records") or land.get("survey")):
             continue
-        risk = compute_land_risk(land, case_index=case_index)
-        summary = _land_summary(land, case_index=case_index)
+        risk = compute_land_risk(land, case_index=case_index, registers=registers)
+        summary = _land_summary(land, case_index=case_index, registers=registers)
         summary["risk"] = risk
         results.append(summary)
     wanted = _text(verdict).upper()
@@ -1517,9 +1550,13 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
     land = _get_land(user, land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land record not found.")
+    # LAND + DOCUMENTS + MUTATIONS + ENCUMBRANCES + LITIGATION + AUDIT are
+    # loaded once; RISK, TIMELINE and the register summaries are derived from
+    # that already-loaded data without touching the database again.
+    registers = _land_register_rows(land)
     case_index = _court_case_index()
-    risk = compute_land_risk(land, case_index=case_index)
-    state = _register_states(land, case_index=case_index)
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
     documents = [_document_reference(record) for record in land.get("records") or []]
     ownership = _ownership_history(land, state["mutations"])
     litigation = {
@@ -1800,9 +1837,10 @@ def document_land_context(document: Dict[str, Any], user: Dict[str, Any]) -> Dic
     land = _land_records_index(user).get(land_id)
     if not land:
         return {"matched": False}
+    registers = _land_register_rows(land)
     case_index = _court_case_index()
-    risk = compute_land_risk(land, case_index=case_index)
-    state = _register_states(land, case_index=case_index)
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
     context = {
         "matched": True,
         "land_id": land["land_id"],
@@ -1872,9 +1910,10 @@ def run_due_diligence(land_id: str, user: Dict[str, Any] = Depends(require_roles
     land = _get_land(user, land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land record not found.")
+    registers = _land_register_rows(land)
     case_index = _court_case_index()
-    risk = compute_land_risk(land, case_index=case_index)
-    state = _register_states(land, case_index=case_index)
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
     ownership = _ownership_history(land, state["mutations"])
     timeline = build_timeline(land, state["encumbrances"], state["mutations"],
                              state["court_cases"], risk=risk)
@@ -2030,9 +2069,10 @@ def generate_land_verification_report(req: ReportCreate, user: Dict[str, Any] = 
     document_id = _text(req.document_id) or land.get("reference_record_id") or ""
     if document_id:
         _assert_evidence_document(document_id, user)
+    registers = _land_register_rows(land)
     case_index = _court_case_index()
-    risk = compute_land_risk(land, case_index=case_index)
-    state = _register_states(land, case_index=case_index)
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
     now = _now()
     active_cases = state["active_court_cases"]
     highest_litigation_severity = "HIGH" if active_cases else ("INFO" if state["court_cases"] else "NONE")
