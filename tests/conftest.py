@@ -168,3 +168,28 @@ def insert_court_case():
     with server.get_db() as db:
         for cid in inserted:
             db.execute("DELETE FROM land_court_cases WHERE id=?", (cid,))
+
+
+@pytest.fixture
+def query_counter(monkeypatch):
+    """Count + classify database queries issued through server.DBConnection.
+
+    Tests seed first, then reset the counters before the request under
+    measurement, so setup traffic never pollutes the numbers.
+    """
+    import server
+
+    state = {"queries": 0, "ddl": 0, "sql": []}
+    original = server.DBConnection.execute
+
+    def counting_execute(self, query, params=()):
+        statement = " ".join(str(query).split())
+        upper = statement.upper()
+        if upper.startswith(("CREATE", "ALTER", "DROP")):
+            state["ddl"] += 1
+        state["queries"] += 1
+        state["sql"].append(upper)
+        return original(self, query, params)
+
+    monkeypatch.setattr(server.DBConnection, "execute", counting_execute)
+    return state

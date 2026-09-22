@@ -58,7 +58,20 @@ CREATE TABLE IF NOT EXISTS land_court_cases (
 """
 
 
+_schema_ready = False
+
+
 def ensure_schema() -> None:
+    """Create the register schema once per process.
+
+    DDL (CREATE TABLE / CREATE INDEX) must never run inside a user request on a
+    large database — CREATE INDEX can block for seconds (the request-time index
+    bottleneck the Land Intelligence loading fix addressed). The flag turns
+    every later call, including those inside request paths, into a no-op.
+    """
+    global _schema_ready
+    if _schema_ready:
+        return
     with get_db() as db:
         db.execute(_SCHEMA)
         try:
@@ -67,6 +80,7 @@ def ensure_schema() -> None:
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_land_cases_case_number ON land_court_cases(case_number)")
         except Exception:
             pass
+    _schema_ready = True
 
 
 def _s(value: Any) -> str:

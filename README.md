@@ -163,6 +163,32 @@ POST                /api/admin/data-management/restore            (admin only)
 `documents` gaining `land_context` and `review-action` returning an optional
 `land_risk_warning` are the only changes to existing APIs; both are additive.
 
+### Performance behaviour (compatibility notes)
+
+- `GET /api/audit` is SQL-paginated: `limit` (default 50, max 500), `offset`,
+  `q`, `action`, `username` and `date_from`/`date_to` (YYYY-MM-DD, UTC). The
+  response keeps the `audit` key and adds `total`/`limit`/`offset`; the whole
+  table is never returned.
+- `GET /api/documents` returns a light projection for lists — no
+  `ocr_text`/`cleaned_ocr_text`/`original_fields` (the review UI loads raw OCR
+  from the document detail endpoint, which is unchanged) — with
+  `limit` (default 500, max 1000), `offset` and `total`. RBAC, search and
+  filters are unchanged.
+- Land-record list, risk review and detail batch the encumbrance/mutation/
+  litigation registers into one read per request (query counts are constant
+  regardless of portfolio size) and every heavy section of the land drawer
+  except the audit trail renders from that single load; administrators get the
+  audit trail fetched right after first paint. `GET /api/land-records/{id}`
+  accepts `include=` (comma-separated sections) and returns every section when
+  omitted, so existing consumers are unaffected.
+- All schema/index DDL runs at startup (`init_db` plus the flag-guarded
+  `ensure_*` migrations); no request path executes DDL. Development runs log
+  one `[PERF]` line per instrumented request (total/db/queries/stages);
+  production (APP_ENV=production) logs nothing.
+- `scripts/perf_probe.py` builds a synthetic benchmark database and measures
+  the hot endpoints (wall time, query count, payload size) for before/after
+  comparisons.
+
 ## Routes
 
 ### Mapping UI

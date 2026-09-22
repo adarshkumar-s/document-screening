@@ -338,9 +338,30 @@
   // LAND RECORD DETAIL (Phases 8: single detail, all sections)
   // =========================================================================
   async function openLandDetail(landId) {
-    const d = await api(`/api/land-records/${encodeURIComponent(landId)}`);
+    // First paint carries identity, owner, risk summary and the register
+    // summaries. The audit trail (a separate table scan) is fetched right
+    // after render so the expensive panel never blocks the initial view.
+    const include = 'documents,ownership,mutations,encumbrances,litigation,timeline';
+    const d = await api(`/api/land-records/${encodeURIComponent(landId)}?include=${include}`);
     S.detail = d;
     renderDetail();
+    if (role() === 'ADMIN') loadLandAudit(d.land_id);
+  }
+
+  async function loadLandAudit(landId) {
+    const box = $('liAuditSection');
+    if (!box) return;
+    try {
+      const d = await api(`/api/land-records/${encodeURIComponent(landId)}?include=audit`);
+      const entries = (d.audit && d.audit.restricted) ? null : (d.audit || []);
+      box.innerHTML = entries
+        ? `<ul class="li-history">${entries.slice(0, 15).map((entry) => `
+            <li class="li-history-item"><div class="li-history-year">${new Date((entry.ts || 0) * 1000).toLocaleDateString()}</div>
+            <div><b>${esc(entry.action)}</b> <span class="li-sub">${esc(entry.username)}</span><div class="li-sub">${esc(entry.detail)}</div></div></li>`).join('') || `<li class="li-empty">${esc(t('noData'))}</li>`}</ul>`
+        : `<div class="li-sub">🔐 The full audit trail is available to administrators.</div>`;
+    } catch (error) {
+      box.innerHTML = `<div class="li-sub">Audit trail unavailable: ${esc(error.message)}</div>`;
+    }
   }
 
   function evidenceItem(item) {
@@ -434,11 +455,7 @@
     const why = (risk.why || []).length && risk.why[0] !== 'No review signals recorded'
       ? `<div class="li-why"><span class="li-why-title">${esc(t('reasonsIntro'))}</span><ul>${(risk.why || []).slice(0, 5).map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul></div>`
       : '';
-    const audit = (d.audit && d.audit.restricted)
-      ? `<div class="li-sub">🔐 ${esc(d.audit.reason)}</div>`
-      : `<ul class="li-history">${(d.audit || []).slice(0, 15).map((entry) => `
-          <li class="li-history-item"><div class="li-history-year">${new Date((entry.ts || 0) * 1000).toLocaleDateString()}</div>
-          <div><b>${esc(entry.action)}</b> <span class="li-sub">${esc(entry.username)}</span><div class="li-sub">${esc(entry.detail)}</div></div></li>`).join('') || `<li class="li-empty">${esc(t('noData'))}</li>`}</ul>`;
+    const audit = '<div id="liAuditSection" class="li-sub">Loading audit trail…</div>';
 
     root.innerHTML = `
       <button class="btn ghost" id="liDetailBack" style="padding:4px 10px;font-size:12px">← ${esc(t('back'))}</button>

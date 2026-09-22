@@ -221,6 +221,11 @@ def _demo_mutation(mut_id: str, scenario: str, *, mutation_no: str, survey: str,
     with get_db() as db:
         if db.execute("SELECT 1 FROM land_mutations WHERE id=?", (mut_id,)).fetchone():
             return False
+        # mutation_no is UNIQUE across the register: if the number is taken by
+        # any row we do not own, skip cleanly. (Seeding must never modify or
+        # delete a row it did not create.)
+        if db.execute("SELECT 1 FROM land_mutations WHERE mutation_no=?", (mutation_no,)).fetchone():
+            return False
         db.execute(
             """INSERT INTO land_mutations
                (id, mutation_no, property_id, survey_number, khasra_number, village, tehsil, district,
@@ -335,7 +340,7 @@ def _seed_document_scenarios(tally: _Tally) -> None:
         year="2019", area="3.20 ha", status="APPROVED", father="Hari Sharma")
     doc("S2", "DEMO-S2-DOC2", owner="Amit Sharma", survey="45/2", village="Barkheda",
         year="2023", area="3.20 ha", status="APPROVED", father="Ram Swaroop Sharma", doc_type="Sale Deed")
-    mut("S2", "DEMO-MUT-S2", mutation_no="M-2023-0001", survey="45/2", village="Barkheda",
+    mut("S2", "DEMO-MUT-S2", mutation_no="DEMO-M-2023-0001", survey="45/2", village="Barkheda",
         previous_owner="Ram Swaroop Sharma", new_owner="Amit Sharma", status="COMPLETED",
         deed_no="REG-2019-000342", deed_date="2023-02-10",
         notes="Registered sale deed verified; ownership transferred.")
@@ -370,7 +375,7 @@ def _seed_document_scenarios(tally: _Tally) -> None:
         year="2020", area="0.80 ha", status="APPROVED")
     doc("S7", "DEMO-S7-DOC2", owner="Amit Sharma", survey="207", village="Ambedarpur",
         year="2024", area="0.80 ha", status="APPROVED", doc_type="Sale Deed")
-    mut("S7", "DEMO-MUT-S7", mutation_no="M-2026-0012", survey="207", village="Ambedarpur",
+    mut("S7", "DEMO-MUT-S7", mutation_no="DEMO-M-2026-0012", survey="207", village="Ambedarpur",
         previous_owner="Ram Swaroop Sharma", new_owner="Amit Sharma", status="UNDER_REVIEW",
         deed_no="REG-2024-000518", deed_date="2024-08-19")
 
@@ -379,7 +384,7 @@ def _seed_document_scenarios(tally: _Tally) -> None:
         year="2020", area="1.20 ha", status="APPROVED")
     doc("S8", "DEMO-S8-DOC2", owner="Suresh Kumar", survey="208", village="Barkheda",
         year="2023", area="1.20 ha", status="APPROVED")
-    mut("S8", "DEMO-MUT-S8", mutation_no="M-2024-0002", survey="208", village="Barkheda",
+    mut("S8", "DEMO-MUT-S8", mutation_no="DEMO-M-2024-0002", survey="208", village="Barkheda",
         previous_owner="Om Prakash", new_owner="Suresh Kumar", status="REJECTED",
         deed_date="2023-09-02", notes="Rejected: sale deed signature could not be verified against the original.")
 
@@ -418,7 +423,7 @@ def _seed_litigation_scenarios(tally: _Tally) -> None:
         year="2019", area="1.60 ha", status="APPROVED", father="Sunder Lal")
     doc("S11", "DEMO-S11-DOC2", owner="Badri Narayan", survey="311", village="Jayantipur",
         year="2024", area="1.60 ha", status="APPROVED", father="Raghunath", doc_type="Sale Deed")
-    mut("S11", "DEMO-MUT-S11", mutation_no="M-2024-0007", survey="311", village="Jayantipur",
+    mut("S11", "DEMO-MUT-S11", mutation_no="DEMO-M-2024-0007", survey="311", village="Jayantipur",
         previous_owner="Kishan Lal Yadav", new_owner="Badri Narayan", status="UNDER_REVIEW",
         deed_no="REG-2024-000871", deed_date="2024-05-12",
         notes="Sale deed registered while a title suit over the same survey number is pending.")
@@ -458,7 +463,7 @@ def _seed_litigation_scenarios(tally: _Tally) -> None:
         year="2018", area="2.40 ha", status="APPROVED", father="Shivdhar" )
     doc("S14", "DEMO-S14-DOC2", owner="Rekha Singh", survey="314", village="Sonbarsa",
         year="2022", area="2.40 ha", status="APPROVED", father="Gayatri Devi", doc_type="Sale Deed")
-    mut("S14", "DEMO-MUT-S14", mutation_no="M-2022-0004", survey="314", village="Sonbarsa",
+    mut("S14", "DEMO-MUT-S14", mutation_no="DEMO-M-2022-0004", survey="314", village="Sonbarsa",
         previous_owner="Gayatri Devi", new_owner="Rekha Singh", status="COMPLETED",
         reason="COURT_DECREE", deed_no="REG-2022-000119", deed_date="2022-03-09",
         notes="Mutation given effect in compliance with the civil court decree of 2021-12-10.")
@@ -478,7 +483,7 @@ def _seed_litigation_scenarios(tally: _Tally) -> None:
     enc("S15", "DEMO-ENC-S15", survey="315", village="Amanpur", lender="Sindhu Finance Ltd",
         reference="SFL/MORT/2018/DEMO-77", amount=600000.0, start="2018-04-01", release="2020-09-30",
         status="RELEASED", owner="Mohd. Irfan")
-    mut("S15", "DEMO-MUT-S15", mutation_no="M-2021-0011", survey="315", village="Amanpur",
+    mut("S15", "DEMO-MUT-S15", mutation_no="DEMO-M-2021-0011", survey="315", village="Amanpur",
         previous_owner="Mohd. Irfan", new_owner="Shabnam Begum", status="COMPLETED",
         deed_no="REG-2021-000233", deed_date="2021-01-20",
         notes="Transfer after the compromise decree and after the mortgage was released.")
@@ -496,7 +501,7 @@ def _seed_litigation_scenarios(tally: _Tally) -> None:
     enc("S16", "DEMO-ENC-S16", survey="316", village="Bheluwadi", lender="Kaveri Urban Co-op Bank",
         reference="KUCB/LN/2023/DEMO-903", amount=2100000.0, start="2023-06-14", status="ACTIVE",
         owner="Virendra Pratap")
-    mut("S16", "DEMO-MUT-S16", mutation_no="M-2023-0021", survey="316", village="Bheluwadi",
+    mut("S16", "DEMO-MUT-S16", mutation_no="DEMO-M-2023-0021", survey="316", village="Bheluwadi",
         previous_owner="Virendra Pratap", new_owner="Ashok Kumar Sahu", status="REJECTED",
         deed_no="REG-2023-000644", deed_date="2023-07-02",
         notes="Rejected: no lender consent for transfer of mortgaged land; title suit withdrawn but not re-filed.")
