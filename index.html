@@ -420,7 +420,7 @@
               <button type="button" class="btn-chip" onclick="submitAssistantQuestion('Show low-confidence records')">Show low-confidence records</button>
             </div>
 
-            <form id="assistantForm" onsubmit="handleAssistantSubmit(event)">
+            <form id="assistantForm" action="javascript:void(0)" onsubmit="handleAssistantSubmit(event); return false;">
               <div class="assistant-input-group">
                 <input
                   type="text"
