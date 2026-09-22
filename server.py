@@ -1,3 +1,4 @@
+import sys
 import os
 import io
 import time
@@ -488,6 +489,15 @@ def init_db():
                 db.execute(index_statement)
             except Exception as exc:
                 print(f"[DB INDEX WARNING] {exc}")
+
+# Super-Assistant tables: created at startup, never inside a request. This
+# runs after init_db's transaction has committed so the second connection
+# cannot hit "database is locked"; on stderr to keep stdout machine-readable.
+try:
+    import sa_agent
+    sa_agent._ensure_tables()
+except Exception as exc:
+    print(f"[SA TABLES WARNING] {exc}", file=sys.stderr)
 
 init_db()
 
