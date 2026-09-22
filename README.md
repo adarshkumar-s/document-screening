@@ -100,12 +100,40 @@ property resolution).
   manifest, writes an automatic safety copy of the current data first, then
   restores, verifies counts, and audits every step. Member sanitisation
   rejects path traversal; RBAC rejects non-admins with 403.
-- **Demo scenarios** — ten deterministic, admin-governed fixtures
-  (`POST /api/admin/demo/seed`) covering clean records, valid mutations,
-  active encumbrances, ownership changes without mutations, conflicts, area
-  jumps, pending/rejected mutations, low-quality OCR and duplicates. All demo
-  artifacts are tagged and removable via `DELETE /api/admin/demo/data`
-  without touching production data.
+- **Court cases / litigation register** — an audited register of court cases
+  keyed to the same survey+village identity as every other land surface
+  (`court_cases.py`): case number, type (CIVIL/CRIMINAL/REVENUE/POSSESSION/
+  TITLE/OTHER), court, parties, filing and outcome dates, relief, decision
+  summary and evidence documents. Statuses are ACTIVE / DECIDED / SETTLED /
+  WITHDRAWN; closing and amending are RBAC-governed and audited
+  (`COURT_CASE_CREATED`, `COURT_CASE_UPDATED`, `COURT_CASE_CLOSED`), and the
+  register is searchable by survey, village, status and free text.
+- **Litigation in the risk engine** — an active case is a HIGH signal
+  (`ACTIVE_LITIGATION`), a transfer recorded while a case was pending raises
+  `TRANSFER_DURING_LITIGATION`, and closed cases remain visible as
+  `CLOSED_LITIGATION_ON_RECORD` info. Every verdict carries a human-readable
+  `why` list and per-signal evidence (register rows, not a red badge).
+- **Litigation everywhere else** — the land drawer gains a Court Cases /
+  Litigation card, a register-derived parcel timeline (documents, mutations,
+  encumbrances incl. releases, case filings and outcomes, current status),
+  and a `RUN FULL DUE DILIGENCE` brief that aggregates ownership, mutations,
+  encumbrances, litigation, document differences, risk and next actions.
+  Records list/risk-review gain litigation and mutation filters, and the
+  verification report (HTML + PDF) gains a COURT CASES / LITIGATION section.
+- **Demo data system (S1–S16)** — a deterministic, admin-governed dataset of
+  **16 land records, 29 synthetic documents, 7 mutations, 4 encumbrances and
+  6 court cases** (46 rows). S1–S10 are the original catalogue (clean record,
+  valid mutation, active encumbrance, ownership change without mutation,
+  conflicting history, area jump, pending/rejected mutation, low-quality OCR,
+  duplicates); S11–S16 add litigation: active title suit with a transfer
+  inside the pending period (S11), possession dispute over mortgaged land
+  (S12), a revenue dispute (S13), decided (S14), settled (S15) and withdrawn
+  (S16) proceedings. Everything is interconnected — opening S11 shows its
+  case, risk signals, timeline and report without creating anything.
+  Seeding is insert-if-absent (a second run creates 0 rows), and the same
+  service backs the admin UI and the CLI (`scripts/seed_demo_data.py`):
+  `--check-only` reports without writing, `--yes` is required for any write,
+  `--clear --yes` removes demo-tagged rows only.
 
 ### New API surface
 
@@ -117,13 +145,17 @@ GET/POST            /api/mutations
 GET                 /api/mutations/{id}            (+ /events)
 POST                /api/mutations/{id}/review     (verifier/admin)
 POST                /api/mutations/{id}/complete   (admin only; safety gate)
-GET                 /api/land-records              (paginated, role-scoped)
-GET                 /api/land-records/{land_id}    (detail; risk via /risk)
-GET                 /api/land-records/risk-review  (verifier/admin)
-GET                 /api/land-records/{land_id}/encumbrances | /mutations
+GET                 /api/land-records              (paginated; encumbrance/litigation/mutation filters)
+GET                 /api/land-records/{land_id}    (detail; risk via /risk, litigation + timeline included)
+GET                 /api/land-records/risk-review  (verifier/admin; q/village/litigation filters)
+GET                 /api/land-records/{land_id}/encumbrances | /mutations | /litigation | /litigation-risk
+POST                /api/land-records/{land_id}/due-diligence   (staff; audited aggregate brief)
 POST                /api/reports/land-verification
-GET                 /api/reports/land-verification/{ref}(.qr.png)
-GET/POST/DELETE     /api/admin/demo/scenarios | /seed | /data   (admin only)
+GET                 /api/reports/land-verification/{ref}(.qr.png)(/report.pdf)
+GET/POST/PUT        /api/court-cases               (register search / create / amend)
+GET                 /api/court-cases/{id}          (+ POST /close  verifier/admin)
+GET                 /api/land-records/{land_id}/litigation       (parcel-scoped summary)
+GET/POST/DELETE     /api/admin/demo/scenarios | /preview | /seed | /data   (admin only)
 GET                 /api/admin/data-management/backup(/manifest) (admin only)
 POST                /api/admin/data-management/restore            (admin only)
 ```
@@ -153,6 +185,33 @@ POST                /api/admin/data-management/restore            (admin only)
 All existing `/api/auth`, `/api/documents`, OCR, validation, task, administrator, AI-governance, comparison, and audit routes remain owned by `server.py` and continue to be available through `main:app`.
 
 The compatibility property/workflow APIs used by existing governed paths remain available inside the mapping support layer; they are not the replacement map UI or its data source.
+
+## Demo data
+
+The demo dataset exists for demonstrations and UAT. It is **never** loaded
+automatically: an administrator must ask for it, from the portal
+(**Administration → Data Management → Check / Load / Remove demo data**,
+with a typed `LOAD DEMO` / `REMOVE DEMO` confirmation and the expected
+counts shown first) or from the command line:
+
+```bash
+python scripts/seed_demo_data.py --check-only   # read-only report (exit 1 = incomplete)
+python scripts/seed_demo_data.py --yes          # create the dataset (idempotent)
+python scripts/seed_demo_data.py --clear --yes  # remove demo rows only
+python scripts/seed_demo_data.py --json         # machine-readable output
+```
+
+Every artifact carries an unmistakable demo identity: documents carry
+`metadata.demo = true` plus `DEMO-` ids, and register rows use `DEMO-` id
+prefixes. Seeding is insert-if-absent, so running it twice creates 0 new rows
+and never overwrites existing demo or real rows; clearing deletes demo-tagged
+rows only. Both actions are written to the audit trail
+(`DEMO_DATA_SEEDED` / `DEMO_DATA_CLEARED`), and every write path — HTTP and
+CLI — refuses outright when `APP_ENV=production`. There is no override flag.
+
+To inspect the data after seeding: open **Land Intelligence → Records** and
+filter by litigation status, or query the API directly, e.g.
+`GET /api/court-cases?survey=311&village=Jayantipur`.
 
 ## Data boundary and safety
 
@@ -187,6 +246,16 @@ The container runs `main:app`.
 
 ```bash
 python -m pytest -q
+python -m compileall -q .
+node --check map.js portal-ui.js js/app.js js/land-intel.js js/admin-assistant.js
 ```
 
 The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. JavaScript syntax checks use `node --check map.js` and the existing portal scripts.
+
+Litigation and demo coverage lives in `tests/test_court_cases.py` (register
+CRUD, search, closure rules, RBAC, audit), `tests/test_litigation_risk.py`
+(risk integration, explainable signals, shared-query grouping, timeline, due
+diligence), `tests/test_demo_scenarios.py` (S1–S16 outcomes, preview,
+idempotency, real-data protection, production refusal) and
+`tests/test_demo_cli.py` (the CLI against a throwaway database, including the
+production refusal exit code).

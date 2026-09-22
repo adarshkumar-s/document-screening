@@ -109,6 +109,35 @@
       deedNo: 'Deed no. (optional)',
       deedDate: 'Deed date (YYYY-MM-DD, optional)',
       docIds: 'Document IDs to attach (comma separated, optional)',
+      // litigation, timeline, due diligence and demo data (added surfaces)
+      litigationSection: '⚖️ Court cases / litigation',
+      litigationNone: 'No court case registered against this parcel in this system.',
+      litigationNotSearch: 'Registered cases only — not a court-certified litigation search.',
+      litigationActive: '🔴 ACTIVE LITIGATION',
+      litigationPrior: '🟡 PRIOR LITIGATION',
+      litigationClear: '🟢 NO COURT CASES',
+      timelineTitle: '📅 Parcel timeline',
+      timelineNote: 'Built from the documents, mutation, encumbrance and litigation registers — not hardcoded.',
+      reasonsIntro: 'Why this risk level:',
+      dueDiligence: '🔎 Run full due diligence',
+      dueDiligenceTitle: 'Full due diligence',
+      nextActions: 'What the reviewer must do next',
+      inconsistencies: 'Inconsistencies',
+      demoTitle: 'Demo data (deterministic scenarios S1–S16)',
+      demoBody: 'Synthetic land records, documents, mutations, encumbrances and court cases for demonstrations and UAT. Demo rows are tagged (DEMO- ids, metadata.demo) so loading and removing them can never touch real records. Disabled automatically when the server runs with APP_ENV=production.',
+      demoCheck: '🔍 Check demo data',
+      demoLoad: '⬇ Load demo data',
+      demoRemove: '🗑 Remove demo data',
+      demoExpected: 'Expected dataset',
+      demoPresent: 'Currently present',
+      demoWouldCreate: 'Would create now',
+      demoAlready: 'Already loaded (skipped)',
+      demoComplete: 'Demo dataset already complete — loading again creates nothing.',
+      demoLoadWord: 'LOAD DEMO',
+      demoRemoveWord: 'REMOVE DEMO',
+      demoLoadPrompt: 'This inserts the demo dataset (real records are never overwritten). Type LOAD DEMO to confirm.',
+      demoRemovePrompt: 'This deletes ONLY demo-tagged rows (real records stay). Type REMOVE DEMO to confirm.',
+      demoBlocked: 'Blocked: this instance runs in production, where demo seeding is refused.',
       // data management
       dataManagement: 'Data Management',
       backupTitle: 'Full backup',
@@ -203,6 +232,17 @@
     if (key === 'NONE') return `<span class="li-chip li-clear">🟢 ${t('noActiveEncumbrance')}</span>`;
     return `<span class="li-chip li-muted">—</span>`;
   }
+  function filterOptions(name, entries, selected) {
+    return entries.map(([value, label]) => `<option value="${esc(value)}" ${String(selected || '') === value ? 'selected' : ''}>${esc(label)}</option>`).join('');
+  }
+
+  function litigationChip(land) {
+    const active = land.active_litigation_count || 0;
+    if (active) return `<span class="li-chip li-high" title="${active} active case(s)">🔴 ${active} active</span>`;
+    if ((land.court_case_count || 0) > 0) return `<span class="li-chip li-review" title="Closed case(s) on record">🟡 ${land.court_case_count} closed</span>`;
+    return '<span class="li-chip li-clear">🟢 none</span>';
+  }
+
   function statusPill(status) {
     const key = String(status || '').toUpperCase();
     const map = {
@@ -226,8 +266,11 @@
   // SUB-TAB: RECORDS
   // =========================================================================
   async function loadLands() {
-    const q = encodeURIComponent(S.landQuery || '');
-    const d = await api(`/api/land-records?q=${q}&limit=50`);
+    const params = new URLSearchParams({ q: S.landQuery || '', limit: '50' });
+    if (S.landEncumbrance) params.set('encumbrance', S.landEncumbrance);
+    if (S.landLitigation) params.set('litigation', S.landLitigation);
+    if (S.landMutation) params.set('mutation', S.landMutation);
+    const d = await api(`/api/land-records?${params.toString()}`);
     S.lands = d.land_records || [];
     S.landsTotal = d.total || 0;
     renderRecords();
@@ -244,21 +287,41 @@
         <td>${dash(land.current_owner)}</td>
         <td>${dash(land.area)}</td>
         <td>${encChip(land.encumbrance_status)}</td>
-        <td>${land.pending_mutation_count ? `<span class="li-chip li-review">${land.pending_mutation_count} pending</span>` : '<span class="li-chip li-clear">—</span>'}</td>
+        <td>${litigationChip(land)}</td>
+        <td>${land.pending_mutation_count ? `<span class="li-chip li-review">${land.pending_mutation_count} pending</span>` : `<span class="li-chip li-clear">${esc(land.mutation_status === 'NONE' ? '—' : (land.mutation_status || '—'))}</span>`}</td>
         <td style="text-align:right">
           <button class="btn saffron" style="padding:4px 10px;font-size:12px" data-land-open="${esc(land.land_id)}">Open</button>
         </td>
       </tr>`).join('');
     root.innerHTML = `
       <div class="li-toolbar">
-        <input id="liLandSearch" type="search" placeholder="${esc(t('search'))}" value="${esc(S.landQuery)}" style="max-width:320px">
+        <input id="liLandSearch" type="search" placeholder="${esc(t('search'))}" value="${esc(S.landQuery)}" style="max-width:280px">
+        <select id="liFilterEncumbrance" class="li-filter" title="Encumbrance status">
+          ${filterOptions('encumbrance', [['', 'Any encumbrance'], ['ACTIVE', '🔴 Active encumbrance'], ['CLEAR', '🟢 Encumbrance released'], ['NONE', 'No encumbrance on file']], S.landEncumbrance)}
+        </select>
+        <select id="liFilterLitigation" class="li-filter" title="Litigation status">
+          ${filterOptions('litigation', [['', 'Any litigation'], ['ACTIVE', '🔴 Active court case'], ['CLOSED', '🟡 Closed case on record'], ['NONE', '🟢 No court cases']], S.landLitigation)}
+        </select>
+        <select id="liFilterMutation" class="li-filter" title="Mutation status">
+          ${filterOptions('mutation', [['', 'Any mutation status'], ['RECEIVED', 'Received'], ['UNDER_REVIEW', 'Under review'], ['VERIFIED', 'Verified'], ['COMPLETED', 'Completed'], ['REJECTED', 'Rejected']], S.landMutation)}
+        </select>
         <span class="li-count">${S.landsTotal} land ${S.landsTotal === 1 ? 'record' : 'records'}</span>
       </div>
       <div style="overflow-x:auto">
       <table class="gov-table">
-        <thead><tr><th>Land ID</th><th>${esc(t('surveyKhasra'))}</th><th>${esc(t('village'))}</th><th>${esc(t('currentOwner'))}</th><th>${esc(t('area'))}</th><th>${esc(t('encumbrance'))}</th><th>Mutations</th><th></th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="8" class="li-empty">${esc(t('noData'))}</td></tr>`}</tbody>
+        <thead><tr><th>Land ID</th><th>${esc(t('surveyKhasra'))}</th><th>${esc(t('village'))}</th><th>${esc(t('currentOwner'))}</th><th>${esc(t('area'))}</th><th>${esc(t('encumbrance'))}</th><th>Litigation</th><th>Mutations</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="9" class="li-empty">${esc(t('noData'))}</td></tr>`}</tbody>
       </table></div>`;
+    ['liFilterEncumbrance', 'liFilterLitigation', 'liFilterMutation'].forEach((id) => {
+      const select = $(id);
+      if (!select) return;
+      select.addEventListener('change', () => {
+        if (id === 'liFilterEncumbrance') S.landEncumbrance = select.value;
+        if (id === 'liFilterLitigation') S.landLitigation = select.value;
+        if (id === 'liFilterMutation') S.landMutation = select.value;
+        loadLands().catch(alertError);
+      });
+    });
     const search = $('liLandSearch');
     if (search) {
       search.addEventListener('input', () => {
@@ -286,6 +349,7 @@
     if (item.type === 'document') return `<span class="li-evidence mono" data-doc="${ref}">📄 ${ref}</span>`;
     if (item.type === 'encumbrance') return `<span class="li-evidence mono">🏦 ${esc(item.label || ref)}</span>`;
     if (item.type === 'mutation') return `<span class="li-evidence mono">🔁 ${esc(item.label || ref)}</span>`;
+    if (item.type === 'court_case') return `<span class="li-evidence mono">⚖️ ${esc(item.label || ref)}</span>`;
     return `<span class="li-evidence mono">${esc(item.label || ref)}</span>`;
   }
 
@@ -332,6 +396,44 @@
         <div><span class="mono">${esc(doc.id)}</span> — ${dash(doc.filename)}
           <div class="li-sub">${dash(doc.doc_type)} · ${dash(doc.owner)} · ${dash(doc.year)}</div></div>
       </li>`).join('') || `<li class="li-empty">${esc(t('noData'))}</li>`;
+    const lit = d.litigation || {};
+    const litCases = lit.cases || [];
+    const litigationTone = (lit.active_count || 0) > 0 ? 'li-high' : (litCases.length ? 'li-review' : 'li-clear');
+    const litigationLabel = (lit.active_count || 0) > 0 ? t('litigationActive') : (litCases.length ? t('litigationPrior') : t('litigationClear'));
+    const litigationRows = litCases.map((c) => `
+      <li class="li-history-item">
+        <div class="li-history-year">${esc(c.filed_date || '—')}</div>
+        <div>
+          <b>${dash(c.case_number)}</b> <span class="li-chip ${String(c.status).toUpperCase() === 'ACTIVE' ? 'li-high' : 'li-clear'}">${esc(c.status || '—')}</span>
+          <div class="li-sub">${dash(c.case_type)} · ${dash(c.court_name)}</div>
+          <div class="li-sub">Parties: ${dash(c.parties)}</div>
+          ${c.decision_summary ? `<div class="li-sub">Outcome: ${esc(c.decision_summary)}</div>` : ''}
+          ${c.relief_sought ? `<div class="li-sub">Relief: ${esc(c.relief_sought)}</div>` : ''}
+          ${(c.evidence_doc_ids && c.evidence_doc_ids.length) ? `<div class="li-evidence-wrap">${c.evidence_doc_ids.map((id) => evidenceItem({ type: 'document', ref: id })).join('')}</div>` : ''}
+        </div>
+      </li>`).join('');
+    const litigationCard = `
+      <div class="li-card${(lit.active_count || 0) ? ' li-card-risk' : ''}">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+          <h4>${esc(t('litigationSection'))}</h4>
+          <span class="li-chip ${litigationTone}">${esc(litigationLabel)}</span>
+        </div>
+        ${litigationRows ? `<ul class="li-history">${litigationRows}</ul>` : `<div class="li-empty">${esc(t('litigationNone'))}</div>`}
+        <div class="li-sub" style="margin-top:8px">${esc(lit.disclaimer || t('litigationNotSearch'))}</div>
+      </div>`;
+    const timeline = (d.timeline || []).map((event) => `
+      <li class="li-timeline-item li-timeline-${esc(String(event.kind).toLowerCase())}">
+        <div class="li-timeline-dot" aria-hidden="true"></div>
+        <div class="li-timeline-when">${event.year ? esc(String(event.year)) : '•'}</div>
+        <div>
+          <b>${dash(event.title)}</b> ${statusPill(event.status)}
+          <div class="li-sub">${dash(event.detail)}</div>
+          <div class="li-sub li-timeline-refs">${Object.keys(event.refs || {}).map((key) => `<span class="li-evidence mono">${esc(key.replace(/_id$/, ''))}: ${esc(event.refs[key])}</span>`).join('')}</div>
+        </div>
+      </li>`).join('');
+    const why = (risk.why || []).length && risk.why[0] !== 'No review signals recorded'
+      ? `<div class="li-why"><span class="li-why-title">${esc(t('reasonsIntro'))}</span><ul>${(risk.why || []).slice(0, 5).map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul></div>`
+      : '';
     const audit = (d.audit && d.audit.restricted)
       ? `<div class="li-sub">🔐 ${esc(d.audit.reason)}</div>`
       : `<ul class="li-history">${(d.audit || []).slice(0, 15).map((entry) => `
@@ -349,6 +451,7 @@
           ${verdictChip(risk.verdict)}
           ${encChip(d.encumbrances && d.encumbrances.length ? (d.encumbrances.some((e) => e.status === 'ACTIVE') ? 'ACTIVE' : 'CLEAR') : 'NONE')}
           <a class="btn ghost" style="padding:4px 10px;font-size:12px;text-decoration:none" href="${esc((d.map && d.map.url) || '/map')}">🗺 ${esc(t('openInMap'))}</a>
+          <button class="btn ghost" id="liDetailDueDiligence" style="padding:4px 10px;font-size:12px">${esc(t('dueDiligence'))}</button>
           ${isReviewer() ? `<button class="btn saffron" id="liDetailReport" style="padding:4px 10px;font-size:12px">${esc(t('generateReport'))}</button>` : ''}
         </div>
       </div>
@@ -381,13 +484,23 @@
         </div>
       </div>
       <div class="li-grid">
+        ${litigationCard}
+        <div class="li-card"><h4>${esc(t('timelineTitle'))}</h4>
+          <ol class="li-timeline">${timeline || `<li class="li-empty">${esc(t('noData'))}</li>`}</ol>
+          <div class="li-sub" style="margin-top:6px">${esc(t('timelineNote'))}</div>
+        </div>
+      </div>
+      <div class="li-grid">
         <div class="li-card"><h4>${esc(t('documentsSection'))}</h4><ul class="li-history">${documents}</ul></div>
         <div class="li-card"><h4>${esc(t('auditSection'))}</h4>${audit}</div>
-      </div>`;
+      </div>
+      <div id="liDueDiligenceResult" class="hidden"></div>`;
 
     $('liDetailBack').addEventListener('click', () => { S.detail = null; renderPanes(); });
     const reportBtn = $('liDetailReport');
     if (reportBtn) reportBtn.addEventListener('click', () => generateReport(d.land_id));
+    const ddBtn = $('liDetailDueDiligence');
+    if (ddBtn) ddBtn.addEventListener('click', () => runDueDiligence(d.land_id, ddBtn));
     root.querySelectorAll('[data-evidence]').forEach((btn) => {
       btn.addEventListener('click', () => window.open(`/?open_document=${encodeURIComponent(btn.dataset.evidence)}`, '_blank'));
     });
@@ -762,7 +875,7 @@
       <div class="li-mutation-card">
         <div class="li-mutation-head">
           <div>
-            <b>${dash(land.survey)} · ${dash(land.village)}</b> ${verdictChip(risk.verdict)}
+            <b>${dash(land.survey)} · ${dash(land.village)}</b> ${verdictChip(risk.verdict)} ${litigationChip(land)}
             <div class="li-sub">${dash(land.district)} · owner ${dash(land.current_owner)} · <span class="mono">${esc(land.land_id)}</span></div>
           </div>
           <div>
@@ -850,6 +963,62 @@
   // =========================================================================
   // WORKSPACE SHELL
   // =========================================================================
+  async function runDueDiligence(landId, button) {
+    const box = $('liDueDiligenceResult');
+    if (!box) return;
+    button.disabled = true;
+    box.classList.remove('hidden');
+    box.innerHTML = `<div class="li-card"><b>${esc(t('dueDiligence'))}…</b></div>`;
+    try {
+      const result = await api(`/api/land-records/${encodeURIComponent(landId)}/due-diligence`, { method: 'POST' });
+      box.innerHTML = renderDueDiligence(result);
+    } catch (error) {
+      box.innerHTML = `<div class="errorbox">${esc(error.message)}</div>`;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderDueDiligence(r) {
+    const checks = r.checks || {};
+    const row = (label, value) => `<div class="li-kv"><span>${esc(label)}</span><b>${dash(value)}</b></div>`;
+    const flags = ((checks.risk || {}).flags || []).map((flag) => `
+      <li class="li-flag li-flag-${esc(String(flag.severity).toLowerCase())}">
+        <div><b>${esc(flag.title)}</b> <code class="li-code">${esc(flag.code)}</code><div class="li-sub">${esc(flag.detail)}</div></div>
+      </li>`).join('') || '<li class="li-empty">🟢 No risk signals.</li>';
+    const differences = ((checks.documents || {}).differences || []).map((item) => `
+      <li><b>${esc(item.field.replace(/_/g, ' '))}</b>: ${item.values.map((value) => `<code class="li-code">${esc(value)}</code>`).join(' vs ')}</li>`).join('');
+    const nextActions = (r.next_actions || []).map((action) => `<li>${esc(action)}</li>`).join('');
+    const pair = (checks.documents || {}).comparison_pair;
+    return `
+      <div class="li-card li-dd-summary">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
+          <div><h4>${esc(t('dueDiligenceTitle'))}</h4><div class="li-sub">${esc(r.summary || '')}</div></div>
+          ${verdictChip(r.verdict)}
+        </div>
+        ${r.why && r.why[0] !== 'No review signals recorded' ? `<div class="li-why"><span class="li-why-title">${esc(t('reasonsIntro'))}</span><ul>${r.why.map((why) => `<li>${esc(why)}</li>`).join('')}</ul></div>` : ''}
+        <div class="li-grid" style="margin-top:10px">
+          <div>
+            ${row('Owner', (checks.ownership || {}).current_owner)}
+            ${row('Since', (checks.ownership || {}).since_year)}
+            ${row('Mutations', `${(checks.mutations || {}).count || 0} · ${(checks.mutations || {}).status || 'NONE'}`)}
+            ${row('Encumbrances', `${(checks.encumbrances || {}).count || 0} · ${(checks.encumbrances || {}).status || 'NONE'}`)}
+            ${row('Court cases', `${(checks.litigation || {}).case_count || 0} · ${(checks.litigation || {}).status || 'NONE'}`)}
+            ${row('Documents', (checks.documents || {}).count || 0)}
+          </div>
+          <div>
+            <h4 style="margin:0 0 4px">${esc(t('nextActions'))}</h4>
+            <ul class="li-flag-list">${nextActions}</ul>
+          </div>
+        </div>
+        <h4 style="margin:10px 0 4px">${esc(t('riskSection'))}</h4>
+        <ul class="li-flag-list">${flags}</ul>
+        ${differences ? `<h4 style="margin:10px 0 4px">${esc(t('inconsistencies'))}</h4><ul class="li-flag-list">${differences}</ul>` : ''}
+        ${pair ? `<div class="li-sub">Deep field-by-field OCR diffing stays on the existing comparison API: <code class="li-code">${esc(pair.endpoint)}</code> (${esc(pair.document_a)} vs ${esc(pair.document_b)}).</div>` : ''}
+        <div class="li-sub" style="margin-top:8px">${esc(r.disclaimer || '')}</div>
+      </div>`;
+  }
+
   function switchSub(sub) {
     S.sub = sub;
     renderPanes();
@@ -980,7 +1149,17 @@
     root.innerHTML = `
       <div class="card">
         <div class="card-header"><h3 class="card-title">${esc(t('dataManagement'))}</h3></div>
-        <div class="li-card">
+        <div class="li-card" id="liDemoCard">
+          <h4>${esc(t('demoTitle'))}</h4>
+          <p class="li-sub">${esc(t('demoBody'))}</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn ghost" id="liDemoCheck">${esc(t('demoCheck'))}</button>
+            <button class="btn saffron" id="liDemoLoad">${esc(t('demoLoad'))}</button>
+            <button class="btn danger" id="liDemoRemove">${esc(t('demoRemove'))}</button>
+          </div>
+          <div id="liDemoStatus" style="margin-top:10px"></div>
+        </div>
+        <div class="li-card" style="margin-top:12px">
           <h4>${esc(t('backupTitle'))}</h4>
           <p class="li-sub">${esc(t('backupBody'))}</p>
           <button class="btn saffron" id="liBackupBtn">${esc(t('downloadBackup'))}</button>
@@ -993,6 +1172,7 @@
           <div id="liRestoreMsg" class="hidden" style="margin-top:10px;font-size:12px"></div>
         </div>
       </div>`;
+    wireDemoData();
     $('liBackupBtn').addEventListener('click', async () => {
       try {
         const headers = {};
@@ -1031,6 +1211,68 @@
           : `⚠ ${esc(t('restoreVerifyFailed'))} ${esc((payload.verification && payload.verification.mismatches || []).join('; '))}`;
       } catch (error) { alertError(error); }
     });
+  }
+
+  // =========================================================================
+  // DEMO DATA (administrator only; audited and production-blocked server-side)
+  // =========================================================================
+  function demoCountTable(counts, title) {
+    const rows = ['land_records', 'documents', 'mutations', 'encumbrances', 'court_cases'].map((kind) =>
+      `<div class="li-kv"><span>${esc(kind.replace(/_/g, ' '))}</span><b>${esc(String(counts && counts[kind] != null ? counts[kind] : 0))}</b></div>`).join('');
+    return `<div class="li-card" style="background:#f8fafc"><b>${esc(title)}</b>${rows}</div>`;
+  }
+
+  async function refreshDemoStatus() {
+    const box = $('liDemoStatus');
+    if (!box) return;
+    box.innerHTML = '<div class="li-sub">Loading demo data status…</div>';
+    try {
+      const d = await api('/api/admin/demo/preview');
+      S.demoPreview = d;
+      const complete = d.complete
+        ? `<div class="li-chip li-clear">✅ ${esc(t('demoComplete'))}</div>`
+        : `<div class="li-chip li-review">${d.would_create} row(s) not yet loaded</div>`;
+      const blocked = d.production_blocked
+        ? `<div class="li-chip li-high" style="margin-top:6px">🔒 ${esc(t('demoBlocked'))}</div>` : '';
+      box.innerHTML = `
+        <div class="li-grid" style="gap:10px">
+          ${demoCountTable(d.dataset, t('demoExpected'))}
+          ${demoCountTable(d.present, t('demoPresent'))}
+        </div>
+        <div style="margin-top:8px">${complete}${blocked}</div>
+        <div class="li-sub" style="margin-top:6px">${esc(t('demoWouldCreate'))}: <b>${d.would_create}</b> · ${esc(t('demoAlready'))}: <b>${d.already_present}</b> · scenarios: <b>${d.scenario_count}</b></div>`;
+      const lock = !!d.production_blocked;
+      ['liDemoLoad', 'liDemoRemove'].forEach((id) => { const b = $(id); if (b) b.disabled = lock; });
+    } catch (error) {
+      box.innerHTML = `<div class="errorbox">${esc(error.message)}</div>`;
+    }
+  }
+
+  function wireDemoData() {
+    const check = $('liDemoCheck');
+    if (check) check.addEventListener('click', () => refreshDemoStatus());
+    const load = $('liDemoLoad');
+    if (load) load.addEventListener('click', async () => {
+      if (window.prompt(t('demoLoadPrompt')) !== t('demoLoadWord')) { alert('Cancelled — nothing was loaded.'); return; }
+      load.disabled = true;
+      try {
+        const result = await api('/api/admin/demo/seed', { method: 'POST', body: JSON.stringify({ scenario: 'all' }) });
+        alert(`Demo data loaded: ${result.created ? result.created.total : 0} row(s) created, ${Object.keys(result.skipped_artifacts || {}).length} scenario group(s) already present.`);
+        await refreshDemoStatus();
+      } catch (error) { alertError(error); } finally { load.disabled = false; }
+    });
+    const remove = $('liDemoRemove');
+    if (remove) remove.addEventListener('click', async () => {
+      if (window.prompt(t('demoRemovePrompt')) !== t('demoRemoveWord')) { alert('Cancelled — nothing was removed.'); return; }
+      remove.disabled = true;
+      try {
+        const result = await api('/api/admin/demo/data', { method: 'DELETE' });
+        const removed = result.removed || {};
+        alert(`Demo data removed: ${removed.documents || 0} documents, ${removed.mutations || 0} mutations, ${removed.encumbrances || 0} encumbrances, ${removed.court_cases || 0} court cases. Real records untouched.`);
+        await refreshDemoStatus();
+      } catch (error) { alertError(error); } finally { remove.disabled = false; }
+    });
+    refreshDemoStatus();
   }
 
   // =========================================================================
