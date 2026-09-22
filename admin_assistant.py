@@ -1000,12 +1000,28 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     try:
         from google.genai import types
         model_prompt = f"{FEATURE_KNOWLEDGE}\n{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=model_prompt,
-            config=types.GenerateContentConfig(temperature=0.15),
-        )
-        return {"response": (response.text or "").strip(), "records": records_found, "action_card": None}
+        model_candidates = [
+            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-2.5-flash",
+        ]
+        last_exc = None
+        for model in dict.fromkeys(x for x in model_candidates if x):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=model_prompt,
+                    config=types.GenerateContentConfig(temperature=0.15),
+                )
+                return {"response": (response.text or "").strip(), "records": records_found, "action_card": None}
+            except Exception as exc:
+                last_exc = exc
+                if "503" not in str(exc) and "UNAVAILABLE" not in str(exc):
+                    break
+                time.sleep(1.5)
+        return {"response": f"Database information is available, but all configured AI models are temporarily unavailable. Please retry shortly. Last error: {last_exc}", "records": records_found, "action_card": None}
     except Exception as exc:
         return {"response": f"Database information is available, but AI explanation is temporarily unavailable: {str(exc)}", "records": records_found, "action_card": None}
 
@@ -1042,8 +1058,21 @@ def build_system_briefing() -> str:
     try:
         from google.genai import types
         prompt = f"""{SYSTEM_INSTRUCTION}\nGenerate a concise administrator briefing in Markdown using only this data:\n{fallback}\nDo not invent numbers."""
-        res = client.models.generate_content(model="gemini-3.6-flash", contents=prompt, config=types.GenerateContentConfig(temperature=0.1))
-        return (res.text or fallback).strip()
+        for model in dict.fromkeys(x for x in [
+            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-2.5-flash",
+        ] if x):
+            try:
+                res = client.models.generate_content(model=model, contents=prompt, config=types.GenerateContentConfig(temperature=0.1))
+                return (res.text or fallback).strip()
+            except Exception as exc:
+                if "503" not in str(exc) and "UNAVAILABLE" not in str(exc):
+                    break
+                time.sleep(1.5)
+        return fallback
     except Exception:
         return fallback
 
