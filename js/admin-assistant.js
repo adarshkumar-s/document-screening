@@ -119,8 +119,8 @@ async function handleAssistantSubmit(event) {
     let body={query:query};
     // SA is a hidden mode trigger. "SA" uses the configured activation code;
     // "SA <code>" also works when the deployment uses a non-SA secret.
-    if(/^SA$/i.test(query) || /^SA\\s+.+/i.test(query)){
-      const code=/^SA\\s+(.+)/i.test(query) ? query.replace(/^SA\\s+/i,'') : 'SA';
+    if(/^SA$/i.test(query) || /^SA\s+.+/i.test(query)){
+      const code=/^SA\s+(.+)/i.test(query) ? query.replace(/^SA\s+/i,'') : 'SA';
       input.value="";
       await beginSaActivation(code);
       loading.style.display="none"; submitBtn.disabled=false; return;
@@ -485,3 +485,13 @@ async function decideAiProposal(id, decision, primary, secondary) {
     primary.disabled=false; if(secondary) secondary.disabled=false;
   }
 }
+
+
+// Bind the Admin Assistant form directly so Enter never depends on inline HTML handlers.
+document.addEventListener("DOMContentLoaded", () => {
+  const form = document.getElementById("assistantForm");
+  if (form && !form.dataset.assistantBound) {
+    form.dataset.assistantBound = "true";
+    form.addEventListener("submit", handleAssistantSubmit);
+  }
+});
