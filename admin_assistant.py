@@ -1000,13 +1000,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     try:
         from google.genai import types
         model_prompt = f"{FEATURE_KNOWLEDGE}\n{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
-        model_candidates = [
-            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
-            "gemini-3.8-flash",
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-2.5-flash",
-        ]
+        model_candidates = ["gemini-3.6-flash"]
         last_exc = None
         for model in dict.fromkeys(x for x in model_candidates if x):
             try:
@@ -1058,13 +1052,7 @@ def build_system_briefing() -> str:
     try:
         from google.genai import types
         prompt = f"""{SYSTEM_INSTRUCTION}\nGenerate a concise administrator briefing in Markdown using only this data:\n{fallback}\nDo not invent numbers."""
-        for model in dict.fromkeys(x for x in [
-            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
-            "gemini-3.8-flash",
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-2.5-flash",
-        ] if x):
+        for model in ["gemini-3.6-flash"]:
             try:
                 res = client.models.generate_content(model=model, contents=prompt, config=types.GenerateContentConfig(temperature=0.1))
                 return (res.text or fallback).strip()
