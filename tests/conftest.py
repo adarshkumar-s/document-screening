@@ -122,3 +122,49 @@ def insert_land_document():
         except Exception:
             pass
 
+
+@pytest.fixture
+def insert_court_case():
+    """Insert a court case straight into the litigation register (auto-cleaned).
+
+    Uses the register's own schema so tests exercise the same rows the API
+    produces. Ids default to a random hex so demo-wipe tests can prove that
+    non-DEMO rows survive.
+    """
+    import json
+    import time
+    import uuid
+
+    from court_cases import ensure_schema
+
+    ensure_schema()
+    inserted = []
+
+    def _insert(survey, village="Litigationpur", *, case_number=None, case_type="CIVIL",
+                 court_name="Court of the District Judge", filed_date="2022-01-10",
+                 closed_date="", status="ACTIVE", parties="A v. B", relief_sought="",
+                 decision_summary="", evidence_doc_ids=(), case_id=None, notes="", created_by="tester@example.test"):
+        cid = case_id or uuid.uuid4().hex[:12]
+        number = case_number or f"DEMO-TEST-{uuid.uuid4().hex[:8]}"
+        now = time.time()
+        import server
+        with server.get_db() as db:
+            db.execute(
+                """INSERT OR REPLACE INTO land_court_cases
+                   (id, survey_number, khasra_number, village, tehsil, district, case_number, case_type,
+                    court_name, filed_date, closed_date, status, parties, relief_sought, decision_summary,
+                    evidence_doc_ids, notes, created_by, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (cid, survey, survey, village, "Sadar", "Ghaziabad", number, case_type, court_name,
+                 filed_date, closed_date, status, parties, relief_sought, decision_summary,
+                 json.dumps(list(evidence_doc_ids)), notes, created_by, now, now),
+            )
+        inserted.append(cid)
+        return cid, number
+
+    yield _insert
+
+    import server
+    with server.get_db() as db:
+        for cid in inserted:
+            db.execute("DELETE FROM land_court_cases WHERE id=?", (cid,))

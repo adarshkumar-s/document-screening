@@ -10,7 +10,7 @@ import html
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -81,24 +81,71 @@ def _dict(row: Any) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-def list_cases(survey: str, village: str = "") -> List[Dict[str, Any]]:
+CLOSED_STATUSES = ("DECIDED", "SETTLED", "WITHDRAWN")
+DEMO_ID_PREFIX = "DEMO-"  # mirrors the demo-tagging convention used by the
+                          # mutation/encumbrance registers (demo_scenarios.py)
+
+
+def _all_cases() -> List[Dict[str, Any]]:
+    """Every registered case, newest filing first (single query)."""
     ensure_schema()
-    survey_n, village_n = _norm(survey), _norm(village)
     with get_db() as db:
         rows = db.execute("SELECT * FROM land_court_cases ORDER BY filed_date DESC, created_at DESC").fetchall()
-    result = []
-    for row in rows:
-        if _norm(row["survey_number"]) != survey_n:
-            continue
-        rv = _norm(row["village"])
-        if village_n and rv and rv != village_n:
-            continue
-        result.append(_dict(row))
-    return result
+    return [_dict(row) for row in rows]
+
+
+def _matches(case: Dict[str, Any], survey_n: str, village_n: str) -> bool:
+    if _norm(case.get("survey_number")) != survey_n:
+        return False
+    case_village = _norm(case.get("village"))
+    if village_n and case_village and case_village != village_n:
+        return False
+    return True
+
+
+def list_cases(survey: str, village: str = "") -> List[Dict[str, Any]]:
+    survey_n, village_n = _norm(survey), _norm(village)
+    return [case for case in _all_cases() if _matches(case, survey_n, village_n)]
+
+
+def cases_by_land() -> Dict[str, List[Dict[str, Any]]]:
+    """Group the whole register by normalised survey number in ONE query.
+
+    The land-risk engine scores many parcels per request; looking each parcel up
+    separately would issue one query per land record (N+1). :func:`cases_for_land`
+    then applies the register's own matching rule in memory, so the batch path
+    and the per-parcel path can never disagree.
+    """
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for case in _all_cases():
+        grouped.setdefault(_norm(case.get("survey_number") or case.get("khasra_number")), []).append(case)
+    return grouped
+
+
+def cases_for_land(land: Dict[str, Any], grouped: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> List[Dict[str, Any]]:
+    """Cases applicable to one land parcel.
+
+    Same rule as :func:`list_cases`: the survey number must match, and a village
+    only narrows the result when the register entry recorded one.
+    """
+    survey_n, village_n = _norm(land.get("survey") or land.get("khasra")), _norm(land.get("village"))
+    if not survey_n:
+        return []
+    if grouped is None:
+        return list_cases(survey_n, village_n)
+    return [case for case in grouped.get(survey_n, []) if not _norm(case.get("village")) or not village_n
+            or _norm(case.get("village")) == village_n]
 
 
 def active_cases(survey: str, village: str = "") -> List[Dict[str, Any]]:
     return [c for c in list_cases(survey, village) if _s(c.get("status")).upper() == "ACTIVE"]
+
+
+def litigation_verdict_for(cases: List[Dict[str, Any]]) -> str:
+    """CLEAR | PRIOR_LITIGATION | ACTIVE_LITIGATION for a set of cases."""
+    if any(_s(case.get("status")).upper() == "ACTIVE" for case in cases):
+        return "ACTIVE_LITIGATION"
+    return "PRIOR_LITIGATION" if cases else "CLEAR"
 
 
 def _audit(user: Dict[str, Any], action: str, detail: str) -> None:
@@ -152,9 +199,7 @@ def get_court_cases(survey: str = Query(""), village: str = Query(""),
         # Staff may use this as a register search; viewers must scope to a land parcel.
         if user.get("role") not in REVIEWER_ROLES:
             raise HTTPException(400, "survey number is required")
-        with get_db() as db:
-            rows = db.execute("SELECT * FROM land_court_cases ORDER BY filed_date DESC, created_at DESC").fetchall()
-        items = [_dict(r) for r in rows]
+        items = _all_cases()
     else:
         items = list_cases(survey, village)
     wanted = _s(status_filter).upper()
@@ -229,6 +274,58 @@ def close_court_case(case_id: str, req: CourtCaseClose,
     return {"court_case": _dict(updated)}
 
 
+class CourtCaseUpdate(BaseModel):
+    """Amend a case's particulars. Closing/outcome transitions stay on /close."""
+    case_type: Optional[str] = None
+    court_name: Optional[str] = None
+    filed_date: Optional[str] = None
+    parties: Optional[str] = None
+    relief_sought: Optional[str] = None
+    evidence_doc_ids: Optional[List[str]] = None
+    notes: Optional[str] = None
+
+
+_UPDATABLE = ("case_type", "court_name", "filed_date", "parties", "relief_sought", "notes")
+
+
+@router.put("/api/court-cases/{case_id}")
+def update_court_case(case_id: str, req: CourtCaseUpdate,
+                     user: Dict[str, Any] = Depends(require_roles(*STAFF_ROLES))):
+    """Correct a registered case. Data Officers may only amend their own
+    entries; only an ACTIVE case may be amended (closed records are immutable)."""
+    ensure_schema()
+    with get_db() as db:
+        row = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
+        if not row:
+            raise HTTPException(404, "Court case not found")
+        case = _dict(row)
+        if user.get("role") == ROLE_DATA_OFFICER:
+            if case.get("created_by") != user.get("email"):
+                raise HTTPException(403, "Data Officers can only amend court cases they registered")
+            if _s(case.get("status")).upper() != "ACTIVE":
+                raise HTTPException(409, "A closed court case can only be amended by a reviewer")
+        updates = {key: _s(value) for key, value in req.model_dump().items()
+                   if key in _UPDATABLE and value is not None}
+        if req.case_type is not None:
+            case_type = _s(req.case_type).upper() or "CIVIL"
+            if case_type not in CASE_TYPES:
+                raise HTTPException(422, f"Invalid case type. Use one of {CASE_TYPES}")
+            updates["case_type"] = case_type
+        if req.evidence_doc_ids is not None:
+            _validate_evidence(req.evidence_doc_ids, user)
+            updates["evidence_doc_ids"] = __import__("json").dumps(req.evidence_doc_ids)
+        if not updates:
+            raise HTTPException(422, "No changes supplied")
+        assignments = ", ".join(f"{column}=?" for column in updates)
+        db.execute(f"UPDATE land_court_cases SET {assignments}, updated_at=? WHERE id=?",
+                   (*updates.values(), time.time(), _s(case_id)))
+        changed = ", ".join(sorted(updates))
+    _audit(user, "COURT_CASE_UPDATED", f"Case {case.get('case_number')} amended ({changed})")
+    with get_db() as db:
+        updated = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
+    return {"court_case": _dict(updated)}
+
+
 @router.get("/api/land-records/{land_id}/litigation")
 def land_litigation(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     """Litigation summary keyed to the same LR-* identity used by Land Intelligence."""
@@ -241,7 +338,7 @@ def land_litigation(land_id: str, user: Dict[str, Any] = Depends(get_current_use
         raise HTTPException(404, "Land record not found")
     cases = list_cases(land.get("survey") or "", land.get("village") or "")
     active = [c for c in cases if _s(c.get("status")).upper() == "ACTIVE"]
-    closed = [c for c in cases if _s(c.get("status")).upper() in {"DECIDED","WITHDRAWN","SETTLED"}]
+    closed = [c for c in cases if _s(c.get("status")).upper() in CLOSED_STATUSES]
     return {
         "land_id": land_id,
         "survey": land.get("survey"),
@@ -249,16 +346,25 @@ def land_litigation(land_id: str, user: Dict[str, Any] = Depends(get_current_use
         "active_count": len(active),
         "closed_count": len(closed),
         "court_cases": cases,
-        "verdict": "ACTIVE_LITIGATION" if active else ("PRIOR_LITIGATION" if closed else "CLEAR"),
+        "highest_severity": "HIGH" if active else ("INFO" if closed else "NONE"),
+        "verdict": litigation_verdict_for(cases),
         "disclaimer": "Litigation status is based only on locally registered cases; it is not a court-certified search.",
     }
 
 
-def litigation_flags(survey: str, village: str, mutations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    cases = list_cases(survey, village)
+def litigation_flags(survey: str, village: str, mutations: List[Dict[str, Any]],
+                     cases: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Deterministic review signals derived from the litigation register.
+
+    `cases` may be supplied by a caller that already grouped the register (the
+    land-risk engine scores many parcels at once and must not query per parcel).
+    Severity mapping: an ACTIVE case is always HIGH; a transfer recorded while a
+    case was pending is HIGH; closed cases stay visible as INFO for transparency.
+    """
+    cases = list_cases(survey, village) if cases is None else cases
     flags: List[Dict[str, Any]] = []
     active = [c for c in cases if _s(c.get("status")).upper() == "ACTIVE"]
-    closed = [c for c in cases if _s(c.get("status")).upper() in {"DECIDED","WITHDRAWN","SETTLED"}]
+    closed = [c for c in cases if _s(c.get("status")).upper() in CLOSED_STATUSES]
     for case in active:
         flags.append({"code":"ACTIVE_LITIGATION","severity":"HIGH","title":"Active court case on this land",
                       "detail":f"{case.get('case_number') or 'Case'} — {case.get('court_name') or 'court'} ({case.get('case_type') or 'type'}). Pending litigation must be reviewed before transfer.",
