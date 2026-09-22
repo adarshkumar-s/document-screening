@@ -2552,6 +2552,12 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 from admin_assistant import router as assistant_router
 app.include_router(assistant_router)
 
+# AI-governance tables: created at startup, never inside a request. The import
+# must stay after every server definition — the governance router resolves
+# Depends(_admin_user()) at import time.
+import ai_governance as _ai_governance
+_ai_governance.ensure_governance_tables()
+
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))
 

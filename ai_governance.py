@@ -57,8 +57,21 @@ class DecisionReq(BaseModel):
 class AIProposalRequest(BaseModel):
     proposal: ProposalCreate
 
+_governance_ready_for = None
+
+
 def ensure_governance_tables():
+    """Create the governance tables once per database.
+
+    DDL (CREATE TABLE / CREATE INDEX) must never run inside a user request —
+    it can block for a long time on a large database. server.py calls this at
+    startup; for the lifetime of the process every later call is a no-op.
+    (Keyed to DB_PATH so tests that swap databases still get their tables.)
+    """
+    global _governance_ready_for
     s=_server()
+    if _governance_ready_for == s.DB_PATH:
+        return
     with s.get_db() as db:
         db.execute("""
         CREATE TABLE IF NOT EXISTS ai_proposals (
@@ -94,6 +107,7 @@ def ensure_governance_tables():
           created_at REAL NOT NULL
         )
         """)
+    _governance_ready_for = s.DB_PATH
 
 def _json(v): return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -235,6 +249,9 @@ def _assert_before(proposal,current):
                 raise HTTPException(409,f"Property {rid} location changed since this proposal was created.")
 
 def _ensure_task_table():
+    global _governance_ready_for
+    if _governance_ready_for == _server().DB_PATH:
+        return
     s=_server()
     with s.get_db() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS ai_tasks(
@@ -243,6 +260,7 @@ def _ensure_task_table():
           assigned_by TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', parent_task_id TEXT,
           metadata TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}',
           created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+    _governance_ready_for = s.DB_PATH
 
 def _create_task(db, rid, assigned_to, task_type, title, description, priority, actor, metadata=None):
     tid="TASK-"+uuid.uuid4().hex[:8].upper(); now=time.time()

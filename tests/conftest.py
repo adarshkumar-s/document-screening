@@ -1,3 +1,9 @@
+import os
+
+# The initial-administrator bootstrap only runs when this is configured; set
+# it before any test module imports so login tests do not depend on import
+# order (test_ocr_workflow.py used to be the only place this was set).
+os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "Admin@123")
 import sys
 from pathlib import Path
 
