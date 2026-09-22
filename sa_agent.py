@@ -1,0 +1,352 @@
+"""Superior AI operations agent for the administrator portal.
+
+SA is deliberately separate from the normal Admin Assistant. It can inspect and
+reason across registered website capabilities, prepare consequential operations,
+and execute them only after the existing AI Approval Center approves a proposal.
+"""
+import json, os, time, uuid, re, asyncio
+from typing import Any, Dict, List, Optional
+from fastapi import HTTPException
+
+SA_CODE_ENV = "SA_ACTIVATION_CODE"
+SA_TTL = int(os.getenv("SA_SESSION_TTL_SECONDS", "3600"))
+
+def _server():
+    import server
+    return server
+
+def _db():
+    return _server().get_db()
+
+def _ai():
+    return getattr(_server(), "ai_client", None)
+
+def _assistant():
+    import admin_assistant
+    return admin_assistant
+
+def _json(v):
+    return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
+
+def _ensure_tables():
+    with _db() as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS sa_sessions(
+            session_id TEXT PRIMARY KEY, admin_id TEXT NOT NULL, admin_name TEXT NOT NULL,
+            admin_email TEXT, activated_at REAL NOT NULL, expires_at REAL NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1, last_used_at REAL NOT NULL
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS sa_activity(
+            event_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, admin_id TEXT NOT NULL,
+            admin_name TEXT NOT NULL, event_type TEXT NOT NULL, task TEXT NOT NULL,
+            detail TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_sa_activity_admin_time ON sa_activity(admin_id,created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_sa_activity_session ON sa_activity(session_id,created_at)")
+
+def _log(session: Dict[str,Any], event_type: str, task: str, detail: str, data=None):
+    _ensure_tables()
+    with _db() as db:
+        db.execute("""INSERT INTO sa_activity(event_id,session_id,admin_id,admin_name,event_type,task,detail,data,created_at)
+                      VALUES(?,?,?,?,?,?,?,?,?)""",
+                   (uuid.uuid4().hex,session["session_id"],session["admin_id"],session["admin_name"],
+                    event_type,task,detail,_json(data or {}),time.time()))
+    try:
+        _server().log_audit(session["admin_name"], "SA_"+event_type, detail[:500], None)
+    except Exception:
+        pass
+
+FEATURES = {
+    "documents": "Search documents, inspect complete document records, OCR confidence, extracted fields, validation, AI decision support and status.",
+    "document_workflow": "Pending verification, faulty/attention records, officer workloads, AI task inbox, assignment and escalation preparation.",
+    "land_intelligence": "Properties, parcel/location information, ownership history, mutations, encumbrances, deterministic land risk and land-document context.",
+    "litigation": "Court/litigation register and case information linked to land/property records.",
+    "mapping": "Property coordinates, map/location status and governed exact-pin proposals.",
+    "reporting": "System statistics, operational intelligence, activity and administrative briefings.",
+    "governance": "AI proposals, evidence, approval/rejection state and execution events.",
+    "administration": "Authenticated administrator context, users and audit trail. Account/role changes remain controlled by existing administration workflows.",
+    "backup_restore": "Backup/restore feature is available through the website; SA must never bypass its own server-side safety gates.",
+}
+
+def feature_catalog():
+    return [{"name":k,"description":v} for k,v in FEATURES.items()]
+
+def _active_session(session_id: str, admin: Dict[str,Any]):
+    _ensure_tables()
+    with _db() as db:
+        row=db.execute("SELECT * FROM sa_sessions WHERE session_id=? AND active=1",(session_id,)).fetchone()
+    if not row or str(row["admin_id"]) != str(admin["id"]) or time.time() > float(row["expires_at"]):
+        if row:
+            with _db() as db: db.execute("UPDATE sa_sessions SET active=0 WHERE session_id=?",(session_id,))
+        raise HTTPException(401,"SA session expired or is not valid for this administrator.")
+    session=dict(row)
+    with _db() as db: db.execute("UPDATE sa_sessions SET last_used_at=? WHERE session_id=?",(time.time(),session_id))
+    return session
+
+def activation_options(admin: Dict[str,Any], code: str):
+    expected=os.getenv(SA_CODE_ENV,"").strip()
+    if not expected:
+        raise HTTPException(503,"SA activation is not configured. Set SA_ACTIVATION_CODE on the server.")
+    if not code or not __import__("hmac").compare_digest(code,expected):
+        _ensure_tables()
+        try: _server().log_audit(admin["full_name"],"SA_ACTIVATION_FAILED","Invalid SA activation attempt.",None)
+        except Exception: pass
+        raise HTTPException(403,"Invalid SA activation code.")
+    names=["Gautam","Adarsh","Devi Cr"]
+    return {"options":[{"key":n.lower().replace(" ","_"),"name":n} for n in names],
+            "authenticated_admin":{"id":admin["id"],"name":admin["full_name"],"email":admin.get("email")}}
+
+def activate(admin: Dict[str,Any], code: str, selected_name: str):
+    activation_options(admin,code)
+    allowed={"gautam":"Gautam","adarsh":"Adarsh","devi_cr":"Devi Cr"}
+    canonical=allowed.get(str(selected_name).strip().lower().replace(" ","_"))
+    if not canonical: raise HTTPException(400,"Select one of the registered administrator identities.")
+    # Identity selection is an audit label, never an impersonation mechanism.
+    normalized_actual=str(admin.get("full_name") or "").strip().lower()
+    if canonical.lower() not in normalized_actual and normalized_actual not in {canonical.lower(),canonical.lower().replace(" ","")}:
+        raise HTTPException(403,"The selected administrator identity does not match the authenticated account.")
+    _ensure_tables()
+    sid="SA-"+uuid.uuid4().hex[:12].upper()
+    now=time.time()
+    with _db() as db:
+        db.execute("""INSERT INTO sa_sessions(session_id,admin_id,admin_name,admin_email,activated_at,expires_at,active,last_used_at)
+                      VALUES(?,?,?,?,?,?,1,?)""",(sid,admin["id"],canonical,admin.get("email"),now,now+SA_TTL,now))
+    session={"session_id":sid,"admin_id":admin["id"],"admin_name":canonical,"admin_email":admin.get("email")}
+    _log(session,"SESSION_STARTED","SA activation",f"SA activated as admin.{canonical.lower().replace(' ','_')}",
+         {"authenticated_admin":admin["full_name"],"selected_identity":canonical})
+    return {"session_id":sid,"admin":f"admin.{canonical.lower().replace(' ','_')}","expires_at":now+SA_TTL,
+            "features":feature_catalog()}
+
+def deactivate(admin, session_id):
+    s=_active_session(session_id,admin)
+    with _db() as db: db.execute("UPDATE sa_sessions SET active=0 WHERE session_id=?",(session_id,))
+    _log(s,"SESSION_ENDED","SA session ended","Administrator ended the SA session.")
+    return {"ok":True}
+
+def _read_tools():
+    a=_assistant()
+    return {
+        "system_statistics": lambda args: a.get_system_statistics(),
+        "operational_intelligence": lambda args: a.get_operational_intelligence(),
+        "pending_records": lambda args: a.get_pending_records(int(args.get("limit",20))),
+        "low_confidence_records": lambda args: a.get_low_confidence_records(float(args.get("threshold",75)),int(args.get("limit",20))),
+        "attention_records": lambda args: a.get_faulty_records(int(args.get("limit",30))),
+        "search_documents": lambda args: a.search_records(str(args.get("query","")),int(args.get("limit",20))),
+        "document": lambda args: a.get_record_details(str(args["record_id"])),
+        "officers": lambda args: a.list_verification_officers(),
+        "officer_workload": lambda args: a.get_officer_workload(str(args["officer_id"])),
+        "tasks": lambda args: a.get_tasks_for_user({"id":None,"role":"ADMIN"},limit=int(args.get("limit",100))),
+        "recent_activity": lambda args: a.get_recent_activity(int(args.get("limit",30))),
+        "property": lambda args: _property(args),
+        "property_history": lambda args: _property_history(args),
+        "litigation": lambda args: _litigation(args),
+        "governance_proposals": lambda args: _governance(args),
+    }
+
+def _property(args):
+    identifier=str(args.get("property_id") or args.get("query") or "")
+    with _db() as db:
+        r=db.execute("""SELECT property_id,parcel_id,district,taluka,village,survey_number,khasra_number,
+                               latitude,longitude,location_status,location_source,location_updated_at
+                        FROM properties WHERE property_id=? OR parcel_id=? OR survey_number=? LIMIT 1""",
+                     (identifier,identifier,identifier)).fetchone()
+    return dict(r) if r else {"error":f"Property '{identifier}' not found."}
+
+def _property_history(args):
+    identifier=str(args.get("property_id") or args.get("query") or "")
+    with _db() as db:
+        r=db.execute("SELECT property_id FROM properties WHERE property_id=? OR parcel_id=? OR survey_number=? LIMIT 1",(identifier,identifier,identifier)).fetchone()
+    if not r: return {"error":f"Property '{identifier}' not found."}
+    from mapping import _history_for_property
+    return _history_for_property(r["property_id"])
+
+def _litigation(args):
+    identifier=str(args.get("query") or args.get("property_id") or "")
+    try:
+        from court_cases import list_cases_for_property
+        return {"cases":list_cases_for_property(identifier)}
+    except Exception:
+        # Fall back to the actual litigation tables if the helper name changes.
+        with _db() as db:
+            rows=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%case%'").fetchall()
+        return {"available_tables":[dict(x) for x in rows],"query":identifier}
+
+def _governance(args):
+    from ai_governance import list_proposals
+    return {"proposals":list_proposals(args.get("status"),int(args.get("limit",50)))}
+
+READ_TOOL_DESCRIPTIONS = {
+    "system_statistics":"Get current portal document statistics.",
+    "operational_intelligence":"Get current attention records, workload, stale tasks and activity.",
+    "pending_records":"List pending verification records.",
+    "low_confidence_records":"Find records below an OCR confidence threshold.",
+    "attention_records":"Find records requiring attention using deterministic OCR/validation/consistency signals.",
+    "search_documents":"Search documents by ID, owner, survey/khasra or village.",
+    "document":"Retrieve the complete current document record by ID.",
+    "officers":"List active Verification Officers and workloads.",
+    "officer_workload":"Get one officer's workload.",
+    "tasks":"List AI workflow tasks.",
+    "recent_activity":"Read recent audit activity.",
+    "property":"Get property/location data.",
+    "property_history":"Get linked ownership/property history.",
+    "litigation":"Search litigation/court records associated with a property/query.",
+    "governance_proposals":"Inspect AI governance proposals and their status.",
+}
+
+WRITE_INTENTS = {
+    "create_task":("CREATE_AI_TASK","DOCUMENT"),
+    "assign_task":("ASSIGN_AI_TASK","DOCUMENT"),
+    "reassign_task":("REASSIGN_AI_TASK","TASK"),
+    "reprocess":("REQUEST_REPROCESSING","DOCUMENT"),
+    "escalate":("ESCALATE_RECORD","DOCUMENT"),
+    "verification_case":("CREATE_VERIFICATION_CASE","DOCUMENT"),
+    "set_property_location":("SET_PROPERTY_LOCATION","PROPERTY"),
+    "clear_property_location":("CLEAR_PROPERTY_LOCATION","PROPERTY"),
+    "mutation_application":("CREATE_MUTATION_APPLICATION","PROPERTY"),
+}
+
+def _extract_id(text):
+    m=re.search(r"(?:record|document|lr|property|parcel|survey|khasra)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})",text,re.I)
+    return m.group(1) if m else None
+
+def _plan_with_ai(task: str):
+    client=_ai()
+    if not client:
+        return None
+    from google.genai import types
+    tools=", ".join(READ_TOOL_DESCRIPTIONS.keys())
+    prompt=f"""You are the planning brain of a website-owning administrator AI.
+Return ONLY valid JSON with keys goal, steps, response_style.
+steps is an array of objects: id, tool, args, purpose, depends_on.
+Only use these READ tools: {tools}.
+Never invent tool names. Keep to at most 12 steps. Prefer independent steps.
+Website capabilities: {json.dumps(FEATURES,ensure_ascii=False)}
+Administrator task: {task}"""
+    try:
+        r=client.models.generate_content(model=os.getenv("SA_MODEL","gemini-3.6-flash"),contents=prompt,
+                                         config=types.GenerateContentConfig(temperature=0.05,response_mime_type="application/json"))
+        return json.loads(r.text or "{}")
+    except Exception:
+        return None
+
+def _fallback_plan(task):
+    t=task.lower()
+    rid=_extract_id(task)
+    steps=[]
+    if rid: steps.append({"id":"document","tool":"document","args":{"record_id":rid},"purpose":"Inspect the referenced document","depends_on":[]})
+    if any(x in t for x in ["land","property","parcel","mutation","encumbrance","ownership","location"]):
+        if rid: steps += [{"id":"property","tool":"property","args":{"property_id":rid},"purpose":"Inspect land/property context","depends_on":[]},
+                          {"id":"history","tool":"property_history","args":{"property_id":rid},"purpose":"Inspect ownership history","depends_on":[]}]
+    if any(x in t for x in ["litigation","court","case","legal"]):
+        steps.append({"id":"litigation","tool":"litigation","args":{"query":rid or task},"purpose":"Inspect litigation context","depends_on":[]})
+    if any(x in t for x in ["pending","verification"]): steps.append({"id":"pending","tool":"pending_records","args":{"limit":30},"purpose":"Inspect verification queue","depends_on":[]})
+    if any(x in t for x in ["officer","workload","assign","task"]): steps.append({"id":"officers","tool":"officers","args":{},"purpose":"Inspect workflow capacity","depends_on":[]})
+    if any(x in t for x in ["urgent","attention","risk","problem","issue"]): steps.append({"id":"intel","tool":"operational_intelligence","args":{},"purpose":"Inspect operational risk signals","depends_on":[]})
+    if not steps: steps=[{"id":"intel","tool":"operational_intelligence","args":{},"purpose":"Establish current system context","depends_on":[]}]
+    return {"goal":task,"steps":steps,"response_style":"concise evidence-based administrator briefing"}
+
+async def _execute_reads(plan):
+    tools=_read_tools()
+    valid=[]
+    for s in plan.get("steps",[])[:12]:
+        if s.get("tool") in tools: valid.append(s)
+    async def one(s):
+        try:
+            result=await asyncio.to_thread(tools[s["tool"]],s.get("args") or {})
+            return {"id":s.get("id"),"tool":s["tool"],"purpose":s.get("purpose"),"result":result,"ok":True}
+        except Exception as e:
+            return {"id":s.get("id"),"tool":s.get("tool"),"purpose":s.get("purpose"),"error":str(e),"ok":False}
+    return await asyncio.gather(*(one(s) for s in valid))
+
+def _synthesize(task, evidence):
+    client=_ai()
+    if not client:
+        return "SA completed the available evidence gathering.\n\n"+_json(evidence)[:12000]
+    from google.genai import types
+    prompt=f"""You are SA, the superior administrator assistant for a land-records website.
+Answer the administrator's task using ONLY the evidence below. Be concise but complete.
+Identify uncertainty. Never invent facts. Explain which website features were checked.
+Do not claim an action was executed unless execution evidence says so.
+Task: {task}
+Evidence: {json.dumps(evidence,ensure_ascii=False,default=str)[:50000]}"""
+    try:
+        r=client.models.generate_content(model=os.getenv("SA_MODEL","gemini-3.6-flash"),contents=prompt,
+                                         config=types.GenerateContentConfig(temperature=0.1))
+        return (r.text or "").strip()
+    except Exception:
+        return "SA gathered the following evidence:\n"+_json(evidence)[:12000]
+
+def _proposal_for_write(task, session):
+    t=task.lower()
+    rid=_extract_id(task)
+    action=None
+    if any(x in t for x in ["reprocess","re-process"]): action="reprocess"
+    elif "escalat" in t: action="escalate"
+    elif "assign" in t: action="assign_task"
+    elif "verification case" in t: action="verification_case"
+    elif "clear exact pin" in t or "remove exact pin" in t: action="clear_property_location"
+    elif "set exact pin" in t or "set location" in t: action="set_property_location"
+    elif "mutation application" in t or "create mutation" in t: action="mutation_application"
+    elif "create task" in t or "verification task" in t: action="create_task"
+    if not action: return None
+    if not rid and action not in {"create_task","mutation_application"}: return {"error":"I need a target record/property identifier before preparing that action."}
+    a,b=WRITE_INTENTS[action]
+    ass=_assistant()
+    if action=="assign_task":
+        rec=ass.get_record_details(rid)
+        officer=ass.find_available_officer()
+        if rec.get("error"): return rec
+        if officer.get("error"): return officer
+        proposal=ass._create_ai_proposal(a,b,[rid],
+            {"documents":{rid:{"status":rec.get("status"),"mean_conf":rec.get("mean_conf")}}},
+            {"assigned_to":str(officer["id"]),"task_type":"VERIFY_RECORD","title":f"Verify land record #{rid}",
+             "description":"Review OCR output, validation findings and unresolved discrepancies.",
+             "priority":"HIGH" if float(rec.get("mean_conf") or 0)<75 else "MEDIUM"},
+            f"SA prepared assignment after reviewing current record and officer capacity.",
+            [{"type":"record","record_id":rid},{"type":"officer","id":officer["id"],"name":officer["name"],"active_tasks":officer["active_tasks"]}],0.9,"MEDIUM")
+    elif action in {"reprocess","escalate","verification_case"}:
+        rec=ass.get_record_details(rid)
+        if rec.get("error"): return rec
+        after={"task_type":"ADMIN_REVIEW","title":f"Administrator review for record #{rid}","priority":"HIGH"} if action=="escalate" else {}
+        proposal=ass._create_ai_proposal(a,b,[rid],
+            {"documents":{rid:{"status":rec.get("status"),"mean_conf":rec.get("mean_conf")}}},
+            after,f"SA prepared {action} for administrator approval.",[{"type":"record","record_id":rid,"status":rec.get("status"),"mean_conf":rec.get("mean_conf")}],0.9,"MEDIUM")
+    elif action=="clear_property_location":
+        p=_property({"property_id":rid})
+        if p.get("error"): return p
+        proposal=ass._create_ai_proposal(a,b,[p["property_id"]],
+            {"properties":{p["property_id"]:{k:p.get(k) for k in ("location_status","latitude","longitude","location_updated_at")}}},
+            {"reason":"SA prepared location change for administrator approval."},
+            "SA prepared exact-pin removal; no property was changed.",[{"type":"property","property_id":p["property_id"]}],0.95,"HIGH")
+    else:
+        return {"error":f"SA recognized the requested operation '{action}', but that operation needs specific parameters and cannot be safely prepared from this request alone."}
+    return {"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],
+            "action_type":proposal["action_type"],"action_description":f"SA prepared {action.replace('_',' ')}","target_display":rid or "multi-record operation"}
+
+def run(task: str, admin: Dict[str,Any], session_id: str):
+    session=_active_session(session_id,admin)
+    _log(session,"TASK_STARTED",task,"SA started an administrator task.")
+    plan=_plan_with_ai(task) or _fallback_plan(task)
+    evidence=asyncio.run(_execute_reads(plan))
+    answer=_synthesize(task,evidence)
+    card=_proposal_for_write(task,session)
+    if card and card.get("error"): answer += "\n\n"+card["error"]
+    elif card:
+        answer += "\n\nI prepared the requested consequential action. Nothing has been changed. Review and approve it in the AI Approval Center."
+    _log(session,"TASK_COMPLETED",task,"SA completed evidence gathering and preparation.",{"plan":plan,"evidence":evidence,"proposal_id":card.get("proposal_id") if card else None})
+    return {"response":answer,"mode":"SA","admin":f"admin.{session['admin_name'].lower().replace(' ','_')}",
+            "plan":plan,"evidence":evidence,"action_card":card,"session_id":session_id}
+
+def report(admin:Dict[str,Any], session_id:Optional[str]=None, limit:int=200):
+    _ensure_tables()
+    with _db() as db:
+        if session_id:
+            rows=db.execute("SELECT * FROM sa_activity WHERE session_id=? ORDER BY created_at DESC LIMIT ?",(session_id,min(limit,500))).fetchall()
+        else:
+            rows=db.execute("SELECT * FROM sa_activity WHERE admin_id=? ORDER BY created_at DESC LIMIT ?",(admin["id"],min(limit,500))).fetchall()
+    out=[]
+    for r in rows:
+        d=dict(r)
+        try:d["data"]=json.loads(d.get("data") or "{}")
+        except Exception:d["data"]={}
+        out.append(d)
+    return {"admin":f"admin.{admin['full_name'].lower().replace(' ','_')}","events":out}
