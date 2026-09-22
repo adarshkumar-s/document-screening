@@ -25,6 +25,31 @@ def _assistant():
     import admin_assistant
     return admin_assistant
 
+
+def _model_candidates():
+    return list(dict.fromkeys(x for x in [
+        os.getenv("SA_MODEL", "").strip(),
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-2.5-flash",
+    ] if x))
+
+
+def _generate_content(client, prompt, config):
+    last_exc = None
+    for model in _model_candidates():
+        for attempt in range(2):
+            try:
+                return client.models.generate_content(model=model, contents=prompt, config=config)
+            except Exception as exc:
+                last_exc = exc
+                message = str(exc)
+                if "503" not in message and "UNAVAILABLE" not in message:
+                    break
+                time.sleep(1.5 * (attempt + 1))
+    raise last_exc or RuntimeError("No AI model is configured.")
+
 def _json(v):
     return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -222,8 +247,7 @@ Never invent tool names. Keep to at most 12 steps. Prefer independent steps.
 Website capabilities: {json.dumps(FEATURES,ensure_ascii=False)}
 Administrator task: {task}"""
     try:
-        r=client.models.generate_content(model=os.getenv("SA_MODEL","gemini-3.6-flash"),contents=prompt,
-                                         config=types.GenerateContentConfig(temperature=0.05,response_mime_type="application/json"))
+        r=_generate_content(client,prompt,types.GenerateContentConfig(temperature=0.05,response_mime_type="application/json"))
         return json.loads(r.text or "{}")
     except Exception:
         return None
@@ -269,8 +293,7 @@ Do not claim an action was executed unless execution evidence says so.
 Task: {task}
 Evidence: {json.dumps(evidence,ensure_ascii=False,default=str)[:50000]}"""
     try:
-        r=client.models.generate_content(model=os.getenv("SA_MODEL","gemini-3.6-flash"),contents=prompt,
-                                         config=types.GenerateContentConfig(temperature=0.1))
+        r=_generate_content(client,prompt,types.GenerateContentConfig(temperature=0.1))
         return (r.text or "").strip()
     except Exception:
         return "SA gathered the following evidence:\n"+_json(evidence)[:12000]
