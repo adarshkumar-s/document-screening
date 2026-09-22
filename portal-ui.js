@@ -90,12 +90,9 @@
       else workspace.querySelector('.card')?.appendChild(pane);
     }
 
-    // If the core renderer has just replaced the workspace, restore the
-    // litigation tab/pane and leave its other tabs untouched.
-    if (!tab.dataset.wired) {
-      tab.dataset.wired = '1';
-      tab.addEventListener('click', () => showLitigationPane());
-    }
+    // Do not attach the click handler twice when the core renderer recreates
+    // the workspace.
+    tab.dataset.wired = '1';
   }
 
   function hideCoreLandPanes() {
@@ -329,5 +326,25 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire, { once:true });
   else wire();
 
-  new MutationObserver(wire).observe(document.documentElement, {subtree:true, childList:true});
+  // IMPORTANT: do not observe the whole document. Audit tables, logs, and
+  // other dynamic panels can generate many DOM mutations; observing the
+  // entire document caused this helper to rerun continuously and introduced
+  // a noticeable regression in data loading time.
+  function observeTarget(id) {
+    const target = document.getElementById(id);
+    if (!target) return;
+    let scheduled = false;
+    const scheduleWire = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        wire();
+      });
+    };
+    new MutationObserver(scheduleWire).observe(target, { subtree: true, childList: true });
+  }
+
+  observeTarget('landIntelWorkspace');
+  observeTarget('administrationMount');
 })();
