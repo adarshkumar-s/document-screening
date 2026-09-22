@@ -27,7 +27,14 @@ def _assistant():
 
 
 def _model_candidates():
-    return ["gemini-3.6-flash"]
+    return list(dict.fromkeys(x for x in [
+        os.getenv("SA_MODEL", "").strip(),
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+    ] if x))
 
 
 def _generate_content(client, prompt, config):
