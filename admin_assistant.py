@@ -656,7 +656,16 @@ def execute_action_in_db(payload: dict, admin_user: dict) -> Dict[str, Any]:
 # -------------------------------------------------------------------
 # Assistant intelligence
 # -------------------------------------------------------------------
-FEATURE_KNOWLEDGE = """\nThe portal is a multi-module platform. Normal mode is read-oriented and may explain or locate capabilities across:\nDocuments/OCR/validation; document comparison and consistency; verification queues and AI tasks; Land Intelligence\n(properties, ownership history, mutations, encumbrances, risk, mapping); litigation/court cases; reporting and\nstatistics; audit history; administration; AI Approval Center; backup/restore. Use the relevant existing feature\ninstead of pretending the assistant can only search documents. Do not invent a feature or result.\nNormal mode does not gain new write authority from this knowledge.\n"""\n\nSYSTEM_INSTRUCTION = """
+FEATURE_KNOWLEDGE = """
+The portal is a multi-module platform. Normal mode is read-oriented and may explain or locate capabilities across:
+Documents/OCR/validation; document comparison and consistency; verification queues and AI tasks; Land Intelligence
+(properties, ownership history, mutations, encumbrances, risk, mapping); litigation/court cases; reporting and
+statistics; audit history; administration; AI Approval Center; backup/restore. Use the relevant existing feature
+instead of pretending the assistant can only search documents. Do not invent a feature or result.
+Normal mode does not gain new write authority from this knowledge.
+"""
+
+SYSTEM_INSTRUCTION = """
 You are the AI Admin Assistant for the Digital India Land Records Modernization Programme (DILRMP).
 You are an operations assistant, not the legal authority.
 
