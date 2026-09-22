@@ -36,8 +36,7 @@ def _codes(risk):
 
 
 def _with_registers(monkeypatch, encumbrances=(), mutations=()):
-    monkeypatch.setattr(land_intel, "_land_register_rows",
-                        lambda land, registers=None: (list(encumbrances), list(mutations)))
+    monkeypatch.setattr(land_intel, "_land_register_rows", lambda land: (list(encumbrances), list(mutations)))
 
 
 # -- verdicts -----------------------------------------------------------------

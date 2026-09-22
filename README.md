@@ -100,40 +100,12 @@ property resolution).
   manifest, writes an automatic safety copy of the current data first, then
   restores, verifies counts, and audits every step. Member sanitisation
   rejects path traversal; RBAC rejects non-admins with 403.
-- **Court cases / litigation register** — an audited register of court cases
-  keyed to the same survey+village identity as every other land surface
-  (`court_cases.py`): case number, type (CIVIL/CRIMINAL/REVENUE/POSSESSION/
-  TITLE/OTHER), court, parties, filing and outcome dates, relief, decision
-  summary and evidence documents. Statuses are ACTIVE / DECIDED / SETTLED /
-  WITHDRAWN; closing and amending are RBAC-governed and audited
-  (`COURT_CASE_CREATED`, `COURT_CASE_UPDATED`, `COURT_CASE_CLOSED`), and the
-  register is searchable by survey, village, status and free text.
-- **Litigation in the risk engine** — an active case is a HIGH signal
-  (`ACTIVE_LITIGATION`), a transfer recorded while a case was pending raises
-  `TRANSFER_DURING_LITIGATION`, and closed cases remain visible as
-  `CLOSED_LITIGATION_ON_RECORD` info. Every verdict carries a human-readable
-  `why` list and per-signal evidence (register rows, not a red badge).
-- **Litigation everywhere else** — the land drawer gains a Court Cases /
-  Litigation card, a register-derived parcel timeline (documents, mutations,
-  encumbrances incl. releases, case filings and outcomes, current status),
-  and a `RUN FULL DUE DILIGENCE` brief that aggregates ownership, mutations,
-  encumbrances, litigation, document differences, risk and next actions.
-  Records list/risk-review gain litigation and mutation filters, and the
-  verification report (HTML + PDF) gains a COURT CASES / LITIGATION section.
-- **Demo data system (S1–S16)** — a deterministic, admin-governed dataset of
-  **16 land records, 29 synthetic documents, 7 mutations, 4 encumbrances and
-  6 court cases** (46 rows). S1–S10 are the original catalogue (clean record,
-  valid mutation, active encumbrance, ownership change without mutation,
-  conflicting history, area jump, pending/rejected mutation, low-quality OCR,
-  duplicates); S11–S16 add litigation: active title suit with a transfer
-  inside the pending period (S11), possession dispute over mortgaged land
-  (S12), a revenue dispute (S13), decided (S14), settled (S15) and withdrawn
-  (S16) proceedings. Everything is interconnected — opening S11 shows its
-  case, risk signals, timeline and report without creating anything.
-  Seeding is insert-if-absent (a second run creates 0 rows), and the same
-  service backs the admin UI and the CLI (`scripts/seed_demo_data.py`):
-  `--check-only` reports without writing, `--yes` is required for any write,
-  `--clear --yes` removes demo-tagged rows only.
+- **Demo scenarios** — ten deterministic, admin-governed fixtures
+  (`POST /api/admin/demo/seed`) covering clean records, valid mutations,
+  active encumbrances, ownership changes without mutations, conflicts, area
+  jumps, pending/rejected mutations, low-quality OCR and duplicates. All demo
+  artifacts are tagged and removable via `DELETE /api/admin/demo/data`
+  without touching production data.
 
 ### New API surface
 
@@ -145,49 +117,19 @@ GET/POST            /api/mutations
 GET                 /api/mutations/{id}            (+ /events)
 POST                /api/mutations/{id}/review     (verifier/admin)
 POST                /api/mutations/{id}/complete   (admin only; safety gate)
-GET                 /api/land-records              (paginated; encumbrance/litigation/mutation filters)
-GET                 /api/land-records/{land_id}    (detail; risk via /risk, litigation + timeline included)
-GET                 /api/land-records/risk-review  (verifier/admin; q/village/litigation filters)
-GET                 /api/land-records/{land_id}/encumbrances | /mutations | /litigation | /litigation-risk
-POST                /api/land-records/{land_id}/due-diligence   (staff; audited aggregate brief)
+GET                 /api/land-records              (paginated, role-scoped)
+GET                 /api/land-records/{land_id}    (detail; risk via /risk)
+GET                 /api/land-records/risk-review  (verifier/admin)
+GET                 /api/land-records/{land_id}/encumbrances | /mutations
 POST                /api/reports/land-verification
-GET                 /api/reports/land-verification/{ref}(.qr.png)(/report.pdf)
-GET/POST/PUT        /api/court-cases               (register search / create / amend)
-GET                 /api/court-cases/{id}          (+ POST /close  verifier/admin)
-GET                 /api/land-records/{land_id}/litigation       (parcel-scoped summary)
-GET/POST/DELETE     /api/admin/demo/scenarios | /preview | /seed | /data   (admin only)
+GET                 /api/reports/land-verification/{ref}(.qr.png)
+GET/POST/DELETE     /api/admin/demo/scenarios | /seed | /data   (admin only)
 GET                 /api/admin/data-management/backup(/manifest) (admin only)
 POST                /api/admin/data-management/restore            (admin only)
 ```
 
 `documents` gaining `land_context` and `review-action` returning an optional
 `land_risk_warning` are the only changes to existing APIs; both are additive.
-
-### Performance behaviour (compatibility notes)
-
-- `GET /api/audit` is SQL-paginated: `limit` (default 50, max 500), `offset`,
-  `q`, `action`, `username` and `date_from`/`date_to` (YYYY-MM-DD, UTC). The
-  response keeps the `audit` key and adds `total`/`limit`/`offset`; the whole
-  table is never returned.
-- `GET /api/documents` returns a light projection for lists — no
-  `ocr_text`/`cleaned_ocr_text`/`original_fields` (the review UI loads raw OCR
-  from the document detail endpoint, which is unchanged) — with
-  `limit` (default 500, max 1000), `offset` and `total`. RBAC, search and
-  filters are unchanged.
-- Land-record list, risk review and detail batch the encumbrance/mutation/
-  litigation registers into one read per request (query counts are constant
-  regardless of portfolio size) and every heavy section of the land drawer
-  except the audit trail renders from that single load; administrators get the
-  audit trail fetched right after first paint. `GET /api/land-records/{id}`
-  accepts `include=` (comma-separated sections) and returns every section when
-  omitted, so existing consumers are unaffected.
-- All schema/index DDL runs at startup (`init_db` plus the flag-guarded
-  `ensure_*` migrations); no request path executes DDL. Development runs log
-  one `[PERF]` line per instrumented request (total/db/queries/stages);
-  production (APP_ENV=production) logs nothing.
-- `scripts/perf_probe.py` builds a synthetic benchmark database and measures
-  the hot endpoints (wall time, query count, payload size) for before/after
-  comparisons.
 
 ## Routes
 
@@ -212,33 +154,6 @@ All existing `/api/auth`, `/api/documents`, OCR, validation, task, administrator
 
 The compatibility property/workflow APIs used by existing governed paths remain available inside the mapping support layer; they are not the replacement map UI or its data source.
 
-## Demo data
-
-The demo dataset exists for demonstrations and UAT. It is **never** loaded
-automatically: an administrator must ask for it, from the portal
-(**Administration → Data Management → Check / Load / Remove demo data**,
-with a typed `LOAD DEMO` / `REMOVE DEMO` confirmation and the expected
-counts shown first) or from the command line:
-
-```bash
-python scripts/seed_demo_data.py --check-only   # read-only report (exit 1 = incomplete)
-python scripts/seed_demo_data.py --yes          # create the dataset (idempotent)
-python scripts/seed_demo_data.py --clear --yes  # remove demo rows only
-python scripts/seed_demo_data.py --json         # machine-readable output
-```
-
-Every artifact carries an unmistakable demo identity: documents carry
-`metadata.demo = true` plus `DEMO-` ids, and register rows use `DEMO-` id
-prefixes. Seeding is insert-if-absent, so running it twice creates 0 new rows
-and never overwrites existing demo or real rows; clearing deletes demo-tagged
-rows only. Both actions are written to the audit trail
-(`DEMO_DATA_SEEDED` / `DEMO_DATA_CLEARED`), and every write path — HTTP and
-CLI — refuses outright when `APP_ENV=production`. There is no override flag.
-
-To inspect the data after seeding: open **Land Intelligence → Records** and
-filter by litigation status, or query the API directly, e.g.
-`GET /api/court-cases?survey=311&village=Jayantipur`.
-
 ## Data boundary and safety
 
 The map consumes uploaded document fields and mapping-only coordinates. It does not scrape a government portal, redistribute government cadastral data, or send uploaded documents to tile/geocoding providers. A map position is labelled as exact, village-level approximate, or unresolved. Approximate coordinates never represent a legal parcel boundary.
@@ -246,6 +161,27 @@ The map consumes uploaded document fields and mapping-only coordinates. It does 
 Ownership changes are signals for human review. AI and deterministic checks can recommend review but cannot approve ownership, declare fraud, or change a consequential record without the existing governed approval flow.
 
 Do not commit secrets, credentials, or real sensitive documents. Set `JWT_SECRET` and `ADMIN_INITIAL_PASSWORD` privately in deployments. The default local database path is controlled by the existing application configuration.
+
+
+## AI Admin Assistant and Superior SA mode
+
+The normal **AI Admin Assistant** remains the default assistant and keeps its existing authority. Its knowledge now covers the portal's document, verification, Land Intelligence, mapping, litigation, reporting, audit, administration, backup/restore, and AI-governance surfaces.
+
+Typing the configured SA activation phrase in the assistant input opens the secure **SA** identity gate. The UI presents **Gautam**, **Adarsh**, and **Devi Cr**; the selected identity must match the authenticated administrator account, so the selector cannot be used for impersonation.
+
+SA provides project-wide, multi-step administrator assistance: it can plan investigations across registered website capabilities, execute independent read-only checks in parallel, retain investigation context within the conversation, and prepare consequential operations. Consequential operations are never executed directly by SA. They become proposals in the existing AI Approval Center, where the administrator must approve them; the server re-validates the current target state before execution.
+
+Every SA session is recorded with the authenticated administrator, admin.<identity> label, session ID, task, plan, evidence, proposals, completion events, timestamps, and errors. The **SA Activity Report** button exposes the current session report, and GET /api/admin/assistant/sa/report can retrieve an administrator's report.
+
+### SA configuration
+
+Set these deployment variables privately:
+
+SA_ACTIVATION_CODE=<your private activation phrase>
+SA_SESSION_TTL_SECONDS=3600
+SA_MODEL=gemini-3.6-flash
+
+Do not commit the real activation phrase. Production refuses to activate SA unless SA_ACTIVATION_CODE is configured.
 
 ## Local run
 
@@ -272,16 +208,6 @@ The container runs `main:app`.
 
 ```bash
 python -m pytest -q
-python -m compileall -q .
-node --check map.js portal-ui.js js/app.js js/land-intel.js js/admin-assistant.js
 ```
 
 The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. JavaScript syntax checks use `node --check map.js` and the existing portal scripts.
-
-Litigation and demo coverage lives in `tests/test_court_cases.py` (register
-CRUD, search, closure rules, RBAC, audit), `tests/test_litigation_risk.py`
-(risk integration, explainable signals, shared-query grouping, timeline, due
-diligence), `tests/test_demo_scenarios.py` (S1–S16 outcomes, preview,
-idempotency, real-data protection, production refusal) and
-`tests/test_demo_cli.py` (the CLI against a throwaway database, including the
-production refusal exit code).

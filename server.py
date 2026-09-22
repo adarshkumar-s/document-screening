@@ -472,28 +472,6 @@ def init_db():
                     pass
             print(f"[INIT ADMIN ERROR] {e}")
 
-        # ---- startup index migration (never inside a user request) ---------
-        # Query-path indexes for the hot list endpoints. CREATE INDEX on a
-        # large table can block for a long time, so these run once during
-        # init_db, mirroring the Land Intelligence loading fix: the request
-        # path only ever reads, and the flag-guarded ensure_* helpers make
-        # per-request schema calls no-ops.
-        for index_statement in (
-            "CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at)",
-            "CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)",
-            "CREATE INDEX IF NOT EXISTS idx_documents_uploaded_by ON documents(uploaded_by)",
-            "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts)",
-            "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit(action)",
-            "CREATE INDEX IF NOT EXISTS idx_audit_username ON audit(username)",
-            "CREATE INDEX IF NOT EXISTS idx_audit_doc_id ON audit(doc_id)",
-        ):
-            try:
-                db.execute(index_statement)
-            except Exception as exc:
-                # PG/SQLite dialect differences must never block startup; the
-                # query paths stay correct without the index, only slower.
-                print(f"[DB INDEX WARNING] {exc}")
-
 init_db()
 
 def log_audit(username: str, action: str, detail: str, doc_id: Optional[str] = None):
@@ -1801,58 +1779,10 @@ def delete_user(target_uid: str, user: dict = Depends(require_roles(ROLE_ADMIN))
     return {"status": "ok"}
 
 @app.get("/api/audit")
-def get_audit(
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    q: str = Query(""),
-    action: str = Query(""),
-    username: str = Query(""),
-    date_from: str = Query(""),
-    date_to: str = Query(""),
-    user: dict = Depends(require_roles(ROLE_ADMIN)),
-):
-    """Paginated, filterable audit trail (administrator only).
-
-    The page is computed in SQL — the full table is never returned. Filters:
-    ``action`` (exact), ``username`` (exact), ``q`` (substring over
-    action/username/detail) and ``date_from``/``date_to`` (YYYY-MM-DD, inclusive,
-    interpreted in UTC). The response keeps the historical ``audit`` key and adds
-    ``total``/``limit``/``offset`` for paging.
-    """
-    where, params = [], []
-    if action.strip():
-        where.append("action=?")
-        params.append(action.strip())
-    if username.strip():
-        where.append("username=?")
-        params.append(username.strip())
-    needle = q.strip()
-    if needle:
-        where.append("(action LIKE ? OR username LIKE ? OR detail LIKE ?)")
-        params.extend([f"%{needle}%"] * 3)
-    for parameter, bound in (("date_from", "lower"), ("date_to", "upper")):
-        raw = (date_from if parameter == "date_from" else date_to).strip()
-        if not raw:
-            continue
-        try:
-            base = time.mktime(time.strptime(raw[:10], "%Y-%m-%d"))
-        except ValueError:
-            raise HTTPException(status_code=422, detail=f"{parameter} must be YYYY-MM-DD")
-        if parameter == "date_from":
-            where.append("ts >= ?")
-            params.append(float(base))
-        else:
-            where.append("ts <= ?")
-            params.append(float(base) + 86399.0)
-    clause = f" WHERE {' AND '.join(where)}" if where else ""
-    with perf.request_timer("GET /api/audit"), get_db() as db:
-        total = db.execute(f"SELECT COUNT(*) FROM audit{clause}", tuple(params)).fetchone()[0]
-        cur = db.execute(
-            f"SELECT * FROM audit{clause} ORDER BY id DESC LIMIT ? OFFSET ?",
-            (*params, limit, offset),
-        )
-        rows = [dict(r) for r in cur.fetchall()]
-    return {"audit": rows, "total": total, "limit": limit, "offset": offset}
+def get_audit(user: dict = Depends(require_roles(ROLE_ADMIN))):
+    with get_db() as db:
+        cur = db.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 500")
+        return {"audit": [dict(r) for r in cur.fetchall()]}
 
 @app.get("/api/corrections")
 def get_corrections(user: dict = Depends(require_roles(ROLE_ADMIN, ROLE_VERIFICATION_OFFICER))):
@@ -2400,44 +2330,24 @@ def get_dashboard(user: dict = Depends(get_current_user)):
             "processing_statistics": {"total": total, "processed_rate": "100%", "active_verifiers": 1}
         }
 
-# LIST projection: everything the queues/tables render, but never the heavy OCR
-# payloads (ocr_text / cleaned_ocr_text / original_fields). The document DETAIL
-# endpoint remains the place that returns the full OCR text.
-_DOCUMENT_LIST_COLUMNS = (
-    "id", "filename", "doc_type", "mean_conf", "verdict", "status", "languages", "pages",
-    "fields", "validation", "detected_language", "metadata", "uploaded_by", "reviewer_comments",
-    "created_at", "updated_at",
-)
-
-
 @app.get("/api/documents")
 def get_documents(
     district: Optional[str] = Query(None),
     village: Optional[str] = Query(None),
     doc_type: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None),
-    limit: int = Query(500, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user)
 ):
-    """Paginated document list with a light projection (no OCR payloads).
-
-    RBAC, search and filter behavior are unchanged; the list simply stops
-    shipping columns no list consumer reads (the review UI loads raw OCR text
-    per document from the detail endpoint). ``total`` reflects the filtered
-    row count so callers can page.
-    """
     role = user.get("role")
-    columns = ", ".join(_DOCUMENT_LIST_COLUMNS)
-    with perf.request_timer("GET /api/documents"), get_db() as db:
+    with get_db() as db:
         if role == ROLE_VIEWER:
-            query = f"SELECT {columns} FROM documents WHERE status=?"
+            query = "SELECT id, filename, doc_type, status, fields, metadata, created_at, updated_at FROM documents WHERE status=?"
             params = [STATUS_APPROVED]
         elif role == ROLE_DATA_OFFICER:
-            query = f"SELECT {columns} FROM documents WHERE uploaded_by=?"
+            query = "SELECT * FROM documents WHERE uploaded_by=?"
             params = [user["email"]]
         else:
-            query = f"SELECT {columns} FROM documents WHERE 1=1"
+            query = "SELECT * FROM documents WHERE 1=1"
             params = []
 
         if status_filter and role != ROLE_VIEWER:
@@ -2449,7 +2359,8 @@ def get_documents(
             params.append(doc_type)
 
         query += " ORDER BY created_at DESC"
-        raw_list = db.execute(query, tuple(params)).fetchall()
+        cur = db.execute(query, tuple(params))
+        raw_list = cur.fetchall()
 
         results = []
         for r in raw_list:
@@ -2457,6 +2368,11 @@ def get_documents(
             f = json.loads(item.get("fields") or "{}")
             item["fields"] = f
             item["metadata"] = decode_document_metadata(item.get("metadata"))
+            
+            if role == ROLE_VIEWER:
+                item.pop("reviewer_comments", None)
+                item.pop("ocr_text", None)
+                item.pop("cleaned_ocr_text", None)
 
             if district and f.get("district", {}).get("value", "").lower() != district.lower():
                 continue
@@ -2465,8 +2381,7 @@ def get_documents(
 
             results.append(item)
 
-    total = len(results)
-    return {"documents": results[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
+        return {"documents": results}
 
 @app.get("/api/documents/{doc_id}")
 def get_document(doc_id: str, user: dict = Depends(get_current_user)):
@@ -2539,13 +2454,6 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 # Mount AI Admin Assistant at the end so all functions and models are fully defined
 from admin_assistant import router as assistant_router
 app.include_router(assistant_router)
-
-# Development-only request timing for the hot data endpoints (inert in
-# production). Imported late so server.IS_PRODUCTION is already resolved.
-try:
-    import perf  # noqa: E402
-except Exception as _perf_exc:  # pragma: no cover
-    print(f"[PERF WARNING] timing instrumentation unavailable: {_perf_exc}")
 
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))

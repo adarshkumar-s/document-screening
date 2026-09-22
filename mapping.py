@@ -946,22 +946,9 @@ def _map_property_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, An
     return result
 
 
-# Columns the record builder, the visibility rules and the location contexts
-# actually read. Deliberately excludes the heavy OCR payloads (ocr_text,
-# cleaned_ocr_text, original_fields) and AI advice: grouping thousands of
-# screened documents must not drag megabytes of scan text through every
-# land-records / risk-review / detail request.
-_MAP_RECORD_COLUMNS = (
-    "id", "filename", "doc_type", "status", "fields", "validation", "mean_conf",
-    "lat", "lon", "uploaded_by", "created_at", "updated_at",
-)
-
-
 def _map_visible_records(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     with get_db() as db:
-        rows = db.execute(
-            f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents ORDER BY created_at DESC LIMIT 10000"
-        ).fetchall()
+        rows = db.execute("SELECT * FROM documents ORDER BY created_at DESC LIMIT 10000").fetchall()
     visible = [row for row in rows if _map_document_visible(row, user)]
     records = [_map_document_item(row) for row in visible]
     document_ids = [str(record["id"]) for record in records]

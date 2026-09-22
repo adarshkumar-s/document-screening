@@ -416,30 +416,34 @@ def get_low_confidence_records(threshold: int = 75, limit: int = 10) -> List[Dic
 
 
 def search_records(query: str, limit: int = 10) -> List[Dict[str, Any]]:
-    q = query.strip().lower()
+    """Bounded database-backed search; avoid loading the entire document table into Python."""
+    q = query.strip()
+    if not q:
+        return []
+    lim = min(max(int(limit), 1), 100)
+    like = "%" + q.lower() + "%"
     with get_db_instance() as db:
-        rows = db.execute("SELECT id, filename, doc_type, status, mean_conf, fields, created_at FROM documents ORDER BY created_at DESC").fetchall()
+        rows = db.execute(
+            """SELECT id, filename, doc_type, status, mean_conf, fields, created_at
+               FROM documents
+               WHERE LOWER(CAST(id AS TEXT)) LIKE ?
+                  OR LOWER(filename) LIKE ?
+                  OR LOWER(CAST(fields AS TEXT)) LIKE ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (like, like, like, lim),
+        ).fetchall()
     results = []
     for r in rows:
         item = dict(r)
         f = _json_object(item.get("fields"))
-        owner = (f.get("owner_name", {}).get("value") or "").lower()
-        survey = (f.get("survey_number", {}).get("value") or f.get("khasra_number", {}).get("value") or "").lower()
-        village = (f.get("village", {}).get("value") or "").lower()
-        doc_id = str(item["id"]).lower()
-        if q in owner or q in survey or q in village or q in doc_id:
-            results.append({
-                "id": item["id"], "filename": item["filename"], "doc_type": item["doc_type"],
-                "status": item["status"], "confidence": item["mean_conf"],
-                "owner_name": f.get("owner_name", {}).get("value", "—"),
-                "survey_number": f.get("survey_number", {}).get("value") or f.get("khasra_number", {}).get("value", "—"),
-                "village": f.get("village", {}).get("value", "—"),
-            })
-            if len(results) >= limit:
-                break
+        results.append({
+            "id": item["id"], "filename": item["filename"], "doc_type": item["doc_type"],
+            "status": item["status"], "confidence": item["mean_conf"],
+            "owner_name": f.get("owner_name", {}).get("value", "—"),
+            "survey_number": f.get("survey_number", {}).get("value") or f.get("khasra_number", {}).get("value", "—"),
+            "village": f.get("village", {}).get("value", "—"),
+        })
     return results
-
-
 def get_record_details(record_id: str) -> Dict[str, Any]:
     with get_db_instance() as db:
         row = db.execute("SELECT * FROM documents WHERE id=?", (record_id,)).fetchone()
@@ -652,6 +656,15 @@ def execute_action_in_db(payload: dict, admin_user: dict) -> Dict[str, Any]:
 # -------------------------------------------------------------------
 # Assistant intelligence
 # -------------------------------------------------------------------
+FEATURE_KNOWLEDGE = """
+The portal is a multi-module platform. Normal mode is read-oriented and may explain or locate capabilities across:
+Documents/OCR/validation; document comparison and consistency; verification queues and AI tasks; Land Intelligence
+(properties, ownership history, mutations, encumbrances, risk, mapping); litigation/court cases; reporting and
+statistics; audit history; administration; AI Approval Center; backup/restore. Use the relevant existing feature
+instead of pretending the assistant can only search documents. Do not invent a feature or result.
+Normal mode does not gain new write authority from this knowledge.
+"""
+
 SYSTEM_INSTRUCTION = """
 You are the AI Admin Assistant for the Digital India Land Records Modernization Programme (DILRMP).
 You are an operations assistant, not the legal authority.
@@ -986,13 +999,23 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
 
     try:
         from google.genai import types
-        model_prompt = f"{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=model_prompt,
-            config=types.GenerateContentConfig(temperature=0.15),
-        )
-        return {"response": (response.text or "").strip(), "records": records_found, "action_card": None}
+        model_prompt = f"{FEATURE_KNOWLEDGE}\n{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
+        model_candidates = [\n            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),\n            "gemini-3.8-flash",\n            "gemini-3.7-flash",\n            "gemini-3.6-flash",\n            "gemini-3.5-flash",\n            "gemini-3.5-flash-lite",\n        ]
+        last_exc = None
+        for model in dict.fromkeys(x for x in model_candidates if x):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=model_prompt,
+                    config=types.GenerateContentConfig(temperature=0.15),
+                )
+                return {"response": (response.text or "").strip(), "records": records_found, "action_card": None}
+            except Exception as exc:
+                last_exc = exc
+                if "503" not in str(exc) and "UNAVAILABLE" not in str(exc):
+                    break
+                time.sleep(1.5)
+        return {"response": f"Database information is available, but all configured AI models are temporarily unavailable. Please retry shortly. Last error: {last_exc}", "records": records_found, "action_card": None}
     except Exception as exc:
         return {"response": f"Database information is available, but AI explanation is temporarily unavailable: {str(exc)}", "records": records_found, "action_card": None}
 
@@ -1029,13 +1052,54 @@ def build_system_briefing() -> str:
     try:
         from google.genai import types
         prompt = f"""{SYSTEM_INSTRUCTION}\nGenerate a concise administrator briefing in Markdown using only this data:\n{fallback}\nDo not invent numbers."""
-        res = client.models.generate_content(model="gemini-3.6-flash", contents=prompt, config=types.GenerateContentConfig(temperature=0.1))
-        return (res.text or fallback).strip()
+        for model in dict.fromkeys(x for x in [\n            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),\n            "gemini-3.8-flash",\n            "gemini-3.7-flash",\n            "gemini-3.6-flash",\n            "gemini-3.5-flash",\n            "gemini-3.5-flash-lite",\n        ] if x):
+            try:
+                res = client.models.generate_content(model=model, contents=prompt, config=types.GenerateContentConfig(temperature=0.1))
+                return (res.text or fallback).strip()
+            except Exception as exc:
+                if "503" not in str(exc) and "UNAVAILABLE" not in str(exc):
+                    break
+                time.sleep(1.5)
+        return fallback
     except Exception:
         return fallback
 
 
 # -------------------------------------------------------------------
+# Superior SA mode
+class SAActivateReq(BaseModel):
+    code: str
+    administrator: str
+
+class SAQueryReq(BaseModel):
+    session_id: str
+    query: str
+
+@router.post("/sa/activate-options")
+def sa_activate_options(req: SAActivateReq, user: dict = Depends(get_admin_dependency())):
+    from sa_agent import activation_options
+    return activation_options(user, req.code)
+
+@router.post("/sa/activate")
+def sa_activate(req: SAActivateReq, user: dict = Depends(get_admin_dependency())):
+    from sa_agent import activate
+    return activate(user, req.code, req.administrator)
+
+@router.post("/sa/query")
+def sa_query(req: SAQueryReq, user: dict = Depends(get_admin_dependency())):
+    from sa_agent import run
+    return run(req.query, user, req.session_id)
+
+@router.post("/sa/end")
+def sa_end(req: SAQueryReq, user: dict = Depends(get_admin_dependency())):
+    from sa_agent import deactivate
+    return deactivate(user, req.session_id)
+
+@router.get("/sa/report")
+def sa_report(session_id: Optional[str] = None, user: dict = Depends(get_admin_dependency())):
+    from sa_agent import report
+    return report(user, session_id)
+
 # HTTP routes
 # -------------------------------------------------------------------
 @router.post("/query")
