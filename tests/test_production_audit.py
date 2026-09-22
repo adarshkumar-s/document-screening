@@ -13,6 +13,7 @@ Covers the defects found during the audit of the deployed application:
 import io
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -141,6 +142,9 @@ def test_no_request_path_executes_ddl(query_counter, make_user_client, insert_la
     admin.get("/api/audit", headers=headers)
     admin.get("/api/documents", headers=headers)
     admin.post("/api/admin/demo/preview", headers=headers)
+    admin.get("/api/admin/ai-approval/proposals", headers=headers)
+    admin.get("/api/admin/data-management/backup/manifest", headers=headers)
+    admin.get("/api/admin/assistant/sa/report", headers=headers)
 
     assert query_counter["ddl"] == 0, [sql[:60] for sql in query_counter["sql"] if sql.startswith(("CREATE", "ALTER"))]
 
@@ -311,3 +315,25 @@ def test_preloaded_registers_produce_identical_risk_and_states(make_user_client,
                                                         registers=_register_index())
     assert _register_states(land) == _register_states(land, case_index=_court_case_index(),
                                                       registers=_register_index())
+
+
+def test_frontend_scripts_parse(tmp_path):
+    """Deployed main once shipped js/admin-assistant.js with a syntax error
+    (unbalanced parentheses next to the SA activation call), which made the
+    browser discard the whole admin-assistant script. Parse every first-party
+    script with node when it is available."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    root = Path(__file__).resolve().parents[1]
+    scripts = [p for p in root.rglob("*.js")
+               if ".venv" not in p.parts and "node_modules" not in p.parts
+               and "vendor" not in p.parts]
+    assert scripts, "expected first-party scripts"
+    for script in scripts:
+        result = subprocess.run([node, "--check", str(script)],
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, f"{script.name}: {result.stderr[:200]}"
