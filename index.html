@@ -792,6 +792,71 @@
 <script src="js/app.js?v=32"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
+<script>
+(function () {
+  function bootAdminAssistant() {
+    const form = document.getElementById("assistantForm");
+    const input = document.getElementById("assistantInput");
+    const log = document.getElementById("assistantChatLog");
+    const loading = document.getElementById("assistantLoading");
+    const button = document.getElementById("assistantSubmitBtn");
+    if (!form || !input || !log || form.dataset.aiBootstrap === "1") return;
+    form.dataset.aiBootstrap = "1";
+
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      const query = input.value.trim();
+      if (!query) return;
+
+      if (typeof window.handleAssistantSubmit === "function") {
+        try {
+          await window.handleAssistantSubmit(event);
+          return;
+        } catch (_) {}
+      }
+
+      const user = document.createElement("div");
+      user.className = "assistant-message user-bubble";
+      user.textContent = query;
+      log.appendChild(user);
+      input.value = "";
+      if (loading) loading.style.display = "flex";
+      if (button) button.disabled = true;
+
+      try {
+        const headers = {"Content-Type":"application/json"};
+        try {
+          const token = localStorage.getItem("lrtoken");
+          if (token) headers.Authorization = "Bearer " + token;
+        } catch (_) {}
+        const response = await fetch("/api/admin/assistant/query", {
+          method:"POST",
+          credentials:"same-origin",
+          headers:headers,
+          body:JSON.stringify({query:query})
+        });
+        const data = await response.json();
+        const msg = document.createElement("div");
+        msg.className = "assistant-message " + (response.ok ? "assistant-bubble" : "error-bubble");
+        msg.textContent = response.ok ? (data.response || "No response returned.") : ("Error: " + (data.detail || "Unable to process request."));
+        log.appendChild(msg);
+      } catch (error) {
+        const msg = document.createElement("div");
+        msg.className = "assistant-message error-bubble";
+        msg.textContent = "Network error: The Admin AI could not be reached.";
+        log.appendChild(msg);
+      } finally {
+        if (loading) loading.style.display = "none";
+        if (button) button.disabled = false;
+        log.scrollTop = log.scrollHeight;
+      }
+    }, true);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootAdminAssistant);
+  else bootAdminAssistant();
+})();
+</script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->
 <script src="portal-ui.js"></script>
 </body>
