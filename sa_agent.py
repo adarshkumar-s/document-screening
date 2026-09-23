@@ -38,17 +38,20 @@ def _model_candidates():
 
 
 def _generate_content(client, prompt, config):
+    # SA should feel responsive. One primary model call plus one fast fallback
+    # is preferable to serially waiting through five models and retries.
     last_exc = None
-    for model in _model_candidates():
-        for attempt in range(2):
-            try:
-                return client.models.generate_content(model=model, contents=prompt, config=config)
-            except Exception as exc:
-                last_exc = exc
-                message = str(exc)
-                if "503" not in message and "UNAVAILABLE" not in message:
-                    break
-                time.sleep(1.5 * (attempt + 1))
+    candidates = _model_candidates()[:2]
+    for index, model in enumerate(candidates):
+        try:
+            return client.models.generate_content(model=model, contents=prompt, config=config)
+        except Exception as exc:
+            last_exc = exc
+            message = str(exc)
+            transient = any(x in message for x in ("503","UNAVAILABLE","429","RESOURCE_EXHAUSTED"))
+            if not transient or index == len(candidates) - 1:
+                break
+            time.sleep(0.25)
     raise last_exc or RuntimeError("No AI model is configured.")
 
 def _json(v):
@@ -344,22 +347,41 @@ async def _execute_reads(plan):
             return {"id":s.get("id"),"tool":s.get("tool"),"purpose":s.get("purpose"),"error":str(e),"ok":False}
     return await asyncio.gather(*(one(s) for s in valid))
 
-def _synthesize(task, evidence):
+def _synthesize(task, evidence, session=None):
     client=_ai()
     if not client:
-        return "SA completed the available evidence gathering.\n\n"+_json(evidence)[:12000]
+        return "I checked the available site data. Here is what I found:\n\n"+_json(evidence)[:9000]
     from google.genai import types
-    prompt=f"""You are SA, the superior administrator assistant for a land-records website.
-Answer the administrator's task using ONLY the evidence below. Be concise but complete.
-Identify uncertainty. Never invent facts. Explain which website features were checked.
-Do not claim an action was executed unless execution evidence says so.
+    recent_context = ""
+    if session:
+        try:
+            with _db() as db:
+                rows=db.execute(
+                    "SELECT task,detail FROM sa_activity WHERE session_id=? AND event_type='TASK_COMPLETED' ORDER BY created_at DESC LIMIT 4",
+                    (session["session_id"],)
+                ).fetchall()
+            if rows:
+                recent_context = "\nRecent SA context (use only to understand follow-ups):\n" + "\n".join(
+                    f"- {r['task']}: {r['detail']}" for r in rows
+                )
+        except Exception:
+            recent_context = ""
+    prompt=f"""You are SA, a friendly, capable operations partner for the administrator of a land-records website.
+Speak naturally, like a helpful teammate, not like a rigid chatbot.
+Start with a direct answer, then give the important evidence and the next useful step.
+If the administrator's request is a follow-up, use the recent SA context when relevant.
+Be concise by default. Do not dump raw JSON unless asked.
+Identify uncertainty clearly. Never invent facts.
+Never claim a consequential action was executed unless execution evidence says so.
+Consequential actions must remain proposals for Administrator Approval.
 Task: {task}
-Evidence: {json.dumps(evidence,ensure_ascii=False,default=str)[:50000]}"""
+Evidence: {json.dumps(evidence,ensure_ascii=False,default=str)[:40000]}
+{recent_context}"""
     try:
-        r=_generate_content(client,prompt,types.GenerateContentConfig(temperature=0.1))
+        r=_generate_content(client,prompt,types.GenerateContentConfig(temperature=0.25,max_output_tokens=700))
         return (r.text or "").strip()
     except Exception:
-        return "SA gathered the following evidence:\n"+_json(evidence)[:12000]
+        return "I checked the available site data.\n\n"+_json(evidence)[:9000]
 
 def _proposal_for_write(task, session):
     t=task.lower()
@@ -411,9 +433,11 @@ def _proposal_for_write(task, session):
 def run(task: str, admin: Dict[str,Any], session_id: str):
     session=_active_session(session_id,admin)
     _log(session,"TASK_STARTED",task,"SA started an administrator task.")
-    plan=_plan_with_ai(task) or _fallback_plan(task)
+    # Do not spend an extra model call merely deciding which deterministic
+    # read tools to invoke. The fast local planner handles normal requests.
+    plan=_fallback_plan(task)
     evidence=asyncio.run(_execute_reads(plan))
-    answer=_synthesize(task,evidence)
+    answer=_synthesize(task,evidence,session)
     card=_proposal_for_write(task,session)
     if card and card.get("error"): answer += "\n\n"+card["error"]
     elif card:
