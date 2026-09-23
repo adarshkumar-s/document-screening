@@ -15,7 +15,7 @@ function setSaHeader(active, label) {
 
 async function beginSaActivation(code) {
   try {
-    const r=await fetchAssistant('/api/admin/assistant/sa/activate-options',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,administrator:''}});
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate-options',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,administrator:''})});
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
     renderSaIdentityOptions(d.options || [], code);

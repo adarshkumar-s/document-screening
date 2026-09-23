@@ -1000,7 +1000,14 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     try:
         from google.genai import types
         model_prompt = f"{FEATURE_KNOWLEDGE}\n{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
-        model_candidates = [\n            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),\n            "gemini-3.8-flash",\n            "gemini-3.7-flash",\n            "gemini-3.6-flash",\n            "gemini-3.5-flash",\n            "gemini-3.5-flash-lite",\n        ]
+        model_candidates = [
+            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ]
         last_exc = None
         for model in dict.fromkeys(x for x in model_candidates if x):
             try:
@@ -1052,7 +1059,14 @@ def build_system_briefing() -> str:
     try:
         from google.genai import types
         prompt = f"""{SYSTEM_INSTRUCTION}\nGenerate a concise administrator briefing in Markdown using only this data:\n{fallback}\nDo not invent numbers."""
-        for model in dict.fromkeys(x for x in [\n            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),\n            "gemini-3.8-flash",\n            "gemini-3.7-flash",\n            "gemini-3.6-flash",\n            "gemini-3.5-flash",\n            "gemini-3.5-flash-lite",\n        ] if x):
+        for model in dict.fromkeys(x for x in [
+            os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ] if x):
             try:
                 res = client.models.generate_content(model=model, contents=prompt, config=types.GenerateContentConfig(temperature=0.1))
                 return (res.text or fallback).strip()

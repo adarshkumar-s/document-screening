@@ -54,7 +54,15 @@ def _generate_content(client, prompt, config):
 def _json(v):
     return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
 
+_tables_ready = False
+
+
 def _ensure_tables():
+    """Create the SA tables once per process. DDL must never run inside a
+    user request — _log and _active_session call this on every request."""
+    global _tables_ready
+    if _tables_ready:
+        return
     with _db() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS sa_sessions(
             session_id TEXT PRIMARY KEY, admin_id TEXT NOT NULL, admin_name TEXT NOT NULL,
@@ -68,6 +76,7 @@ def _ensure_tables():
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS idx_sa_activity_admin_time ON sa_activity(admin_id,created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_sa_activity_session ON sa_activity(session_id,created_at)")
+    _tables_ready = True
 
 def _log(session: Dict[str,Any], event_type: str, task: str, detail: str, data=None):
     _ensure_tables()

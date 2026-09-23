@@ -1,3 +1,9 @@
+import os
+
+# The initial-administrator bootstrap only runs when this is configured; set
+# it before any test module imports so login tests do not depend on import
+# order (test_ocr_workflow.py used to be the only place this was set).
+os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "Admin@123")
 import sys
 from pathlib import Path
 
@@ -81,7 +87,8 @@ def insert_land_document():
 
     def _insert(doc_id=None, *, owner="Ram Singh", survey="452", village="Sundarpur",
                 year="2023", area="2.5 ha", status="APPROVED", doc_type="Land Record",
-                confidence=0.95, mean_conf=90, uploader="landintel@example.test", lat=None, lon=None):
+                confidence=0.95, mean_conf=90, uploader="landintel@example.test", lat=None, lon=None,
+                ocr_text=""):
         doc_id = doc_id or uuid.uuid4().hex[:12]
         fields = {
             "owner_name": {"value": owner, "confidence": confidence},
@@ -105,7 +112,7 @@ def insert_land_document():
                  uploaded_by,reviewer_comments,created_at,updated_at,lat,lon)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (doc_id, f"{doc_id}.pdf", doc_type, mean_conf, "review", status, "[]", 1,
-                 json.dumps(fields), "{}", "{}", "", "", "eng", json.dumps(fields),
+                 json.dumps(fields), "{}", "{}", ocr_text, "", "eng", json.dumps(fields),
                  uploader, "", float(year), float(year), lat, lon),
             )
         inserted.append(doc_id)
@@ -168,3 +175,28 @@ def insert_court_case():
     with server.get_db() as db:
         for cid in inserted:
             db.execute("DELETE FROM land_court_cases WHERE id=?", (cid,))
+
+
+@pytest.fixture
+def query_counter(monkeypatch):
+    """Count + classify database queries issued through server.DBConnection.
+
+    Tests seed first, then reset the counters before the request under
+    measurement, so setup traffic never pollutes the numbers.
+    """
+    import server
+
+    state = {"queries": 0, "ddl": 0, "sql": []}
+    original = server.DBConnection.execute
+
+    def counting_execute(self, query, params=()):
+        statement = " ".join(str(query).split())
+        upper = statement.upper()
+        if upper.startswith(("CREATE", "ALTER", "DROP")):
+            state["ddl"] += 1
+        state["queries"] += 1
+        state["sql"].append(upper)
+        return original(self, query, params)
+
+    monkeypatch.setattr(server.DBConnection, "execute", counting_execute)
+    return state
