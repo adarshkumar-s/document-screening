@@ -689,14 +689,116 @@ Rules:
 
 
 def _record_id_from_prompt(prompt: str) -> Optional[str]:
-    """Extract numeric and UUID-style document IDs used by the current portal."""
+    """Resolve a document reference without treating ordinary verbs as IDs.
+
+    Natural-language requests often contain phrases such as "this record, find..."
+    or "record: #abc123". The old parser consumed the first word after "record",
+    which could turn "find", "show", or "which" into a fake record ID. Prefer
+    explicit #references and labelled IDs, then reject common instruction words.
+    """
     import re
+
+    stopwords = {
+        "find", "show", "which", "what", "where", "why", "how", "can", "could",
+        "should", "would", "tell", "give", "list", "check", "inspect", "view",
+        "open", "get", "is", "are", "this", "that", "the", "my", "it", "on",
+        "operation", "operations", "record", "document", "property", "parcel",
+        "id", "number", "no",
+    }
+
+    # Explicit hash references are the strongest signal: "#adb30ee0c232".
+    m = re.search(r"(?<![A-Za-z0-9])#([A-Za-z0-9][A-Za-z0-9_-]{3,})(?![A-Za-z0-9])", prompt)
+    if m:
+        return m.group(1)
+
+    # Explicit labelled references: "record ID: X", "document number X", etc.
     m = re.search(
-        r"(?:record|document|lr)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})",
+        r"(?:record|document|lr)\s*(?:id|number|no\.?)\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",
         prompt,
         re.I,
     )
-    return m.group(1) if m else None
+    if m and m.group(1).lower() not in stopwords:
+        return m.group(1)
+
+    # Bare identifier after a record/document phrase, but only if it looks like
+    # an identifier rather than normal English.
+    m = re.search(
+        r"(?:record|document|lr)\s*[:#-]\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",
+        prompt,
+        re.I,
+    )
+    if m and m.group(1).lower() not in stopwords:
+        return m.group(1)
+
+    # Property identifiers can be referenced naturally in SA requests.
+    m = re.search(
+        r"(?:property|parcel|survey|khasra)\s*(?:id|number|no\.?)?\s*[:#-]\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",
+        prompt,
+        re.I,
+    )
+    if m and m.group(1).lower() not in stopwords:
+        return m.group(1)
+
+    return None
+
+
+def get_record_operations(record_id: str) -> Dict[str, Any]:
+    """Return the operations the portal can safely perform on one record.
+
+    This is deterministic capability discovery: it never mutates the record and
+    never invents an operation merely because an LLM suggested it.
+    """
+    rec = get_record_details(str(record_id))
+    if rec.get("error"):
+        return rec
+
+    status = str(rec.get("status") or "").upper()
+    confidence = float(rec.get("mean_conf") or 0.0)
+    operations = [
+        {
+            "key": "inspect",
+            "name": "Inspect record",
+            "mode": "READ_ONLY",
+            "available": True,
+            "description": "View the current document, OCR confidence, extracted fields, validation and AI decision-support data.",
+        },
+        {
+            "key": "assign",
+            "name": "Assign for verification",
+            "mode": "APPROVAL_REQUIRED",
+            "available": True,
+            "description": "Prepare a verification task for an active Verification Officer. Administrator approval is required before the task is created.",
+        },
+        {
+            "key": "reprocess",
+            "name": "Request reprocessing",
+            "mode": "APPROVAL_REQUIRED",
+            "available": True,
+            "description": "Prepare a request to send the document back through the reprocessing workflow. Administrator approval is required.",
+        },
+        {
+            "key": "escalate",
+            "name": "Escalate for administrator review",
+            "mode": "APPROVAL_REQUIRED",
+            "available": True,
+            "description": "Prepare an administrator-review task when the record needs additional human attention. Approval is required.",
+        },
+        {
+            "key": "compare",
+            "name": "Compare / consistency check",
+            "mode": "READ_ONLY_OR_APPROVAL",
+            "available": True,
+            "description": "Use the existing comparison/consistency workflows to check this record against related documents; no record data is changed by inspection.",
+        },
+    ]
+    return {
+        "record_id": str(record_id),
+        "filename": rec.get("filename"),
+        "status": status,
+        "ocr_confidence": confidence,
+        "operations": operations,
+        "governance": "Consequential operations are proposals only and require Administrator Approval Center approval.",
+    }
 
 
 def _report_officers() -> str:
@@ -905,6 +1007,31 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         proposal = propose_for_record("ESCALATE_RECORD", record_id, "Escalation recommended for administrator review based on the selected record.", 0.9, "HIGH", {"assigned_to":None,"task_type":"ADMIN_REVIEW","title":"Administrator review for record #"+str(record_id),"priority":"CRITICAL"})
         if proposal.get("error"): return {"response":proposal["error"],"records":[],"action_card":None}
         return {"response":"I prepared an escalation proposal. No record status was changed.", "records":[{"id":record_id}], "action_card":{"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],"action_type":proposal["action_type"],"action_description":"Escalate record for administrator review","target_display":"Record #"+str(record_id)}}
+    # Capability discovery for a specific record. Handle this deterministically so
+    # phrases such as "find which operation can be done on it" never get mistaken
+    # for a record identifier.
+    if any(k in lower for k in [
+        "what operation", "which operation", "what can be done", "what can i do",
+        "available operation", "available operations", "what actions", "which actions",
+    ]):
+        record_id = _record_id_from_prompt(prompt)
+        if not record_id:
+            return {"response":"Tell me the record ID (for example #adb30ee0c232) and I will inspect it and list the operations available for that record.","records":[],"action_card":None}
+        ops = get_record_operations(record_id)
+        if ops.get("error"):
+            return {"response":ops["error"],"records":[],"action_card":None}
+        names = []
+        for op in ops["operations"]:
+            gate = "Administrator approval required" if op["mode"] == "APPROVAL_REQUIRED" else "read-only"
+            names.append(f"- {op['name']} — {gate}: {op['description']}")
+        response = (
+            f"Record #{record_id} is {ops.get('status') or 'in an unknown status'} "
+            f"with OCR confidence {ops.get('ocr_confidence', 0):.1f}.\n\n"
+            "Available operations:\n" + "\n".join(names) +
+            "\n\nI have not changed the record."
+        )
+        return {"response":response,"records":[{"id":record_id,"filename":ops.get("filename"),"status":ops.get("status"),"confidence":ops.get("ocr_confidence")}],"action_card":None}
+
     # Faulty records / attention
     if any(k in lower for k in ["faulty", "problematic", "problem records", "records with issues", "needs my attention"]):
         faulty = get_faulty_records(20)
