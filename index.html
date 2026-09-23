@@ -439,10 +439,18 @@
             <div class="sa-backdrop" onclick="closeSaActivation()"></div>
             <div class="sa-dialog">
               <div class="sa-dialog-head">
-                <div><div class="sa-eyebrow">SECURE ADMIN MODE</div><h3 id="saTitle">Activate SA</h3><p>Choose the authenticated administrator identity for this SA session.</p></div>
+                <div><div class="sa-eyebrow">SECURE ADMIN MODE</div><h3 id="saTitle">Activate SA</h3><p id="saSubtitle">Select the administrator identity you want to use for this SA session.</p></div>
                 <button type="button" class="sa-close" onclick="closeSaActivation()">×</button>
               </div>
               <div id="saIdentityOptions" class="sa-identity-grid"></div>
+              <div id="saPasswordStep" class="sa-password-step hidden">
+                <button type="button" class="sa-back-link" onclick="backToSaIdentities()">← Choose a different administrator</button>
+                <div class="sa-selected-identity"><span id="saSelectedAvatar" class="sa-avatar">?</span><div><strong id="saSelectedName">Administrator</strong><small>SA identity authentication</small></div></div>
+                <label for="saIdentityPassword">Administrator password</label>
+                <input id="saIdentityPassword" type="password" autocomplete="current-password" inputmode="numeric" placeholder="Enter the selected administrator password">
+                <p class="sa-password-hint">This password is checked only by the server. It is never displayed or stored in the browser.</p>
+                <button type="button" id="saPasswordSubmit" class="btn saffron" onclick="submitSaPassword()">Unlock SA</button>
+              </div>
               <div id="saActivationError" class="errorbox hidden"></div>
             </div>
           </div>
