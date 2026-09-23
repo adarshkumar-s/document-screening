@@ -688,55 +688,99 @@ Rules:
 """
 
 
-def _record_id_from_prompt(prompt: str) -> Optional[str]:
-    """Resolve a document reference without treating ordinary verbs as IDs.
+# Words that can never be an identifier. They appear constantly in natural
+# administrator phrasing such as "this record, find which operation...".
+_ID_STOPWORDS = {
+    "find", "show", "which", "what", "where", "why", "how", "can", "could",
+    "should", "would", "tell", "give", "list", "check", "inspect", "view",
+    "open", "get", "is", "are", "this", "that", "the", "my", "it", "on",
+    "operation", "operations", "record", "records", "document", "documents",
+    "property", "parcel", "survey", "khasra", "id", "ids", "number", "numbers",
+    "no", "none", "null", "unknown", "missing", "invalid", "empty", "new",
+    "old", "latest", "recent", "all", "any", "some", "please", "me", "us",
+    "our", "your", "their", "for", "of", "to", "and", "or", "with", "from",
+    "about", "into", "status", "details", "history", "summary", "report",
+}
 
-    Natural-language requests often contain phrases such as "this record, find..."
-    or "record: #abc123". The old parser consumed the first word after "record",
-    which could turn "find", "show", or "which" into a fake record ID. Prefer
-    explicit #references and labelled IDs, then reject common instruction words.
+# Nouns that introduce an identifier in this application.
+_ID_NOUN = r"(?:record|document|documents|lr|property|parcel|survey|khasra)"
+
+
+def _looks_like_identifier(token: Optional[str]) -> bool:
+    """Return True when a captured word can plausibly be a real identifier.
+
+    Real identifiers in this system carry a digit ("adb30ee0c232", "1042",
+    "DOC-2026-ABC", "DEMO-PROP-103-A") or are long opaque strings. Anything
+    else is treated as ordinary English so a verb can never become an ID.
     """
     import re
 
-    stopwords = {
-        "find", "show", "which", "what", "where", "why", "how", "can", "could",
-        "should", "would", "tell", "give", "list", "check", "inspect", "view",
-        "open", "get", "is", "are", "this", "that", "the", "my", "it", "on",
-        "operation", "operations", "record", "document", "property", "parcel",
-        "id", "number", "no",
-    }
+    t = (token or "").strip().strip(".,;:!?()[]{}\"'")
+    if not t or t.lower() in _ID_STOPWORDS:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", t):
+        return False
+    if any(ch.isdigit() for ch in t):
+        return True
+    # Long opaque identifiers (hex document ids) may be digit-free by chance.
+    return len(t) >= 12
 
-    # Explicit hash references are the strongest signal: "#adb30ee0c232".
-    m = re.search(r"(?<![A-Za-z0-9])#([A-Za-z0-9][A-Za-z0-9_-]{3,})(?![A-Za-z0-9])", prompt)
-    if m:
-        return m.group(1)
 
-    # Explicit labelled references: "record ID: X", "document number X", etc.
+def _record_id_from_prompt(prompt: str) -> Optional[str]:
+    """Resolve a document/property reference from natural language.
+
+    Natural-language requests often contain phrases such as "this record, find..."
+    or "record: #abc123". The old parser consumed the first word after "record",
+    which could turn "find", "show", or "which" into a fake record ID, and it
+    required at least four characters, so the identifiers used in this product's
+    own guidance ("record #123", "record 123") were rejected.
+
+    The parser therefore works strongest-signal first and validates every
+    capture with `_looks_like_identifier`:
+      1. explicit "#" references, including short numeric ones,
+      2. labelled references ("record id 1042", "document number: DOC-2026-ABC"),
+      3. punctuated references ("record: adb30ee0c232"),
+      4. bare references whose token carries a digit ("record 123").
+    """
+    import re
+
+    text = prompt or ""
+
+    # 1. Explicit hash references: "#adb30ee0c232", "#123", "#DOC-2026-ABC".
+    for pattern in (
+        r"(?<![A-Za-z0-9])#(\d+)(?![A-Za-z0-9])",
+        r"(?<![A-Za-z0-9])#([A-Za-z0-9][A-Za-z0-9_-]{2,})(?![A-Za-z0-9])",
+    ):
+        m = re.search(pattern, text)
+        if m and _looks_like_identifier(m.group(1)):
+            return m.group(1)
+
+    # 2. Labelled references: "record ID 1042", "document number 987".
     m = re.search(
-        r"(?:record|document|lr)\s*(?:id|number|no\.?)\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",
-        prompt,
+        _ID_NOUN + r"\s*(?:id|ids|number|numbers|no\.?)\s*[:#=-]?\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
+        text,
         re.I,
     )
-    if m and m.group(1).lower() not in stopwords:
+    if m and _looks_like_identifier(m.group(1)):
         return m.group(1)
 
-    # Bare identifier after a record/document phrase, but only if it looks like
-    # an identifier rather than normal English.
+    # 3. Punctuated references: "record: adb30ee0c232", "document-1042".
     m = re.search(
-        r"(?:record|document|lr)\s*[:#-]\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",
-        prompt,
+        _ID_NOUN + r"\s*[:#=-]\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
+        text,
         re.I,
     )
-    if m and m.group(1).lower() not in stopwords:
+    if m and _looks_like_identifier(m.group(1)):
         return m.group(1)
 
-    # Property identifiers can be referenced naturally in SA requests.
+    # 4. Bare references. The token must carry a digit, so ordinary English
+    #    ("record, find which operation...") can never resolve to an ID.
     m = re.search(
-        r"(?:property|parcel|survey|khasra)\s*(?:id|number|no\.?)?\s*[:#-]\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",
-        prompt,
+        _ID_NOUN + r"\s+(?!(?:id|ids|number|numbers|no)\b)([A-Za-z0-9][A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)",
+        text,
         re.I,
     )
-    if m and m.group(1).lower() not in stopwords:
+    if m and _looks_like_identifier(m.group(1)):
         return m.group(1)
 
     return None
