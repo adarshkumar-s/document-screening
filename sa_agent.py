@@ -117,6 +117,47 @@ def _active_session(session_id: str, admin: Dict[str,Any]):
     with _db() as db: db.execute("UPDATE sa_sessions SET last_used_at=? WHERE session_id=?",(time.time(),session_id))
     return session
 
+# Each SA identity has a separate server-side credential. Only the Argon2
+# hashes are stored in the deployment environment; plaintext passwords never
+# live in the repository or browser code.
+IDENTITIES = {
+    "gautam": "Gautam",
+    "adarsh": "Adarsh",
+    "devi_cr": "Devi Cr",
+}
+SA_PASSWORD_ENV = {
+    "gautam": "SA_PASSWORD_HASH_GAUTAM",
+    "adarsh": "SA_PASSWORD_HASH_ADARSH",
+    "devi_cr": "SA_PASSWORD_HASH_DEVI_CR",
+}
+SA_MAX_PASSWORD_ATTEMPTS = 5
+SA_ATTEMPT_WINDOW_SECONDS = 15 * 60
+_sa_password_attempts: Dict[str, List[float]] = {}
+
+def _identity_key(name: str) -> str:
+    return str(name or "").strip().lower().replace(" ", "_")
+
+def _password_hash_for(identity_key: str) -> str:
+    return os.getenv(SA_PASSWORD_ENV.get(identity_key, ""), "").strip()
+
+def _check_password(identity_key: str, password: str) -> bool:
+    stored_hash = _password_hash_for(identity_key)
+    if not stored_hash or not password:
+        return False
+    try:
+        return bool(_server().verify_password(stored_hash, password)[0])
+    except Exception:
+        return False
+
+def _password_attempt_allowed(identity_key: str) -> bool:
+    now = time.time()
+    recent = [ts for ts in _sa_password_attempts.get(identity_key, []) if now - ts < SA_ATTEMPT_WINDOW_SECONDS]
+    _sa_password_attempts[identity_key] = recent
+    return len(recent) < SA_MAX_PASSWORD_ATTEMPTS
+
+def _record_password_failure(identity_key: str):
+    _sa_password_attempts.setdefault(identity_key, []).append(time.time())
+
 def activation_options(admin: Dict[str,Any], code: str):
     expected=os.getenv(SA_CODE_ENV,"").strip()
     if not expected:
@@ -126,29 +167,41 @@ def activation_options(admin: Dict[str,Any], code: str):
         try: _server().log_audit(admin["full_name"],"SA_ACTIVATION_FAILED","Invalid SA activation attempt.",None)
         except Exception: pass
         raise HTTPException(403,"Invalid SA activation code.")
-    names=["Gautam","Adarsh","Devi Cr"]
-    return {"options":[{"key":n.lower().replace(" ","_"),"name":n} for n in names],
+    return {"options":[{"key":key,"name":name} for key,name in IDENTITIES.items()],
             "authenticated_admin":{"id":admin["id"],"name":admin["full_name"],"email":admin.get("email")}}
 
-def activate(admin: Dict[str,Any], code: str, selected_name: str):
+def activate(admin: Dict[str,Any], code: str, selected_name: str, password: str):
     activation_options(admin,code)
-    allowed={"gautam":"Gautam","adarsh":"Adarsh","devi_cr":"Devi Cr"}
-    canonical=allowed.get(str(selected_name).strip().lower().replace(" ","_"))
-    if not canonical: raise HTTPException(400,"Select one of the registered administrator identities.")
-    # Identity selection is an audit label, never an impersonation mechanism.
-    normalized_actual=str(admin.get("full_name") or "").strip().lower()
-    if canonical.lower() not in normalized_actual and normalized_actual not in {canonical.lower(),canonical.lower().replace(" ","")}:
-        raise HTTPException(403,"The selected administrator identity does not match the authenticated account.")
+    identity_key = _identity_key(selected_name)
+    canonical = IDENTITIES.get(identity_key)
+    if not canonical:
+        raise HTTPException(400,"Select one of the registered administrator identities.")
+    if not _password_attempt_allowed(identity_key):
+        try: _server().log_audit(admin["full_name"],"SA_ACTIVATION_LOCKED",
+                                 f"SA password temporarily locked for identity {identity_key}.",None)
+        except Exception: pass
+        raise HTTPException(429,"Too many failed password attempts for this administrator identity. Try again later.")
+    if not _check_password(identity_key, password):
+        _record_password_failure(identity_key)
+        try: _server().log_audit(admin["full_name"],"SA_ACTIVATION_FAILED",
+                                 f"Invalid SA identity password for {identity_key}.",None)
+        except Exception: pass
+        raise HTTPException(403,"The password for the selected administrator identity is incorrect.")
+    _sa_password_attempts.pop(identity_key, None)
+
+    # The authenticated account must already be an administrator. The second
+    # credential proves which SA identity is being activated; it is never
+    # accepted as a way to impersonate a non-authenticated website account.
     _ensure_tables()
     sid="SA-"+uuid.uuid4().hex[:12].upper()
     now=time.time()
     with _db() as db:
         db.execute("""INSERT INTO sa_sessions(session_id,admin_id,admin_name,admin_email,activated_at,expires_at,active,last_used_at)
-                      VALUES(?,?,?,?,?,?,1,?)""",(sid,admin["id"],canonical,admin.get("email"),now,now+SA_TTL,now))
+                      VALUES(?,?,?,?,?,?,1,?)""",(sid,admin["id"],canonical,admin.get("email"),now,now+SA_TTL,1,now))
     session={"session_id":sid,"admin_id":admin["id"],"admin_name":canonical,"admin_email":admin.get("email")}
-    _log(session,"SESSION_STARTED","SA activation",f"SA activated as admin.{canonical.lower().replace(' ','_')}",
+    _log(session,"SESSION_STARTED","SA activation",f"SA activated as admin.{identity_key}",
          {"authenticated_admin":admin["full_name"],"selected_identity":canonical})
-    return {"session_id":sid,"admin":f"admin.{canonical.lower().replace(' ','_')}","expires_at":now+SA_TTL,
+    return {"session_id":sid,"admin":f"admin.{identity_key}","expires_at":now+SA_TTL,
             "features":feature_catalog()}
 
 def deactivate(admin, session_id):
