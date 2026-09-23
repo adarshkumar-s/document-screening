@@ -223,6 +223,7 @@ def _read_tools():
         "attention_records": lambda args: a.get_faulty_records(int(args.get("limit",30))),
         "search_documents": lambda args: a.search_records(str(args.get("query","")),int(args.get("limit",20))),
         "document": lambda args: a.get_record_details(str(args["record_id"])),
+        "record_operations": lambda args: a.get_record_operations(str(args["record_id"])),
         "officers": lambda args: a.list_verification_officers(),
         "officer_workload": lambda args: a.get_officer_workload(str(args["officer_id"])),
         "tasks": lambda args: a.get_tasks_for_user({"id":None,"role":"ADMIN"},limit=int(args.get("limit",100))),
@@ -273,6 +274,7 @@ READ_TOOL_DESCRIPTIONS = {
     "attention_records":"Find records requiring attention using deterministic OCR/validation/consistency signals.",
     "search_documents":"Search documents by ID, owner, survey/khasra or village.",
     "document":"Retrieve the complete current document record by ID.",
+    "record_operations":"Determine which implemented read-only and approval-gated operations are available for a specific record.",
     "officers":"List active Verification Officers and workloads.",
     "officer_workload":"Get one officer's workload.",
     "tasks":"List AI workflow tasks.",
@@ -296,8 +298,30 @@ WRITE_INTENTS = {
 }
 
 def _extract_id(text):
-    m=re.search(r"(?:record|document|lr|property|parcel|survey|khasra)\s*(?:id|number|no\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})",text,re.I)
-    return m.group(1) if m else None
+    """Resolve an actual-looking record/property reference from natural language.
+
+    Explicit #IDs win. The parser deliberately refuses common English verbs so
+    "this record find which operation..." cannot resolve the word "find" as an ID.
+    """
+    stopwords={
+        "find","show","which","what","where","why","how","can","could","should",
+        "would","tell","give","list","check","inspect","view","open","get","is",
+        "are","this","that","the","my","it","on","operation","operations","record",
+        "document","property","parcel","id","number","no",
+    }
+    m=re.search(r"(?<![A-Za-z0-9])#([A-Za-z0-9][A-Za-z0-9_-]{3,})(?![A-Za-z0-9])",text)
+    if m:
+        return m.group(1)
+    m=re.search(r"(?:record|document|lr)\s*(?:id|number|no\.?)\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",text,re.I)
+    if m and m.group(1).lower() not in stopwords:
+        return m.group(1)
+    m=re.search(r"(?:record|document|lr)\s*[:#-]\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",text,re.I)
+    if m and m.group(1).lower() not in stopwords:
+        return m.group(1)
+    m=re.search(r"(?:property|parcel|survey|khasra)\s*(?:id|number|no\.?)?\s*[:#-]\s*([A-Za-z0-9][A-Za-z0-9_-]{3,})",text,re.I)
+    if m and m.group(1).lower() not in stopwords:
+        return m.group(1)
+    return None
 
 def _plan_with_ai(task: str):
     client=_ai()
@@ -322,7 +346,14 @@ def _fallback_plan(task):
     t=task.lower()
     rid=_extract_id(task)
     steps=[]
-    if rid: steps.append({"id":"document","tool":"document","args":{"record_id":rid},"purpose":"Inspect the referenced document","depends_on":[]})
+    wants_operations=any(x in t for x in (
+        "what operation","which operation","what can be done","available operation",
+        "available operations","what actions","which actions"
+    ))
+    if rid:
+        steps.append({"id":"document","tool":"document","args":{"record_id":rid},"purpose":"Inspect the referenced document","depends_on":[]})
+        if wants_operations:
+            steps.append({"id":"operations","tool":"record_operations","args":{"record_id":rid},"purpose":"List the implemented operations available for this record","depends_on":["document"]})
     if any(x in t for x in ["land","property","parcel","mutation","encumbrance","ownership","location"]):
         if rid: steps += [{"id":"property","tool":"property","args":{"property_id":rid},"purpose":"Inspect land/property context","depends_on":[]},
                           {"id":"history","tool":"property_history","args":{"property_id":rid},"purpose":"Inspect ownership history","depends_on":[]}]
@@ -373,6 +404,7 @@ If the administrator's request is a follow-up, use the recent SA context when re
 Be concise by default. Do not dump raw JSON unless asked.
 Identify uncertainty clearly. Never invent facts.
 Never claim a consequential action was executed unless execution evidence says so.
+If the task asks what can be done with a record, explicitly list the operations found in the record_operations evidence and distinguish READ_ONLY from APPROVAL_REQUIRED.
 Consequential actions must remain proposals for Administrator Approval.
 Task: {task}
 Evidence: {json.dumps(evidence,ensure_ascii=False,default=str)[:40000]}
@@ -476,6 +508,9 @@ def run(task: str, admin: Dict[str,Any], session_id: str):
         evidence=[]
         card=None
     else:
+        # Keep ordinary turns fast and deterministic. The fallback planner now
+        # understands explicit #IDs and operation-discovery requests, so simple
+        # questions do not need a second "planning" model round.
         plan=_fallback_plan(task)
         evidence=asyncio.run(_execute_reads(plan))
         answer=_synthesize(task,evidence,session)
