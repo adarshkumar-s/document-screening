@@ -1177,16 +1177,21 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     try:
         from google.genai import types
         model_prompt = f"{FEATURE_KNOWLEDGE}\n{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
-        # Prefer one healthy fast model. Only fall back when the provider
-        # reports a transient availability failure; do not serially try five
-        # models for every normal request.
+        # Use several current Gemini fallbacks. A 503 is a capacity problem,
+        # not evidence that the assistant itself is broken. Different models can
+        # have different available capacity, so move quickly to the next model.
         model_candidates = list(dict.fromkeys(x for x in [
             os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
             "gemini-3.8-flash",
+            "gemini-3.7-flash",
             "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
         ] if x))
         last_exc = None
-        for model in model_candidates:
+        transient_seen = False
+        for index, model in enumerate(model_candidates):
             try:
                 response = client.models.generate_content(
                     model=model,
@@ -1196,12 +1201,30 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
                 return {"response": (response.text or "").strip(), "records": records_found, "action_card": None}
             except Exception as exc:
                 last_exc = exc
-                message = str(exc)
-                if "503" not in message and "UNAVAILABLE" not in message and "429" not in message and "RESOURCE_EXHAUSTED" not in message:
+                message = str(exc).lower()
+                transient = any(x in message for x in (
+                    "503", "unavailable", "429", "resource_exhausted",
+                    "500", "502", "504", "deadline", "timeout",
+                ))
+                if not transient:
                     break
-                if model != model_candidates[-1]:
-                    time.sleep(0.25)
-        return {"response": f"Database information is available, but all configured AI models are temporarily unavailable. Please retry shortly. Last error: {last_exc}", "records": records_found, "action_card": None}
+                transient_seen = True
+                # Short jitter-free backoff keeps the UI responsive while
+                # allowing a temporarily overloaded endpoint to recover.
+                if index < len(model_candidates) - 1:
+                    time.sleep(min(0.4 * (index + 1), 1.2))
+
+        if transient_seen:
+            return {
+                "response": (
+                    "I have the site data, but Google's AI capacity is temporarily "
+                    "busy across the configured models. I did not lose your request "
+                    "or change any records. Please retry in a moment."
+                ),
+                "records": records_found,
+                "action_card": None,
+            }
+        return {"response": f"AI could not process this request: {last_exc}", "records": records_found, "action_card": None}
     except Exception as exc:
         return {"response": f"Database information is available, but AI explanation is temporarily unavailable: {str(exc)}", "records": records_found, "action_card": None}
 
