@@ -962,29 +962,34 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
             lines.append(f"- {t['id']} | #{t.get('record_id') or '—'} | {t['priority']} | {t['assigned_name']} | {t['status']}")
         return {"response": "\n".join(lines), "records": [], "action_card": None}
 
+    # Keep ordinary chat fast: only load the datasets the current question needs.
+    # The previous implementation built full operational intelligence on every
+    # turn, which duplicated several database scans even for simple questions.
     stats = get_system_statistics()
-    pending = get_pending_records(limit=5)
-    low_ocr = get_low_confidence_records(limit=5)
-    faulty = get_faulty_records(8)
-    officers = list_verification_officers()
-    recent = get_recent_activity(limit=5)
-    intelligence = get_operational_intelligence()
     context = {
         "statistics": stats,
-        "pending_records": pending,
-        "low_confidence_records": low_ocr,
-        "faulty_records": faulty,
-        "verification_officers": officers,
-        "recent_activity": recent,
-        "operational_intelligence": intelligence,
         "governance": {"consequential_actions_require_admin_approval": True},
     }
-
     records_found = []
-    if "pending" in lower:
+
+    if "pending" in lower or "verification queue" in lower:
+        pending = get_pending_records(limit=8)
         records_found = pending
+        context["pending_records"] = pending
     elif "low" in lower or "confidence" in lower:
+        low_ocr = get_low_confidence_records(limit=8)
         records_found = low_ocr
+        context["low_confidence_records"] = low_ocr
+    elif any(k in lower for k in ["attention", "urgent", "risk", "problem", "issue"]):
+        faulty = get_faulty_records(12)
+        records_found = faulty
+        context["attention_records"] = faulty
+    elif any(k in lower for k in ["officer", "workload", "available", "verifier"]):
+        context["verification_officers"] = list_verification_officers()
+    elif any(k in lower for k in ["activity", "audit", "recent"]):
+        context["recent_activity"] = get_recent_activity(limit=10)
+    elif any(k in lower for k in ["overview", "status", "dashboard", "today", "happening"]):
+        context["operational_intelligence"] = get_operational_intelligence()
     elif any(k in lower for k in ["search", "find", "show"]):
         cleaned = lower
         for word in ("search", "find", "show", "records"):
@@ -992,6 +997,7 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
         cleaned = cleaned.strip()
         if cleaned:
             records_found = search_records(cleaned, limit=8)
+            context["search_results"] = records_found
 
     client = get_ai_client()
     if not client:
@@ -1000,28 +1006,30 @@ def run_assistant_turn(prompt: str) -> Dict[str, Any]:
     try:
         from google.genai import types
         model_prompt = f"{FEATURE_KNOWLEDGE}\n{SYSTEM_INSTRUCTION}\n\nLive system data (authoritative):\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\nAdministrator request:\n{prompt}"
-        model_candidates = [
+        # Prefer one healthy fast model. Only fall back when the provider
+        # reports a transient availability failure; do not serially try five
+        # models for every normal request.
+        model_candidates = list(dict.fromkeys(x for x in [
             os.getenv("ADMIN_ASSISTANT_MODEL", "").strip(),
             "gemini-3.8-flash",
-            "gemini-3.7-flash",
             "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-        ]
+        ] if x))
         last_exc = None
-        for model in dict.fromkeys(x for x in model_candidates if x):
+        for model in model_candidates:
             try:
                 response = client.models.generate_content(
                     model=model,
                     contents=model_prompt,
-                    config=types.GenerateContentConfig(temperature=0.15),
+                    config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=700),
                 )
                 return {"response": (response.text or "").strip(), "records": records_found, "action_card": None}
             except Exception as exc:
                 last_exc = exc
-                if "503" not in str(exc) and "UNAVAILABLE" not in str(exc):
+                message = str(exc)
+                if "503" not in message and "UNAVAILABLE" not in message and "429" not in message and "RESOURCE_EXHAUSTED" not in message:
                     break
-                time.sleep(1.5)
+                if model != model_candidates[-1]:
+                    time.sleep(0.25)
         return {"response": f"Database information is available, but all configured AI models are temporarily unavailable. Please retry shortly. Last error: {last_exc}", "records": records_found, "action_card": None}
     except Exception as exc:
         return {"response": f"Database information is available, but AI explanation is temporarily unavailable: {str(exc)}", "records": records_found, "action_card": None}
