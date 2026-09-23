@@ -199,3 +199,14 @@
 .sa-report-row span{font-size:11px;color:#334155;overflow-wrap:anywhere}
 .sa-report-row small{grid-column:2;color:#64748b;font-size:10px}
 @media(max-width:650px){.sa-identity-grid{grid-template-columns:1fr}.sa-dialog-head{padding:15px}.sa-report-panel{right:10px;bottom:10px;width:calc(100vw - 20px)}}
+
+.sa-password-step{padding:20px;display:flex;flex-direction:column;gap:9px}
+.sa-password-step label{font-size:12px;font-weight:800;color:#0b2f55}
+.sa-password-step input{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:15px;letter-spacing:.08em}
+.sa-password-step input:focus{outline:none;border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.14)}
+.sa-password-hint{margin:0 0 3px;color:#64748b;font-size:11px;line-height:1.45}
+.sa-selected-identity{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px}
+.sa-selected-identity strong{display:block;color:#0b2f55;font-size:14px}
+.sa-selected-identity small{display:block;color:#64748b;font-size:10px;margin-top:2px}
+.sa-back-link{align-self:flex-start;border:0;background:transparent;color:#1d4ed8;padding:0;cursor:pointer;font-size:11px;font-weight:700}
+.sa-back-link:hover{text-decoration:underline}
