@@ -430,22 +430,60 @@ def _proposal_for_write(task, session):
     return {"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],
             "action_type":proposal["action_type"],"action_description":f"SA prepared {action.replace('_',' ')}","target_display":rid or "multi-record operation"}
 
+def _is_deep_task(task: str) -> bool:
+    t=task.lower()
+    deep_terms=("deep research","deep analysis","comprehensive","exhaustive","all features","everything about","full investigation","investigate fully","end to end","compare every","cross-check everything","complete audit","thoroughly")
+    return len(t) > 420 or any(x in t for x in deep_terms)
+
+def _arena_prompt(task: str) -> str:
+    return """You are doing a deep investigation of my land-record/document-screening website.
+Do not change production data. Use the site existing read-only features and produce an evidence-based report.
+
+Administrator request:
+""" + task + """
+
+Investigate, as applicable:
+1. The target document/record and its OCR, extracted fields, validation and AI decision support.
+2. Linked property/parcel, location and map information.
+3. Ownership/property history and mutation context.
+4. Encumbrances and litigation/court information.
+5. Verification status, officer workload and related AI tasks.
+6. Recent audit/governance activity relevant to the target.
+7. Any inconsistencies or missing evidence.
+8. A concise findings section, uncertainty/limitations, and recommended human follow-up.
+
+Do not invent data. Do not make legal conclusions. Do not execute consequential changes.
+Return the report with clear evidence references and identify anything that requires Administrator Approval."""
+
 def run(task: str, admin: Dict[str,Any], session_id: str):
     session=_active_session(session_id,admin)
     _log(session,"TASK_STARTED",task,"SA started an administrator task.")
-    # Do not spend an extra model call merely deciding which deterministic
-    # read tools to invoke. The fast local planner handles normal requests.
-    plan=_fallback_plan(task)
-    evidence=asyncio.run(_execute_reads(plan))
-    answer=_synthesize(task,evidence,session)
-    card=_proposal_for_write(task,session)
-    if card and card.get("error"): answer += "\n\n"+card["error"]
-    elif card:
-        answer += "\n\nI prepared the requested consequential action. Nothing has been changed. Review and approve it in the AI Approval Center."
-    _log(session,"TASK_COMPLETED",task,"SA completed evidence gathering and preparation.",{"plan":plan,"evidence":evidence,"proposal_id":card.get("proposal_id") if card else None})
-    return {"response":answer,"mode":"SA","admin":f"admin.{session['admin_name'].lower().replace(' ','_')}",
-            "plan":plan,"evidence":evidence,"action_card":card,"session_id":session_id}
-
+    t=task.lower().strip()
+    if t in {"hi","hello","hey","good morning","good afternoon","good evening"}:
+        answer="Hi! I am SA. Tell me what you want to inspect or get done, and I will work through the site with you. If the task is consequential, I will prepare it for Administrator Approval rather than changing anything directly."
+        plan={"goal":"conversation","steps":[],"response_style":"friendly"}
+        evidence=[]
+        card=None
+    elif any(x in t for x in ("what can you do","what can you help","capabilities","features can you access")):
+        answer="I can work across the site documents, OCR and validation, Land Intelligence, ownership history, mapping, litigation, verification workflow, officer workload, AI tasks, governance and audit information. I can prepare consequential changes for approval, but I will not bypass the Approval Center."
+        plan={"goal":"capability overview","steps":[],"response_style":"friendly"}
+        evidence=[]
+        card=None
+    elif _is_deep_task(task):
+        prompt=_arena_prompt(task)
+        answer="This one is better treated as a deep investigation rather than a quick SA turn. I will not make you wait while I run a long chain here. I have prepared an Arena AI prompt you can use for the deep work:\n\n"+prompt
+        plan={"goal":"deep-work handoff","steps":[],"response_style":"friendly"}
+        evidence=[]
+        card=None
+    else:
+        plan=_fallback_plan(task)
+        evidence=asyncio.run(_execute_reads(plan))
+        answer=_synthesize(task,evidence,session)
+        card=_proposal_for_write(task,session)
+        if card and card.get("error"): answer += "\n\n"+card["error"]
+        elif card: answer += "\n\nI prepared the consequential action, but nothing has changed. Please review and approve it in the AI Approval Center."
+    _log(session,"TASK_COMPLETED",task,"SA completed the request.",{"plan":plan,"evidence":evidence,"proposal_id":card.get("proposal_id") if card else None})
+    return {"response":answer,"mode":"SA","admin":f"admin.{session["admin_name"].lower().replace(" ","_")}","plan":plan,"evidence":evidence,"action_card":card,"session_id":session_id}
 def report(admin:Dict[str,Any], session_id:Optional[str]=None, limit:int=200):
     _ensure_tables()
     with _db() as db:
