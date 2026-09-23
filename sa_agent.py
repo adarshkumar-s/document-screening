@@ -197,7 +197,7 @@ def activate(admin: Dict[str,Any], code: str, selected_name: str, password: str)
     now=time.time()
     with _db() as db:
         db.execute("""INSERT INTO sa_sessions(session_id,admin_id,admin_name,admin_email,activated_at,expires_at,active,last_used_at)
-                      VALUES(?,?,?,?,?,?,1,?)""",(sid,admin["id"],canonical,admin.get("email"),now,now+SA_TTL,1,now))
+                      VALUES(?,?,?,?,?,?,1,?)""",(sid,admin["id"],canonical,admin.get("email"),now,now+SA_TTL,now))
     session={"session_id":sid,"admin_id":admin["id"],"admin_name":canonical,"admin_email":admin.get("email")}
     _log(session,"SESSION_STARTED","SA activation",f"SA activated as admin.{identity_key}",
          {"authenticated_admin":admin["full_name"],"selected_identity":canonical})
