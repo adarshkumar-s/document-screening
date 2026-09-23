@@ -483,7 +483,7 @@ def run(task: str, admin: Dict[str,Any], session_id: str):
         if card and card.get("error"): answer += "\n\n"+card["error"]
         elif card: answer += "\n\nI prepared the consequential action, but nothing has changed. Please review and approve it in the AI Approval Center."
     _log(session,"TASK_COMPLETED",task,"SA completed the request.",{"plan":plan,"evidence":evidence,"proposal_id":card.get("proposal_id") if card else None})
-    return {"response":answer,"mode":"SA","admin":f"admin.{session["admin_name"].lower().replace(" ","_")}","plan":plan,"evidence":evidence,"action_card":card,"session_id":session_id}
+    return {"response":answer,"mode":"SA","admin":"admin."+session["admin_name"].lower().replace(" ","_"),"plan":plan,"evidence":evidence,"action_card":card,"session_id":session_id}
 def report(admin:Dict[str,Any], session_id:Optional[str]=None, limit:int=200):
     _ensure_tables()
     with _db() as db:
