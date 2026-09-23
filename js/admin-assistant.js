@@ -28,27 +28,64 @@ async function beginSaActivation(code) {
 function renderSaIdentityOptions(options, code) {
   const root=document.getElementById('saIdentityOptions'); if(!root) return;
   root.replaceChildren();
+  document.getElementById('saPasswordStep')?.classList.add('hidden');
+  root.classList.remove('hidden');
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
   options.forEach(o=>{
     const b=document.createElement('button'); b.type='button'; b.className='sa-identity-card';
     b.innerHTML='<span class="sa-avatar">'+String(o.name||'?').charAt(0)+'</span><strong></strong><small>Administrator</small>';
     b.querySelector('strong').textContent=o.name;
-    b.onclick=()=>activateSaIdentity(code,o.name,b);
+    b.onclick=()=>selectSaIdentity(code,o.name);
     root.appendChild(b);
   });
 }
 
-async function activateSaIdentity(code,name,button) {
-  document.querySelectorAll('.sa-identity-card').forEach(b=>b.disabled=true);
+let saActivationCode = '';
+let saSelectedIdentity = '';
+
+function selectSaIdentity(code,name) {
+  saActivationCode=code;
+  saSelectedIdentity=name;
+  document.getElementById('saIdentityOptions')?.classList.add('hidden');
+  document.getElementById('saPasswordStep')?.classList.remove('hidden');
+  const nameEl=document.getElementById('saSelectedName'); if(nameEl) nameEl.textContent=name;
+  const avatar=document.getElementById('saSelectedAvatar'); if(avatar) avatar.textContent=String(name||'?').charAt(0);
+  const input=document.getElementById('saIdentityPassword');
+  if(input){input.value=''; setTimeout(()=>input.focus(),50);}
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+}
+
+function backToSaIdentities() {
+  document.getElementById('saPasswordStep')?.classList.add('hidden');
+  document.getElementById('saIdentityOptions')?.classList.remove('hidden');
+  const input=document.getElementById('saIdentityPassword'); if(input) input.value='';
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+}
+
+async function submitSaPassword() {
+  const passwordInput=document.getElementById('saIdentityPassword');
+  const submit=document.getElementById('saPasswordSubmit');
+  const password=passwordInput?.value || '';
+  if(!saSelectedIdentity || !password){ 
+    const box=document.getElementById('saActivationError'); if(box){box.textContent='Enter the password for the selected administrator.';box.classList.remove('hidden');}
+    return;
+  }
+  if(submit) submit.disabled=true;
   try {
-    const r=await fetchAssistant('/api/admin/assistant/sa/activate',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,administrator:name})});
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate',{
+      method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code:saActivationCode,administrator:saSelectedIdentity,password:password})
+    });
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
+    passwordInput.value='';
     saSessionId=d.session_id; saAdminLabel=d.admin;
     closeSaActivation(); setSaHeader(true,saAdminLabel);
     appendAssistantMessage('SA activated as '+saAdminLabel+'. I can now plan and coordinate work across the registered website features. Consequential actions still stop at the Administrator Approval Center before execution.','assistant-bubble');
   } catch(e) {
+    if(passwordInput) passwordInput.value='';
     const box=document.getElementById('saActivationError'); if(box){box.textContent=e.message;box.classList.remove('hidden');}
-  } finally { document.querySelectorAll('.sa-identity-card').forEach(b=>b.disabled=false); }
+  } finally { if(submit) submit.disabled=false; }
 }
 
 function closeSaActivation(){ document.getElementById('saActivationModal')?.classList.add('hidden'); }
