@@ -462,30 +462,116 @@ def _proposal_for_write(task, session):
     return {"confirmation_required":True,"proposal":proposal,"proposal_id":proposal["proposal_id"],
             "action_type":proposal["action_type"],"action_description":f"SA prepared {action.replace('_',' ')}","target_display":rid or "multi-record operation"}
 
-def _is_deep_task(task: str) -> bool:
-    t=task.lower()
-    deep_terms=("deep research","deep analysis","comprehensive","exhaustive","all features","everything about","full investigation","investigate fully","end to end","compare every","cross-check everything","complete audit","thoroughly")
-    return len(t) > 420 or any(x in t for x in deep_terms)
+def _is_arena_task(task: str) -> bool:
+    """Decide whether the request should be handed to Arena AI.
+
+    Arena is the coding/implementation agent for this repository. SA should
+    remain the fast conversational and operational interface; it should not
+    attempt large implementation jobs itself. The handoff is a prompt for
+    Arena, not an action performed by SA.
+    """
+    t=task.lower().strip()
+
+    arena_terms=(
+        # implementation / coding
+        "code", "coding", "implement", "implementation", "build", "develop",
+        "development", "refactor", "rewrite", "redesign", "rebuild",
+        "create a feature", "add a feature", "add functionality",
+        "modify the code", "change the code", "edit the code",
+        "fix the code", "patch", "debug", "bug", "error in the app",
+        "fix this", "fix the issue", "make it work", "make this work",
+        # repository / deployment work
+        "repository", "repo", "github", "file", "files", "route", "endpoint",
+        "frontend", "backend", "database schema", "migration", "api",
+        "deploy", "deployment", "render", "docker", "production",
+        # explicitly heavy work
+        "heavy work", "large change", "major change", "complex change",
+        "deep implementation", "full implementation", "complete implementation",
+        "end to end implementation", "architecture", "architect",
+        "full rebuild", "complete rebuild",
+    )
+
+    # Very long implementation requests are also better delegated, even if
+    # they do not contain one of the exact terms above.
+    return len(t) > 700 or any(term in t for term in arena_terms)
+
 
 def _arena_prompt(task: str) -> str:
-    return """You are doing a deep investigation of my land-record/document-screening website.
-Do not change production data. Use the site existing read-only features and produce an evidence-based report.
+    """Create a production-grade implementation brief for Arena AI.
 
-Administrator request:
-""" + task + """
+    Arena is the agent that can actually inspect and modify this repository.
+    SA's job is to understand the administrator's request and hand Arena a
+    complete, unambiguous implementation brief rather than pretending to do
+    the coding itself.
+    """
+    return f"""You are Arena AI, the implementation/coding agent working directly
+on the repository:
 
-Investigate, as applicable:
-1. The target document/record and its OCR, extracted fields, validation and AI decision support.
-2. Linked property/parcel, location and map information.
-3. Ownership/property history and mutation context.
-4. Encumbrances and litigation/court information.
-5. Verification status, officer workload and related AI tasks.
-6. Recent audit/governance activity relevant to the target.
-7. Any inconsistencies or missing evidence.
-8. A concise findings section, uncertainty/limitations, and recommended human follow-up.
+https://github.com/adarshkumar-s/document-screening
 
-Do not invent data. Do not make legal conclusions. Do not execute consequential changes.
-Return the report with clear evidence references and identify anything that requires Administrator Approval."""
+The administrator sent this request through the site's SA assistant:
+
+--- ADMINISTRATOR REQUEST ---
+{task}
+--- END REQUEST ---
+
+Your job is to inspect the EXISTING repository first and then implement the
+requested work directly in the repository.
+
+IMPORTANT WORKING RULES
+1. Do NOT guess the current architecture. Inspect the relevant existing files,
+   routes, templates, frontend JavaScript/CSS, backend code, database models,
+   authentication/authorization, APIs, tests, configuration, and deployment
+   setup before editing.
+2. Do NOT throw away existing working functionality unless the administrator
+   explicitly requested a replacement.
+3. Preserve existing security, authentication, authorization, audit logging,
+   approval gates, and administrator controls.
+4. Reuse the application's existing patterns and components where practical.
+5. Make the change complete across the full stack when required; do not stop
+   after changing only the visible UI.
+6. Handle edge cases, errors, loading states, empty states, permissions, and
+   responsive behavior where relevant.
+7. Keep consequential actions behind the existing administrator approval
+   workflow. Never weaken or bypass an approval gate just to make a feature
+   convenient.
+8. Do not invent database fields, routes, APIs, or existing functionality.
+   Verify them from the repository before using them.
+9. After implementation, run the relevant tests/checks and inspect the final
+   diff for regressions.
+10. If deployment configuration is affected, verify it against the repository's
+    actual Render/Docker/startup configuration rather than assuming it.
+11. If the request is ambiguous, inspect the repository for context first.
+    Only ask for clarification when a safe implementation genuinely cannot be
+    determined.
+12. Finish the requested implementation rather than merely describing code
+    that the administrator could write.
+
+QUALITY BAR
+- Production-quality implementation.
+- Consistent with the existing application's architecture and UI.
+- No placeholder code.
+- No fake success messages.
+- No dead buttons or UI that is not connected to its backend behavior.
+- No accidental data mutation during read-only operations.
+- No regression to existing routes or workflows.
+- Verify that all changed imports, references, routes, selectors, and assets
+  actually exist.
+
+DELIVERABLE
+When finished, report:
+1. What you changed.
+2. Which files changed.
+3. Important architectural decisions.
+4. Tests/validation performed and their results.
+5. Any limitations or remaining risks.
+6. The commit(s) created, if applicable.
+
+Do the repository inspection and implementation yourself. This prompt is the
+handoff from SA; the administrator expects Arena to perform the actual coding
+work, not merely return suggestions.
+"""
+
 
 def run(task: str, admin: Dict[str,Any], session_id: str):
     session=_active_session(session_id,admin)
@@ -501,9 +587,9 @@ def run(task: str, admin: Dict[str,Any], session_id: str):
         plan={"goal":"capability overview","steps":[],"response_style":"friendly"}
         evidence=[]
         card=None
-    elif _is_deep_task(task):
+    elif _is_arena_task(task):
         prompt=_arena_prompt(task)
-        answer="This one is better treated as a deep investigation rather than a quick SA turn. I will not make you wait while I run a long chain here. I have prepared an Arena AI prompt you can use for the deep work:\n\n"+prompt
+        answer="This request needs repository-level implementation work. I will not pretend to do that inside the quick SA turn. I prepared a complete implementation brief for Arena AI, which is the coding agent that can inspect and modify this repository:\n\n"+prompt
         plan={"goal":"deep-work handoff","steps":[],"response_style":"friendly"}
         evidence=[]
         card=None
