@@ -62,8 +62,12 @@ except ImportError:
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
+# A configured DATABASE_URL selects PostgreSQL in this deployment; when it is
+# absent the server intentionally runs on the local SQLite file.
+POSTGRES_CONFIGURED = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+
 HAS_PSYCOPG2 = False
-if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
+if POSTGRES_CONFIGURED:
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     try:
@@ -72,6 +76,7 @@ if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql
         HAS_PSYCOPG2 = True
     except ImportError:
         HAS_PSYCOPG2 = False
+        print("[POSTGRES DRIVER WARNING] DATABASE_URL is configured for PostgreSQL but psycopg2 is not installed; using SQLite instead.", file=sys.stderr)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -89,6 +94,23 @@ if IS_PRODUCTION and not JWT_SECRET:
     raise RuntimeError("JWT_SECRET must be configured in production.")
 if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(48)
+
+# Fail closed on a configured database the server cannot honour. The old code
+# silently served SQLite whenever the configured PostgreSQL could not be used,
+# which in production points every request at a different database than the
+# operator configured. Failing loudly at startup is the safe behaviour;
+# SQLite remains available when PostgreSQL is intentionally not configured.
+if IS_PRODUCTION and DATABASE_URL and not POSTGRES_CONFIGURED:
+    raise RuntimeError(
+        "DATABASE_URL is configured but is not a PostgreSQL URL; refusing to "
+        "silently serve SQLite in production. Fix or unset DATABASE_URL."
+    )
+if IS_PRODUCTION and POSTGRES_CONFIGURED and not HAS_PSYCOPG2:
+    raise RuntimeError(
+        "DATABASE_URL is configured for PostgreSQL but the psycopg2 driver is "
+        "not installed; refusing to fall back to SQLite in production. Install "
+        "the production database driver (psycopg2-binary) and restart."
+    )
 
 
 def parse_allowed_origins(raw: str, *, production: bool) -> List[str]:
@@ -270,9 +292,30 @@ class DBConnection:
                 )
                 self.is_pg = True
             except Exception as e:
+                if IS_PRODUCTION:
+                    # Fail closed: a production request must never be silently
+                    # served from a local SQLite file because the configured
+                    # PostgreSQL is unavailable.
+                    print(f"[POSTGRES CONNECT FAILURE] {e}. Refusing to fall back to SQLite in production.", file=sys.stderr)
+                    raise RuntimeError(
+                        "DATABASE_URL is configured for PostgreSQL but the "
+                        "connection failed ("
+                        + type(e).__name__
+                        + "); refusing to fall back to SQLite in production."
+                    ) from e
                 print(f"[POSTGRES CONNECT WARNING] {e}. Falling back to SQLite.")
                 self.is_pg = False
                 self.conn = None
+
+        if IS_PRODUCTION and DATABASE_URL and not self.is_pg:
+            # Defense in depth: with a configured DATABASE_URL, production must
+            # only ever be served by PostgreSQL. This is normally unreachable
+            # (the startup gates above fail first) but keeps the guarantee at
+            # request level even if module state is mutated at runtime.
+            raise RuntimeError(
+                "Production has DATABASE_URL configured but no PostgreSQL "
+                "connection is available; refusing to serve SQLite."
+            )
 
         if not self.is_pg:
             self.conn = sqlite3.connect(DB_PATH, timeout=10.0, check_same_thread=False)

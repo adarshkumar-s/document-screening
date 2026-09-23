@@ -5,6 +5,7 @@ reason across registered website capabilities, prepare consequential operations,
 and execute them only after the existing AI Approval Center approves a proposal.
 """
 import json, os, time, uuid, re, asyncio
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 
@@ -34,16 +35,33 @@ def _assistant():
 # surface is administrator-only, and the modules SA reads through apply their
 # own visibility rules, so handing them the real administrator keeps SA from
 # ever widening what a role is allowed to see.
-_request_actor: Dict[str, Any] = {}
+#
+# The actor is request-local state. It used to live in a process-global
+# dictionary, so two concurrent SA requests overwrote each other's identity:
+# one administrator's turn could be served (and audited) under another
+# administrator. A ContextVar is isolated per execution context -- every HTTP
+# request, thread and asyncio task runs against its own copy -- so an actor
+# can never leak into, or be inherited from, another request.
+_request_actor: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "sa_request_actor", default=None
+)
 
 
 def _actor() -> Dict[str, Any]:
-    return dict(_request_actor) if _request_actor else {"id": None, "role": "ADMIN", "full_name": "SA"}
+    actor = _request_actor.get()
+    if actor:
+        return dict(actor)
+    # No actor is bound in this execution context. Every SA request binds the
+    # authenticated administrator before doing any work, so this branch is
+    # only reachable on direct internal calls (tooling, self-heal probes).
+    # It is the same synthetic non-identity SA used before: it carries no
+    # administrator id or email, so it cannot widen authorization to a real
+    # account the way the leaked process-global could.
+    return {"id": None, "role": "ADMIN", "full_name": "SA"}
 
 
 def _set_actor(admin: Dict[str, Any]) -> None:
-    global _request_actor
-    _request_actor = dict(admin or {})
+    _request_actor.set(dict(admin or {}))
 
 
 def _model_candidates():
@@ -328,8 +346,9 @@ def _read_tools(actor: Optional[Dict[str, Any]] = None):
     """The closed set of read tools SA may call.
 
     ``actor`` is the authenticated administrator the request belongs to. It is
-    passed explicitly rather than read from request state, so two concurrent
-    SA requests can never see each other's identity.
+    passed explicitly where available; when it is not, it resolves to the
+    request-local actor bound by ``run()``, so concurrent SA requests can never
+    see each other's identity.
     """
     a=_assistant()
     who=actor or _actor()
@@ -1375,7 +1394,7 @@ def _heal_failed_reads(plan: Dict[str, Any], evidence: List[Dict[str, Any]],
         def _log_event(event_type, detail, data=None):
             _log(session, "SELF_HEAL_" + event_type, "self-heal during a read", detail, data)
 
-        result = sa_repair.heal(match, actor=_actor(), log=_log_event)
+        result = sa_repair.heal(match, actor=actor or _actor(), log=_log_event)
         report["attempted"].append(match.id)
         if not result.ok:
             report["failed"].append({"problem_id": match.id, "error": result.error})
@@ -1555,7 +1574,7 @@ def _handle_command(parsed: "sa_intents.ParsedCommand", session: Dict[str, Any],
     if intent=="SELF_HEAL":
         def _log_event(event_type, detail, data=None):
             _log(session,"SELF_HEAL_"+event_type,"self-heal",detail,data)
-        report=sa_repair.self_heal(actor=_actor(), log=_log_event)
+        report=sa_repair.self_heal(actor=admin or _actor(), log=_log_event)
         for result in report.get("results", []):
             memory.add_issue(result["problem_id"], result["title"],
                              detail=result.get("error") or result.get("detail") or "",
