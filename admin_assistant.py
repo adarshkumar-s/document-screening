@@ -1083,7 +1083,8 @@ def build_system_briefing() -> str:
 # Superior SA mode
 class SAActivateReq(BaseModel):
     code: str
-    administrator: str
+    administrator: str = ""
+    password: str = ""
 
 class SAQueryReq(BaseModel):
     session_id: str
@@ -1097,7 +1098,7 @@ def sa_activate_options(req: SAActivateReq, user: dict = Depends(get_admin_depen
 @router.post("/sa/activate")
 def sa_activate(req: SAActivateReq, user: dict = Depends(get_admin_dependency())):
     from sa_agent import activate
-    return activate(user, req.code, req.administrator)
+    return activate(user, req.code, req.administrator, req.password)
 
 @router.post("/sa/query")
 def sa_query(req: SAQueryReq, user: dict = Depends(get_admin_dependency())):
