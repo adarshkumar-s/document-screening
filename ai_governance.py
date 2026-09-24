@@ -79,9 +79,29 @@ def ensure_governance_tables():
           approved_by TEXT,
           approved_at REAL,
           execution_at REAL,
-          execution_result TEXT NOT NULL DEFAULT '{}'
+          execution_result TEXT NOT NULL DEFAULT '{}',
+          idempotency_key TEXT
         )
         """)
+        # Additive migration for databases created before the idempotency key.
+        # NO-DUPLICATE-MUTATION support: one logical request creates at most
+        # one proposal, even if the request is ever re-executed after a crash.
+        try:
+            if db.is_pg:
+                db.execute("SAVEPOINT idem_sp;")
+                db.execute("ALTER TABLE ai_proposals ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
+                db.execute("RELEASE SAVEPOINT idem_sp;")
+            else:
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(ai_proposals)").fetchall()}
+                if "idempotency_key" not in columns:
+                    db.execute("ALTER TABLE ai_proposals ADD COLUMN idempotency_key TEXT")
+        except Exception:
+            try:
+                if db.is_pg:
+                    db.execute("ROLLBACK TO SAVEPOINT idem_sp;")
+            except Exception:
+                pass
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_proposals_idem ON ai_proposals(idempotency_key)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ai_proposals_status ON ai_proposals(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ai_proposals_created ON ai_proposals(created_at)")
         db.execute("""
@@ -150,8 +170,15 @@ def _validate_target(p):
                 if not u or u["role"]!="VERIFICATION_OFFICER" or not u["is_active"]:
                     raise HTTPException(400,"Every proposed assignee must be an active Verification Officer.")
 
-def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT"):
+def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT", idempotency_key: Optional[str]=None):
     ensure_governance_tables()
+    # NO-DUPLICATE-MUTATION: a logical request that already created its
+    # proposal returns the SAME proposal instead of creating another one.
+    if idempotency_key:
+        with _server().get_db() as db:
+            existing=db.execute("SELECT proposal_id FROM ai_proposals WHERE idempotency_key=?",(str(idempotency_key),)).fetchone()
+        if existing:
+            return get_proposal(existing["proposal_id"])
     p={**data}
     p["action_type"]=str(p.get("action_type","")).upper()
     p["target_type"]=str(p.get("target_type","")).upper()
@@ -164,11 +191,21 @@ def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT"):
         p["before"] = _current_state(p["action_type"], p["target_ids"])
     pid="AI-"+uuid.uuid4().hex[:10].upper()
     now=time.time(); exp=now+TTL_SECONDS
-    with _server().get_db() as db:
-        db.execute("""INSERT INTO ai_proposals(proposal_id,action_type,target_type,target_ids,before_state,proposed_state,reason,evidence,confidence,risk,status,created_by,created_at,expires_at)
-                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                   (pid,p["action_type"],p["target_type"],_json(p["target_ids"]),_json(p.get("before",{})),_json(p.get("after",{})),str(p.get("reason","")),
-                    _json(p.get("evidence",[])),p["confidence"],p["risk"],PROPOSED,created_by,now,exp))
+    try:
+        with _server().get_db() as db:
+            db.execute("""INSERT INTO ai_proposals(proposal_id,action_type,target_type,target_ids,before_state,proposed_state,reason,evidence,confidence,risk,status,created_by,created_at,expires_at,idempotency_key)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (pid,p["action_type"],p["target_type"],_json(p["target_ids"]),_json(p.get("before",{})),_json(p.get("after",{})),str(p.get("reason","")),
+                        _json(p.get("evidence",[])),p["confidence"],p["risk"],PROPOSED,created_by,now,exp,idempotency_key))
+    except Exception:
+        # Unique-key race: a concurrent re-execution of the same logical
+        # request already created the proposal. Reuse it; never duplicate.
+        if idempotency_key:
+            with _server().get_db() as db:
+                existing=db.execute("SELECT proposal_id FROM ai_proposals WHERE idempotency_key=?",(str(idempotency_key),)).fetchone()
+            if existing:
+                return get_proposal(existing["proposal_id"])
+        raise
     _event(pid,created_by,"AI_PROPOSAL_CREATED",f"{p['action_type']} proposal created for {p['target_ids']}")
     return get_proposal(pid)
 
@@ -392,6 +429,12 @@ def _execute(proposal, admin):
 def approve_proposal(pid, admin, note=""):
     p=get_proposal(pid)
     if not p: raise HTTPException(404,"Proposal not found.")
+    if p["status"]==EXECUTED:
+        # NO-DUPLICATE-MUTATION: the logical operation already executed exactly
+        # once. A retried approval (e.g. after a client timeout) replays the
+        # stored outcome instead of ever executing again.
+        p=dict(p); p["replayed"]=True
+        return p
     if p["status"]!=PROPOSED: raise HTTPException(409,f"Proposal is {p['status']} and cannot be approved.")
     if time.time()>p["expires_at"]: raise HTTPException(409,"Proposal has expired.")
     _validate_target(p)

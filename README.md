@@ -154,6 +154,92 @@ All existing `/api/auth`, `/api/documents`, OCR, validation, task, administrator
 
 The compatibility property/workflow APIs used by existing governed paths remain available inside the mapping support layer; they are not the replacement map UI or its data source.
 
+## SA / Admin AI and the Verification Officer AI
+
+The Admin panel's AI entry point is now `Admin AI 🔒` — the gateway to **SA**,
+the privileged administrator assistant. The normal (non-SA) assistant lives in
+the Verification Officer interface as a small AI icon next to the AI Task icon.
+
+### Admin AI 🔒 (SA)
+
+- SA is NOT accessible before authentication. Clicking `Admin AI 🔒` prompts
+  `Enter AI access password`. After server-side verification the assistant
+  greets `Welcome, <verified administrator name>` and SA is available.
+- The password is verified **server-side** and resolves to an already
+  configured administrator identity (`valid credential → administrator
+  identity → SA session`). The browser cannot submit a name, `isAdmin`,
+  `unlocked=true`, hidden form fields, or JS variables and become anyone.
+- Credentials are stored argon2id-hashed (never plaintext, never logged,
+  never returned) and can be seeded with `SA_ACCESS_PASSWORD` or
+  configured/rotated via `POST /api/sa/credentials` (Administrator only).
+- SA authorization is a **short-lived server-side session** bound to the
+  logged-in administrator (user id + session version) and the verified
+  identity. It expires (`SA_SESSION_TTL_SECONDS`, default 15 minutes), is
+  revoked on logout / password change / role change, and requires
+  re-authentication after expiry. The httpOnly cookie only carries an opaque
+  token; the database stores its SHA-256 hash.
+- All existing SA security controls are preserved: RBAC, tool allowlists,
+  approval gates (proposals execute only after explicit Administrator
+  approval in the AI Approval Center), mutation safety, audit logging, actor
+  isolation (one administrator can never touch another's requests), and
+  prompt-injection protections. The model can never grant itself tools and
+  model output is never authorization.
+
+### SA timeout / Try again (no duplicate mutations)
+
+SA requests run through a safe task lifecycle (`assistant_tasks.py`):
+
+- Every logical request carries a client-generated `request_id`; the original
+  request is preserved server-side automatically.
+- On timeout or a recoverable provider failure the UI shows
+  `The assistant timed out.` with a real `Try again` button (and a
+  Cancel/Dismiss path). Try again re-attaches to the SAME logical request -
+  nothing has to be re-typed.
+- **A timeout followed by Try Again can NEVER execute the same logical
+  operation twice**: completed requests replay their stored result; running
+  requests are re-attached (never started twice); and any re-executed runner
+  is idempotent through proposal idempotency keys, so one logical request can
+  create at most one proposal and an approved proposal executes exactly once
+  (a retried approval replays the stored outcome).
+- Permanent authorization or validation errors never offer Try Again.
+
+### Verification Officer AI (normal assistant)
+
+- Appears as a small ✨ AI icon next to the AI Task icon in the Verification
+  Officer interface (`js/officer-assistant.js`).
+- It may only explain documents and fields, summarize evidence, analyze the
+  information available to the officer, answer questions, explain land-record
+  terminology, and suggest verification checks.
+- It is an assistant only. Server-side it exposes exactly one read-only
+  endpoint (`POST /api/officer/assistant/query`) with allowlisted read-only
+  lookups: no mutations, no approvals/rejections, no administrative actions,
+  no SA access, no admin tools, no impersonation, no authorization or session
+  changes. Prompt-injection attempts and action requests are refused
+  deterministically, and a Verification Officer calling the API manually or
+  sending malicious prompts still cannot obtain any privileged capability.
+
+New/changed API surface:
+
+```
+POST                /api/sa/unlock                 (admin login + AI access password)
+POST                /api/sa/lock
+GET                 /api/sa/session
+POST                /api/sa/credentials            (admin only; configure/rotate)
+POST                /api/admin/assistant/query     (SA session required; request_id idempotent)
+POST                /api/admin/assistant/briefing  (SA session required; request_id idempotent)
+GET                 /api/admin/assistant/requests/{request_id}
+POST                /api/admin/assistant/requests/{request_id}/retry
+POST                /api/admin/assistant/requests/{request_id}/cancel
+POST                /api/officer/assistant/query   (Verification Officer only; read-only)
+```
+
+Files: `sa_gateway.py` (credential/session security lock),
+`assistant_tasks.py` (idempotent request lifecycle),
+`officer_assistant.py` (read-only normal AI), `js/officer-assistant.js` and the
+SA parts of `js/admin-assistant.js` (UI). Tests live in
+`tests/test_sa_gateway.py`, `tests/test_sa_lifecycle.py`, and
+`tests/test_officer_assistant.py`.
+
 ## Data boundary and safety
 
 The map consumes uploaded document fields and mapping-only coordinates. It does not scrape a government portal, redistribute government cadastral data, or send uploaded documents to tile/geocoding providers. A map position is labelled as exact, village-level approximate, or unresolved. Approximate coordinates never represent a legal parcel boundary.

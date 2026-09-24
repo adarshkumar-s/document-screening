@@ -1,8 +1,23 @@
+// =====================================================================
+// ADMIN AI 🔒 — gateway to SA.
+//
+// The visible entry point is "Admin AI 🔒". SA is only usable after the AI
+// access password is verified SERVER-SIDE and resolves to an administrator
+// identity. Nothing in this file is authoritative: the browser never sends a
+// name/role/unlocked flag, and every SA call re-validates the server-side SA
+// session. Client state below exists purely to render the UI.
+// =====================================================================
+let saUnlocked = false;      // display hint only — the server is authoritative
+let saAdminName = '';
+let saGateOpen = false;
+
+const SA_RETRYABLE_STATES = new Set(['timeout', 'failed_retryable', 'running', 'pending']);
+
 function assistantToken() {
   try { return window.localStorage.getItem("lrtoken") || ""; } catch (_) { return ""; }
 }
 
-function fetchAssistant(url, options = {}, timeoutMs = 30000) {
+function fetchAssistant(url, options = {}, timeoutMs = 45000) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = { ...(options.headers || {}) };
@@ -11,6 +26,134 @@ function fetchAssistant(url, options = {}, timeoutMs = 30000) {
   return fetch(url, { ...options, headers, signal: controller.signal }).finally(() => window.clearTimeout(timeout));
 }
 
+function newRequestId() {
+  try {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  } catch (_) {}
+  return 'req-' + Date.now().toString(16) + '-' + Math.random().toString(16).slice(2, 10);
+}
+
+// ---------------------------------------------------------------------
+// SA session (server-side state; verified identity name comes from server)
+// ---------------------------------------------------------------------
+function openSaGate() {
+  // SA must NOT be directly accessible before authentication.
+  if (saUnlocked) return;
+  saGateOpen = true;
+  const gate = document.getElementById('saGatePrompt');
+  if (gate) gate.hidden = false;
+  const input = document.getElementById('saUnlockPassword');
+  if (input) { input.value = ''; input.focus(); }
+}
+
+function closeSaGate() {
+  saGateOpen = false;
+  const gate = document.getElementById('saGatePrompt');
+  if (gate) gate.hidden = true;
+  const input = document.getElementById('saUnlockPassword');
+  if (input) input.value = '';
+  const err = document.getElementById('saUnlockError');
+  if (err) { err.hidden = true; err.textContent = ''; }
+}
+
+function saGateError(message) {
+  const err = document.getElementById('saUnlockError');
+  if (!err) return;
+  err.textContent = message || 'Unable to verify the AI access password.';
+  err.hidden = false;
+}
+
+function renderSaLocked() {
+  saUnlocked = false;
+  saAdminName = '';
+  const workspace = document.getElementById('saWorkspace');
+  if (workspace) workspace.hidden = true;
+  const welcome = document.getElementById('saWelcome');
+  if (welcome) { welcome.hidden = true; welcome.textContent = ''; }
+  const lockBtn = document.getElementById('saLockBtn');
+  if (lockBtn) lockBtn.hidden = true;
+  const briefing = document.getElementById('btnGenerateBriefing');
+  if (briefing) briefing.hidden = true;
+  if (saGateOpen) {
+    const gate = document.getElementById('saGatePrompt');
+    if (gate) gate.hidden = false;
+  }
+}
+
+function renderSaUnlocked(name) {
+  saUnlocked = true;
+  saAdminName = name || '';
+  closeSaGate();
+  // "Welcome, <verified administrator name>" — the name was resolved
+  // server-side from the credential; never accepted from the browser.
+  const welcome = document.getElementById('saWelcome');
+  if (welcome) {
+    welcome.textContent = 'Welcome, ' + (name || 'Administrator');
+    welcome.hidden = false;
+  }
+  const workspace = document.getElementById('saWorkspace');
+  if (workspace) workspace.hidden = false;
+  const lockBtn = document.getElementById('saLockBtn');
+  if (lockBtn) lockBtn.hidden = false;
+  const briefing = document.getElementById('btnGenerateBriefing');
+  if (briefing) briefing.hidden = false;
+}
+
+async function refreshSaSession() {
+  // Ask the server whether SA is unlocked. A client-side flag is never trusted.
+  try {
+    const r = await fetchAssistant('/api/sa/session', { credentials: 'same-origin' }, 15000);
+    if (!r.ok) { renderSaLocked(); return; }
+    const d = await r.json();
+    if (d.unlocked && d.admin) renderSaUnlocked(d.admin.full_name || '');
+    else renderSaLocked();
+  } catch (_) {
+    renderSaLocked();
+  }
+}
+
+async function handleSaUnlock(event) {
+  event.preventDefault();
+  const input = document.getElementById('saUnlockPassword');
+  const btn = document.getElementById('saUnlockBtn');
+  const password = input ? input.value : '';
+  if (!password) return;
+  if (btn) btn.disabled = true;
+  try {
+    // Only the credential is sent. No name, no username, no isAdmin flag —
+    // the verified administrator identity is resolved on the server.
+    const r = await fetchAssistant('/api/sa/unlock', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password })
+    }, 20000);
+    const d = await r.json().catch(() => ({}));
+    if (input) input.value = '';
+    if (!r.ok) {
+      if (r.status === 429) saGateError(d.detail || 'Too many attempts. Try again later.');
+      else saGateError(d.detail || 'Invalid AI access password.');
+      return;
+    }
+    renderSaUnlocked((d.admin && d.admin.full_name) || '');
+  } catch (_) {
+    saGateError('The server is unreachable. Try again shortly.');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function handleSaLock() {
+  try {
+    await fetchAssistant('/api/sa/lock', { method: 'POST', credentials: 'same-origin' }, 15000);
+  } catch (_) {}
+  saGateOpen = false;
+  renderSaLocked();
+}
+
+// ---------------------------------------------------------------------
+// SA chat with the safe request lifecycle (at-most-once logical requests)
+// ---------------------------------------------------------------------
 function submitAssistantQuestion(text) {
   const input = document.getElementById("assistantInput");
   if (input) {
@@ -22,53 +165,248 @@ function submitAssistantQuestion(text) {
 async function handleAssistantSubmit(event) {
   event.preventDefault();
   const input = document.getElementById("assistantInput");
-  const log = document.getElementById("assistantChatLog");
-  const loading = document.getElementById("assistantLoading");
-  const submitBtn = document.getElementById("assistantSubmitBtn");
-
   const query = input.value.trim();
   if (!query) return;
+  input.value = "";
 
   const userMsg = document.createElement("div");
   userMsg.className = "assistant-message user-bubble";
   userMsg.textContent = query;
+  const log = document.getElementById("assistantChatLog");
   log.appendChild(userMsg);
-
-  input.value = "";
-  loading.style.display = "flex";
-  submitBtn.disabled = true;
   log.scrollTop = log.scrollHeight;
 
+  // One logical request = one request_id. The ORIGINAL request is preserved
+  // server-side; "Try again" reuses this id so the same logical operation can
+  // never execute twice.
+  await submitSaQuery(query, newRequestId());
+}
+
+async function submitSaQuery(query, requestId) {
+  const log = document.getElementById("assistantChatLog");
+  const loading = document.getElementById("assistantLoading");
+  const submitBtn = document.getElementById("assistantSubmitBtn");
+  if (loading) loading.style.display = "flex";
+  if (submitBtn) submitBtn.disabled = true;
   try {
-    
     const response = await fetchAssistant("/api/admin/assistant/query", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: query })
+      body: JSON.stringify({ query: query, request_id: requestId })
     });
+    await handleSaResponse(response, requestId);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      // The frontend timed out while the SERVER-SIDE request may continue
+      // running. Never blindly re-send: show Try again, which re-attaches to
+      // the same logical request.
+      showSaTimeoutCard(query, requestId);
+    } else {
+      showSaTimeoutCard(query, requestId, 'network');
+    }
+  } finally {
+    if (loading) loading.style.display = "none";
+    if (submitBtn) submitBtn.disabled = false;
+    if (log) log.scrollTop = log.scrollHeight;
+  }
+}
 
-    const data = await response.json();
-    if (!response.ok) {
-      appendAssistantMessage(`Error: ${data.detail || "Unable to process request."}`, "error-bubble");
+async function handleSaResponse(response, requestId) {
+  let data = {};
+  try { data = await response.json(); } catch (_) {}
+  if (!response.ok) {
+    if (response.status === 401) {
+      // Authorization errors are permanent: NO Try Again. Require re-auth.
+      if ((data.detail || '').toLowerCase().includes('verification') || (data.detail || '').toLowerCase().includes('ai access')) {
+        renderSaLocked();
+        saGateOpen = true;
+        openSaGate();
+        appendAssistantMessage("SA session expired. Enter the AI access password again.", "error-bubble");
+      } else {
+        appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
+      }
       return;
     }
-
-    appendAssistantMessage(data.response, "assistant-bubble", data.records);
-
-    if (data.action_card) {
-      renderConfirmationCard(data.action_card);
+    if (response.status === 429 || response.status >= 500 || response.status === 408) {
+      showSaTimeoutCard((data.request && data.request.query) || '', requestId, response.status === 429 ? 'throttled' : 'server');
+      return;
     }
-  } catch (error) {
-    const message = error.name === "AbortError"
-      ? "The assistant took too long to respond. Your records were not changed; try again or use a suggested query."
-      : "Network error: The assistant is temporarily unreachable.";
-    appendAssistantMessage(message, "error-bubble");
-  } finally {
-    loading.style.display = "none";
-    submitBtn.disabled = false;
-    log.scrollTop = log.scrollHeight;
+    // Permanent authorization/validation errors: never offer Try Again.
+    appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
+    return;
   }
+  await handleSaEnvelope(data, requestId);
+}
+
+async function handleSaEnvelope(env, requestId) {
+  const state = String(env.state || '').toLowerCase();
+  if (state === 'pending' || state === 'running') {
+    await pollSaRequest(requestId);
+    return;
+  }
+  if (state === 'succeeded') {
+    const result = env.result || {};
+    appendAssistantMessage(result.response || result.briefing || "", "assistant-bubble", result.records || []);
+    if (result.action_card) renderConfirmationCard(result.action_card);
+    return;
+  }
+  if (state === 'timeout' || state === 'failed_retryable') {
+    const preserved = (env.request && env.request.query) || '';
+    showSaTimeoutCard(preserved, requestId, 'retryable');
+    return;
+  }
+  if (state === 'cancelled') {
+    appendAssistantMessage("The request was cancelled. Nothing further was executed.", "error-bubble");
+    return;
+  }
+  // failed_permanent (and anything else): permanent — NO Try Again.
+  const err = env.error || {};
+  appendAssistantMessage("Error: " + (err.detail || "The request failed."), "error-bubble");
+}
+
+async function pollSaRequest(requestId, card) {
+  const started = Date.now();
+  const loading = document.getElementById("assistantLoading");
+  if (loading) loading.style.display = "flex";
+  try {
+    while (Date.now() - started < 180000) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      let env = null;
+      try {
+        const r = await fetchAssistant("/api/admin/assistant/requests/" + encodeURIComponent(requestId), { credentials: 'same-origin' }, 15000);
+        if (r.status === 401) {
+          renderSaLocked();
+          appendAssistantMessage("SA session expired. Enter the AI access password again.", "error-bubble");
+          return;
+        }
+        if (r.ok) env = await r.json();
+      } catch (_) {}
+      if (!env) continue;
+      const state = String(env.state || '').toLowerCase();
+      if (state === 'pending' || state === 'running') {
+        const label = card ? card.querySelector('.sa-timeout-detail') : null;
+        if (label) label.textContent = 'The request is still running server-side…';
+        continue;
+      }
+      if (card && card.parentNode) card.remove();
+      await handleSaEnvelope(env, requestId);
+      return;
+    }
+    showSaTimeoutCard('', requestId, 'retryable');
+  } finally {
+    if (loading) loading.style.display = "none";
+    const log = document.getElementById("assistantChatLog");
+    if (log) log.scrollTop = log.scrollHeight;
+  }
+}
+
+function showSaTimeoutCard(query, requestId, kind) {
+  const log = document.getElementById("assistantChatLog");
+  if (!log) return;
+  const card = document.createElement("div");
+  card.className = "assistant-message sa-timeout-card";
+  card.dataset.requestId = requestId || "";
+
+  const title = document.createElement("div");
+  title.className = "sa-timeout-title";
+  title.textContent = kind === 'network'
+    ? "The assistant timed out."
+    : kind === 'server'
+      ? "The assistant timed out."
+      : kind === 'throttled'
+        ? "Too many attempts. The assistant timed out."
+        : "The assistant timed out.";
+
+  const detail = document.createElement("div");
+  detail.className = "sa-timeout-detail";
+  detail.textContent = "The request may still be running safely on the server. Your records were not changed twice.";
+
+  const actions = document.createElement("div");
+  actions.className = "sa-timeout-actions";
+
+  // A REAL Try again button. The original request is preserved automatically
+  // (server-side and in this card) — nothing has to be typed again.
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "btn saffron sa-retry-btn";
+  retry.textContent = "Try again";
+  retry.onclick = () => tryAgainSaRequest(requestId, card);
+
+  // Cancel/dismiss path.
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "btn ghost sa-dismiss-btn";
+  dismiss.textContent = "Dismiss";
+  dismiss.onclick = () => dismissSaRequest(requestId, card);
+
+  actions.append(retry, dismiss);
+  card.append(title, detail, actions);
+  if (query) {
+    const preserved = document.createElement("div");
+    preserved.className = "sa-timeout-query";
+    preserved.textContent = query;
+    card.appendChild(preserved);
+  }
+  log.appendChild(card);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function tryAgainSaRequest(requestId, card) {
+  if (!requestId) return;
+  const retry = card ? card.querySelector('.sa-retry-btn') : null;
+  const detail = card ? card.querySelector('.sa-timeout-detail') : null;
+  if (retry) retry.disabled = true;
+  if (detail) detail.textContent = 'Re-attaching to the original request…';
+  try {
+    // Same logical request id: the server replays the stored result or
+    // re-attaches to the still-running execution. It NEVER runs a completed
+    // operation again.
+    const r = await fetchAssistant("/api/admin/assistant/requests/" + encodeURIComponent(requestId) + "/retry", {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }
+    }, 45000);
+    if (!r.ok) {
+      let data = {};
+      try { data = await r.json(); } catch (_) {}
+      if (r.status === 401) {
+        renderSaLocked();
+        saGateOpen = true;
+        openSaGate();
+        appendAssistantMessage("SA session expired. Enter the AI access password again.", "error-bubble");
+        return;
+      }
+      if (r.status === 404 || r.status === 400 || r.status === 422) {
+        // Permanent errors: no further Try Again loop.
+        if (card && card.parentNode) card.remove();
+        appendAssistantMessage("Error: " + (data.detail || "The request could not be retried."), "error-bubble");
+        return;
+      }
+      if (retry) retry.disabled = false;
+      if (detail) detail.textContent = 'Still unavailable. The original request is preserved — you can try again.';
+      return;
+    }
+    const env = await r.json();
+    if ((env.state || '').toLowerCase() === 'running' || (env.state || '').toLowerCase() === 'pending') {
+      await pollSaRequest(requestId, card);
+      return;
+    }
+    if (card && card.parentNode) card.remove();
+    await handleSaEnvelope(env, requestId);
+  } catch (e) {
+    if (retry) retry.disabled = false;
+    if (detail) detail.textContent = 'The assistant timed out again. The original request is preserved — you can try again.';
+  }
+}
+
+async function dismissSaRequest(requestId, card) {
+  if (requestId) {
+    try {
+      await fetchAssistant("/api/admin/assistant/requests/" + encodeURIComponent(requestId) + "/cancel", {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }
+      }, 15000);
+    } catch (_) {}
+  }
+  if (card && card.parentNode) card.remove();
 }
 
 function appendAssistantMessage(text, className, records = []) {
@@ -106,6 +444,7 @@ function renderConfirmationCard(actionData) {
   };
   actions.appendChild(open); card.append(header,body,actions); log.appendChild(card); log.scrollTop = log.scrollHeight;
 }
+
 async function triggerSystemBriefing() {
   const briefingBtn = document.getElementById("btnGenerateBriefing");
   const loading = document.getElementById("assistantLoading");
@@ -120,38 +459,28 @@ async function triggerSystemBriefing() {
   userMsg.textContent = "📊 Generate System Briefing";
   log.appendChild(userMsg);
 
+  const requestId = newRequestId();
   try {
-    
     const response = await fetchAssistant("/api/admin/assistant/briefing", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId })
     });
-
-    const data = await response.json();
-    if (!response.ok) {
-      appendAssistantMessage(`Error: ${data.detail || "Unable to generate briefing."}`, "error-bubble");
-      return;
-    }
-
-    const card = document.createElement("div");
-    card.className = "assistant-message assistant-bubble briefing-container";
-    const briefing = document.createElement("div");
-    briefing.className = "assistant-safe-text";
-    briefing.textContent = data.briefing || "";
-    card.appendChild(briefing);
-    log.appendChild(card);
+    await handleSaResponse(response, requestId);
   } catch (err) {
-    appendAssistantMessage(
-      err.name === "AbortError" ? "Briefing generation timed out. Try again shortly." : "Network error generating briefing.",
-      "error-bubble"
-    );
+    if (err.name === "AbortError") showSaTimeoutCard("Generate System Briefing", requestId);
+    else showSaTimeoutCard("Generate System Briefing", requestId, 'network');
   } finally {
     briefingBtn.disabled = false;
     loading.style.display = "none";
     log.scrollTop = log.scrollHeight;
   }
 }
+
+// The server decides whether SA is unlocked — never a client-side flag.
+setTimeout(refreshSaSession, 250);
+
 // =====================================================================
 // AI TASK INBOX — role-to-role communication layer
 // =====================================================================
@@ -229,7 +558,6 @@ function escapeTaskText(value) {
 }
 
 async function refreshAiTasks() {
-  
   try {
     const r = await fetch('/api/admin/assistant/tasks', { headers: taskAuthHeaders() });
     if (!r.ok) return;

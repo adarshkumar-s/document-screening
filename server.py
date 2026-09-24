@@ -1704,8 +1704,16 @@ def me(user: dict = Depends(get_current_user)):
 
 @app.post("/api/auth/logout")
 def logout(user: dict = Depends(get_current_user)):
+    # Revoke any SA (Admin AI) authorization state bound to this account so a
+    # logout always closes the security lock server-side, not just client-side.
+    try:
+        import sa_gateway
+        sa_gateway.revoke_sa_sessions_for_user(user.get("id", ""))
+    except Exception:
+        pass
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("lr_session", path="/")
+    response.delete_cookie("sa_session", path="/")
     return response
 
 @app.post("/api/auth/change-password")
@@ -2454,6 +2462,16 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 # Mount AI Admin Assistant at the end so all functions and models are fully defined
 from admin_assistant import router as assistant_router
 app.include_router(assistant_router)
+
+# SA gateway (Admin AI security lock: verified credential -> administrator
+# identity -> short-lived SA session) and the read-only Verification Officer
+# assistant. Both resolve identity server-side only.
+import sa_gateway
+sa_gateway.seed_sa_credential_from_env()
+from sa_gateway import router as sa_router
+from officer_assistant import router as officer_assistant_router
+app.include_router(sa_router)
+app.include_router(officer_assistant_router)
 
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))
