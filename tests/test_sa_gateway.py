@@ -361,3 +361,182 @@ def test_sa_request_actor_isolation_between_administrators(make_user_client):
     assert stolen.status_code == 404
     stolen_retry = admin_b.post(f"/api/admin/assistant/requests/{iso_id}/retry", headers=b_headers)
     assert stolen_retry.status_code == 404
+
+
+def test_rotation_is_atomic_single_transaction(make_user_client, monkeypatch):
+    """SECURITY: rotation must be ONE database transaction.
+
+    Deactivating+scrubbing old credentials, revoking every existing SA session
+    and registering the new credential must commit together: there is no
+    committed state where the new credential is active while an old captured
+    SA session (or the old password) still works. A failure mid-rotation rolls
+    the WHOLE rotation back.
+    """
+    import contextlib
+
+    import server
+
+    admin, admin_headers, admin_email = make_user_client("ADMIN", prefix="sagatom")
+    old_password = "Atomic Rotate Old 1!"
+    new_password = "Atomic Rotate New 2!"
+    _created, admin_user = _make_sa_credential(admin_email, old_password)
+    admin_id = admin_user["id"]
+
+    assert _unlock(admin, password=old_password, headers=admin_headers).status_code == 200
+    captured_cookie = admin.cookies.get("sa_session")
+    assert captured_cookie
+
+    # --- failure mid-rotation: EVERYTHING rolls back --------------------------
+    real_revoke = sa_gateway._revoke_identity_sessions_in
+
+    def boom(db, admin_user_id):
+        raise RuntimeError("injected revocation failure")
+
+    monkeypatch.setattr(sa_gateway, "_revoke_identity_sessions_in", boom)
+    with pytest.raises(RuntimeError):
+        sa_gateway.create_sa_credential(admin_id, new_password, "atomic", rotate=True)
+
+    # The old world survives entirely: old password valid, new not registered,
+    # captured SA session still live - nothing was half-committed.
+    assert _unlock(admin, password=old_password, headers=admin_headers).status_code == 200
+    replay = admin.get("/api/sa/session", headers=admin_headers,
+                       cookies={"sa_session": captured_cookie})
+    assert replay.json()["unlocked"] is True
+    with server.get_db() as db:
+        rows = db.execute(
+            "SELECT is_active, secret_hash FROM sa_credentials WHERE admin_user_id=?", (admin_id,)
+        ).fetchall()
+        n_revoked = db.execute(
+            "SELECT COUNT(*) AS n FROM sa_sessions WHERE (admin_user_id=? OR bound_user_id=?) "
+            "AND revoked_at IS NOT NULL",
+            (admin_id, admin_id),
+        ).fetchone()["n"]
+    assert len(rows) == 1 and rows[0]["is_active"] == 1
+    assert rows[0]["secret_hash"].startswith("$argon2")
+    assert n_revoked == 0
+
+    # --- successful rotation: ALL effects share ONE transaction ---------------
+    monkeypatch.setattr(sa_gateway, "_revoke_identity_sessions_in", real_revoke)
+    sa_gateway.ensure_sa_tables()
+    events, tx = [], {"n": 0}
+    real_get_db = sa_gateway._get_db
+
+    @contextlib.contextmanager
+    def recording_get_db():
+        tx["n"] += 1
+        mine = tx["n"]
+        with real_get_db() as db:
+            orig_execute = db.execute
+
+            def execute_recording(query, params=()):
+                events.append((mine, " ".join(query.split())))
+                return orig_execute(query, params)
+
+            db.execute = execute_recording
+            yield db
+
+    monkeypatch.setattr(sa_gateway, "_get_db", recording_get_db)
+    result = sa_gateway.create_sa_credential(admin_id, new_password, "atomic", rotate=True)
+    assert result["revoked_sessions"] >= 1
+    assert tx["n"] == 1, "rotation must be exactly one database transaction"
+    assert all(t == 1 for (t, _sql) in events), "every rotation statement must share that transaction"
+    tx_sqls = [sql for (_t, sql) in events]
+    assert any(q.startswith("UPDATE sa_credentials") for q in tx_sqls), "old credentials scrubbed in-tx"
+    assert any(q.startswith("UPDATE sa_sessions") for q in tx_sqls), "old sessions revoked in-tx"
+    assert any(q.startswith("INSERT INTO sa_credentials") for q in tx_sqls), "new credential in-tx"
+
+    # Post-conditions (deep coverage in the rotation test above): old password
+    # is dead, captured session is dead, the new password authenticates.
+    assert _unlock(admin, password=old_password, headers=admin_headers).status_code == 401
+    dead = admin.get("/api/sa/session", headers=admin_headers,
+                     cookies={"sa_session": captured_cookie})
+    assert dead.json()["unlocked"] is False
+    assert _unlock(admin, password=new_password, headers=admin_headers).status_code == 200
+
+
+def test_throttle_state_is_shared_across_processes():
+    """The failed-unlock throttle lives in the database: failures recorded by
+    ONE application process are enforced by every other process/worker - the
+    limit cannot be bypassed by restarting or running more workers."""
+    import os
+    import subprocess
+    import sys
+
+    import server
+
+    key = "proc-throttle-" + uuid.uuid4().hex[:12]
+    env = os.environ.copy()
+    env["DB_PATH"] = str(server.DB_PATH)  # child process: separate memory, same database
+    script = (
+        "import sa_gateway\n"
+        "sa_gateway.ensure_sa_tables()\n"
+        f"key = {key!r}\n"
+        "outs = [sa_gateway._admit_attempt(key) for _ in range(5)]\n"
+        "assert outs == [True] * 5, outs\n"
+        "assert sa_gateway._admit_attempt(key) is False, '6th attempt must be throttled'\n"
+        "print('SUBPROCESS_OK')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], cwd=str(ROOT), env=env,
+        capture_output=True, text=True, timeout=120,
+    )
+    assert "SUBPROCESS_OK" in proc.stdout, proc.stderr or proc.stdout
+
+    # THIS interpreter is a completely separate application instance with its
+    # own memory - and it still sees the child process's failures.
+    assert sa_gateway._admit_attempt(key) is False
+
+
+def test_throttle_state_survives_process_state_reset(make_user_client):
+    """A restarted worker (fresh process state, empty memory) does NOT reset
+    the throttle: only the shared database state counts."""
+    import importlib
+
+    admin, admin_headers, admin_email = make_user_client("ADMIN", prefix="sagrs")
+    _make_sa_credential(admin_email)
+    codes = [_unlock(admin, password="wrong-attempt", headers=admin_headers).status_code for _ in range(3)]
+    assert codes == [401] * 3
+
+    importlib.reload(sa_gateway)  # simulate a restarted worker: all in-memory state gone
+
+    more = [_unlock(admin, password="wrong-attempt", headers=admin_headers).status_code for _ in range(3)]
+    # 3 recorded failures survived the reset: attempts 4 and 5 are still
+    # admitted (401) and attempt 6 is throttled (429).
+    assert more == [401, 401, 429]
+
+
+def test_throttle_success_clears_and_window_expires(make_user_client, monkeypatch):
+    """Policy preservation: max failed attempts per window, a successful
+    authentication clears the failure state, expired windows reset, and old
+    failure records are cleaned - without storing any secret."""
+    import time as _time
+
+    import server
+
+    admin, admin_headers, admin_email = make_user_client("ADMIN", prefix="sagpol")
+    secret = "Throttle Policy Pass 1!"
+    _created, admin_user = _make_sa_credential(admin_email, secret)
+    key = admin_user["id"]
+
+    for _ in range(3):
+        assert _unlock(admin, password="wrong", headers=admin_headers).status_code == 401
+    # Successful authentication clears the failure state ...
+    assert _unlock(admin, password=secret, headers=admin_headers).status_code == 200
+    codes = [_unlock(admin, password="wrong", headers=admin_headers).status_code for _ in range(5)]
+    assert codes == [401] * 5  # full fresh budget after the clear
+    assert _unlock(admin, password="wrong", headers=admin_headers).status_code == 429
+
+    # ... and an expired window grants a fresh budget (old records expired).
+    monkeypatch.setattr(sa_gateway, "_FAILED_WINDOW_SECONDS", 0.3)
+    _time.sleep(0.35)
+    assert _unlock(admin, password="wrong", headers=admin_headers).status_code == 401
+    with server.get_db() as db:
+        row = db.execute(
+            "SELECT failures FROM sa_auth_throttle WHERE key=?", (key,)
+        ).fetchone()
+        leaked = db.execute(
+            "SELECT COUNT(*) AS n FROM sa_auth_throttle WHERE last_admit_token LIKE '%Password%' "
+            "OR key LIKE '%Password%'"
+        ).fetchone()["n"]
+    assert row and row["failures"] == 1, "the expired window reset the counter"
+    assert leaked == 0, "no secret may ever be stored in the throttle state"

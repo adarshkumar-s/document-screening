@@ -19,6 +19,7 @@ def _admin_user():
 router = APIRouter(prefix="/api/admin/ai-approval", tags=["AI Approval Center"])
 
 PROPOSED="PROPOSED"; APPROVED="APPROVED"; REJECTED="REJECTED"; EXPIRED="EXPIRED"; EXECUTED="EXECUTED"; FAILED="FAILED"
+EXECUTING="EXECUTING"  # atomic execution claim: PROPOSED -> EXECUTING -> EXECUTED/FAILED
 TTL_SECONDS=30*60
 
 ACTION_REGISTRY = {
@@ -80,7 +81,8 @@ def ensure_governance_tables():
           approved_at REAL,
           execution_at REAL,
           execution_result TEXT NOT NULL DEFAULT '{}',
-          idempotency_key TEXT
+          idempotency_key TEXT,
+          execution_claim TEXT
         )
         """)
         # Additive migration for databases created before the idempotency key.
@@ -90,11 +92,14 @@ def ensure_governance_tables():
             if db.is_pg:
                 db.execute("SAVEPOINT idem_sp;")
                 db.execute("ALTER TABLE ai_proposals ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
+                db.execute("ALTER TABLE ai_proposals ADD COLUMN IF NOT EXISTS execution_claim TEXT")
                 db.execute("RELEASE SAVEPOINT idem_sp;")
             else:
                 columns = {row["name"] for row in db.execute("PRAGMA table_info(ai_proposals)").fetchall()}
                 if "idempotency_key" not in columns:
                     db.execute("ALTER TABLE ai_proposals ADD COLUMN idempotency_key TEXT")
+                if "execution_claim" not in columns:
+                    db.execute("ALTER TABLE ai_proposals ADD COLUMN execution_claim TEXT")
         except Exception:
             try:
                 if db.is_pg:
@@ -435,24 +440,53 @@ def approve_proposal(pid, admin, note=""):
         # stored outcome instead of ever executing again.
         p=dict(p); p["replayed"]=True
         return p
+    if p["status"]==EXECUTING:
+        # Another request already owns the execution claim: safe conflict /
+        # re-attach (observe via GET). NEVER execute again.
+        raise HTTPException(409,"Proposal execution is already in progress.")
     if p["status"]!=PROPOSED: raise HTTPException(409,f"Proposal is {p['status']} and cannot be approved.")
     if time.time()>p["expires_at"]: raise HTTPException(409,"Proposal has expired.")
     _validate_target(p)
     current=_current_state(p["action_type"],p["target_ids"])
     _assert_before(p,current)
+    # ATOMIC EXECUTION CLAIM: PROPOSED -> EXECUTING (compare-and-set in SQL).
+    # Exactly one concurrent request can update exactly one row; only that
+    # request may run _execute(). EXECUTING/EXECUTED/FAILED/REJECTED/EXPIRED
+    # are all excluded by the WHERE clause, so none of them can execute again.
+    claim=uuid.uuid4().hex
     with _server().get_db() as db:
-        cur=db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(APPROVED,admin["full_name"],time.time(),pid,PROPOSED))
-        if getattr(cur,"rowcount",1)!=1: raise HTTPException(409,"Proposal was already decided.")
+        cur=db.execute(
+            "UPDATE ai_proposals SET status=?,approved_by=?,approved_at=?,execution_claim=? WHERE proposal_id=? AND status=?",
+            (EXECUTING,admin["full_name"],time.time(),claim,pid,PROPOSED))
+        claimed=(getattr(cur,"rowcount",0) or 0)==1
+    if not claimed:
+        # Lost the claim race: return a safe conflict/re-attach response and
+        # NEVER execute the mutation.
+        fresh=get_proposal(pid)
+        if fresh and fresh["status"]==EXECUTED:
+            fresh=dict(fresh); fresh["replayed"]=True
+            return fresh
+        if fresh and fresh["status"]==EXECUTING:
+            raise HTTPException(409,"Proposal execution is already in progress.")
+        raise HTTPException(409,f"Proposal is {fresh['status'] if fresh else 'unknown'} and cannot be approved.")
     _event(pid,admin["full_name"],"AI_PROPOSAL_APPROVED",f"Administrator approved proposal. {note[:240]}")
     try:
         result=_execute(p,admin)
+        # Ownership-safe completion: only THIS executor (its unique claim)
+        # can transition EXECUTING -> EXECUTED.
         with _server().get_db() as db:
-            db.execute("UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=?",(EXECUTED,time.time(),_json(result),pid,APPROVED))
+            db.execute(
+                "UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=? AND execution_claim=?",
+                (EXECUTED,time.time(),_json(result),pid,EXECUTING,claim))
         _event(pid,admin["full_name"],"AI_PROPOSAL_EXECUTED",f"Executed approved {p['action_type']} proposal.")
         return get_proposal(pid)
     except Exception as exc:
+        # Ownership-safe completion: only THIS executor can mark its own claim
+        # FAILED; a zombie can never clobber a reclaimed/replayed outcome.
         with _server().get_db() as db:
-            db.execute("UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=?",(FAILED,time.time(),_json({"error":str(exc)}),pid,APPROVED))
+            db.execute(
+                "UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=? AND execution_claim=?",
+                (FAILED,time.time(),_json({"error":str(exc)}),pid,EXECUTING,claim))
         _event(pid,admin["full_name"],"AI_PROPOSAL_FAILED",f"Approved proposal failed: {type(exc).__name__}")
         raise
 
@@ -461,7 +495,11 @@ def reject_proposal(pid, admin, note=""):
     if not p: raise HTTPException(404,"Proposal not found.")
     if p["status"]!=PROPOSED: raise HTTPException(409,f"Proposal is {p['status']} and cannot be rejected.")
     with _server().get_db() as db:
-        db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(REJECTED,admin["full_name"],time.time(),pid,PROPOSED))
+        cur=db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(REJECTED,admin["full_name"],time.time(),pid,PROPOSED))
+        if (getattr(cur,"rowcount",0) or 0)!=1:
+            # Concurrent decision won first (e.g. an approval claimed the
+            # execution): never record a rejection that did not happen.
+            raise HTTPException(409,"Proposal was already decided.")
     _event(pid,admin["full_name"],"AI_PROPOSAL_REJECTED",f"Administrator rejected proposal. {note[:240]}")
     return get_proposal(pid)
 

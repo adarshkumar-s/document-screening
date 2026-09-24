@@ -21,7 +21,8 @@ Security properties:
   (user id + session version) and to the verified administrator identity.
 * Sessions are short-lived, revoked on logout / password change / role change
   (version bump), and require re-authentication after expiry.
-* Unlock attempts are throttled per account; every attempt is audited WITHOUT
+* Unlock attempts are throttled per account with a database-backed limit
+  shared by every application worker/process; every attempt is audited WITHOUT
   the secret.
 """
 from __future__ import annotations
@@ -47,8 +48,6 @@ _MAX_FAILED_ATTEMPTS = 5
 _FAILED_WINDOW_SECONDS = 5 * 60
 
 _TABLES_READY = False
-_failed_lock = threading.Lock()
-_failed_attempts: Dict[str, List[float]] = {}
 
 router = APIRouter(prefix="/api/sa", tags=["SA Gateway"])
 
@@ -116,6 +115,19 @@ def ensure_sa_tables() -> None:
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_sa_sessions_bound ON sa_sessions(bound_user_id)"
         )
+        # Shared, database-backed unlock throttle: every application
+        # worker/process enforces the SAME limit (no process-local state).
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sa_auth_throttle (
+                key TEXT PRIMARY KEY,
+                window_start REAL NOT NULL,
+                failures INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                last_admit_token TEXT
+            )
+            """
+        )
     _TABLES_READY = True
 
 
@@ -125,6 +137,16 @@ def ensure_sa_tables() -> None:
 # Inactive credentials never retain a usable secret: rotation overwrites the
 # stored hash with this non-verifying placeholder immediately.
 _RETIRED_SECRET_HASH = "RETIRED"
+
+
+def _revoke_identity_sessions_in(db, admin_user_id: str) -> int:
+    """Revoke every SA session established for OR by an administrator identity,
+    on an EXISTING transaction (so rotation can be one atomic unit)."""
+    cur = db.execute(
+        "UPDATE sa_sessions SET revoked_at=? WHERE revoked_at IS NULL AND (admin_user_id=? OR bound_user_id=?)",
+        (_now(), admin_user_id, admin_user_id),
+    )
+    return int(getattr(cur, "rowcount", 0) or 0)
 
 
 def revoke_sa_sessions_for_identity(admin_user_id: str) -> int:
@@ -139,11 +161,7 @@ def revoke_sa_sessions_for_identity(admin_user_id: str) -> int:
         return 0
     try:
         with _get_db() as db:
-            cur = db.execute(
-                "UPDATE sa_sessions SET revoked_at=? WHERE revoked_at IS NULL AND (admin_user_id=? OR bound_user_id=?)",
-                (_now(), admin_user_id, admin_user_id),
-            )
-        return int(getattr(cur, "rowcount", 0) or 0)
+            return _revoke_identity_sessions_in(db, admin_user_id)
     except Exception:
         return 0
 
@@ -172,6 +190,11 @@ def create_sa_credential(admin_user_id: str, password: str, label: str = "", rot
         )
     server = _get_server()
     ensure_sa_tables()
+    # Hash OUTSIDE the transaction (pure CPU): the write lock is held only for
+    # the atomic rotation unit below.
+    secret_hash = server.hash_password(password)  # argon2id; never plaintext
+    revoked = 0
+    cred_id = "SAC-" + uuid.uuid4().hex[:12]
     with _get_db() as db:
         user = db.execute(
             "SELECT id, full_name, role, is_active FROM users WHERE id=?",
@@ -183,21 +206,23 @@ def create_sa_credential(admin_user_id: str, password: str, label: str = "", rot
                 detail="SA credentials can only be configured for an active administrator identity.",
             )
         if rotate:
-            # Invalidate AND scrub every previous credential of this identity.
+            # ATOMIC ROTATION - ONE transaction contains ALL of:
+            #   1. deactivate every previous credential of this identity;
+            #   2. scrub their stored hashes (old password can never verify);
+            #   3. revoke every existing SA session for/by this identity;
+            #   4. register the new credential.
+            # There is no committed state where the new credential is active
+            # while an old captured SA session (or old password) still works:
+            # any failure rolls the whole rotation back.
             db.execute(
                 "UPDATE sa_credentials SET is_active=0, secret_hash=? WHERE admin_user_id=?",
                 (_RETIRED_SECRET_HASH, admin_user_id),
             )
-        cred_id = "SAC-" + uuid.uuid4().hex[:12]
-        secret_hash = server.hash_password(password)  # argon2id; never plaintext
+            revoked = _revoke_identity_sessions_in(db, admin_user_id)
         db.execute(
             "INSERT INTO sa_credentials (id, admin_user_id, label, secret_hash, is_active, created_at) VALUES (?,?,?,?,1,?)",
             (cred_id, admin_user_id, (label or "")[:120], secret_hash, _now()),
         )
-    revoked = 0
-    if rotate:
-        # Existing SA sessions die with the old credential.
-        revoked = revoke_sa_sessions_for_identity(admin_user_id)
     server.log_audit(
         user["full_name"],
         "SA_CREDENTIAL_ROTATED" if rotate else "SA_CREDENTIAL_CONFIGURED",
@@ -284,33 +309,71 @@ def _verify_sa_password(password: str, bound_user_id: str) -> Optional[Dict[str,
 
 
 # ------------------------------------------------------------------
-# Throttling (in-memory, per logged-in account)
+# Throttling (database-backed, shared by EVERY application worker/process)
 # ------------------------------------------------------------------
 def _throttle_key(bound_user_id: str) -> str:
     return bound_user_id or "anonymous"
 
 
-def _register_failure(bound_user_id: str) -> None:
+def _admit_attempt(bound_user_id: str) -> bool:
+    """Atomically consume one unlock-attempt slot (or report throttled).
+
+    Policy: at most ``_MAX_FAILED_ATTEMPTS`` admitted attempts per
+    ``_FAILED_WINDOW_SECONDS`` window per account; a successful authentication
+    clears the state (see ``_register_success``); expired windows reset and old
+    records are purged. No password or secret is ever stored - only a counter,
+    timestamps, and a random admission token.
+
+    The whole decision is ONE database UPSERT on a shared counter row: every
+    application worker/process sees the same state, and concurrent requests
+    are serialized by the row (PostgreSQL) / writer (SQLite) lock, so multiple
+    workers cannot bypass the limit by racing separate in-memory dictionaries.
+    """
+    ensure_sa_tables()
     key = _throttle_key(bound_user_id)
-    cutoff = _now() - _FAILED_WINDOW_SECONDS
-    with _failed_lock:
-        attempts = [t for t in _failed_attempts.get(key, []) if t > cutoff]
-        attempts.append(_now())
-        _failed_attempts[key] = attempts
+    now = _now()
+    cutoff = now - _FAILED_WINDOW_SECONDS
+    token = uuid.uuid4().hex
+    with _get_db() as db:
+        db.execute(
+            "INSERT INTO sa_auth_throttle (key, window_start, failures, updated_at, last_admit_token) "
+            "VALUES (?,?,1,?,?) "
+            "ON CONFLICT (key) DO UPDATE SET "
+            " window_start = CASE WHEN sa_auth_throttle.window_start < ? THEN ? ELSE sa_auth_throttle.window_start END, "
+            " failures = CASE WHEN sa_auth_throttle.window_start < ? THEN 1 "
+            "   WHEN sa_auth_throttle.failures < ? THEN sa_auth_throttle.failures + 1 "
+            "   ELSE sa_auth_throttle.failures END, "
+            " updated_at = ?, "
+            " last_admit_token = CASE WHEN sa_auth_throttle.window_start < ? THEN ? "
+            "   WHEN sa_auth_throttle.failures < ? THEN ? "
+            "   ELSE sa_auth_throttle.last_admit_token END",
+            (
+                key, now, now, token,
+                cutoff, now,
+                cutoff, _MAX_FAILED_ATTEMPTS,
+                now,
+                cutoff, token,
+                _MAX_FAILED_ATTEMPTS, token,
+            ),
+        )
+        row = db.execute(
+            "SELECT last_admit_token FROM sa_auth_throttle WHERE key=?", (key,)
+        ).fetchone()
+        # Expire/clean records untouched for two whole windows.
+        db.execute(
+            "DELETE FROM sa_auth_throttle WHERE updated_at < ?", (now - 2 * _FAILED_WINDOW_SECONDS,)
+        )
+    return bool(row) and row["last_admit_token"] == token
 
 
 def _register_success(bound_user_id: str) -> None:
-    with _failed_lock:
-        _failed_attempts.pop(_throttle_key(bound_user_id), None)
-
-
-def _is_throttled(bound_user_id: str) -> bool:
-    key = _throttle_key(bound_user_id)
-    cutoff = _now() - _FAILED_WINDOW_SECONDS
-    with _failed_lock:
-        attempts = [t for t in _failed_attempts.get(key, []) if t > cutoff]
-        _failed_attempts[key] = attempts
-        return len(attempts) >= _MAX_FAILED_ATTEMPTS
+    """Successful authentication clears the failure state entirely."""
+    try:
+        ensure_sa_tables()
+        with _get_db() as db:
+            db.execute("DELETE FROM sa_auth_throttle WHERE key=?", (_throttle_key(bound_user_id),))
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------
@@ -491,7 +554,7 @@ def sa_unlock(req: SAUnlockReq, request: Request, user: dict = Depends(current_a
     """
     ensure_sa_tables()
     bound_user_id = user.get("id", "")
-    if _is_throttled(bound_user_id):
+    if not _admit_attempt(bound_user_id):
         _get_server().log_audit(
             user.get("full_name", ""), "SA_UNLOCK_THROTTLED", "SA unlock throttled after repeated failures", None
         )
@@ -502,7 +565,7 @@ def sa_unlock(req: SAUnlockReq, request: Request, user: dict = Depends(current_a
 
     credential = _verify_sa_password(req.password, bound_user_id)
     if not credential:
-        _register_failure(bound_user_id)
+        # The admitted attempt already counts in the shared failure window.
         _get_server().log_audit(
             user.get("full_name", ""), "SA_UNLOCK_FAILED", "Invalid AI access password", None
         )

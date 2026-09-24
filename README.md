@@ -214,6 +214,21 @@ SA requests run through a safe task lifecycle (`assistant_tasks.py`):
   lease (missed heartbeats past the lease timeout — the owning process is
   gone) may be re-claimed, and every execution owns a `run_id` so a zombie
   worker can never overwrite a reclaimed execution's state or result.
+- Proposal approval is a **single-writer execution claim** (`PROPOSED ->
+  EXECUTING` compare-and-set in SQL): of two concurrent approvals exactly one
+  can acquire the claim and run the mutation, the other gets a safe
+  conflict/re-attach response, and completion is ownership-guarded
+  (`execution_claim`) so a zombie can never overwrite an outcome. An already
+  `EXECUTED` approval still replays its stored result.
+- Credential rotation commits **atomically in one transaction** (old
+  credentials deactivated + hashes scrubbed + existing SA sessions revoked +
+  new credential registered together): there is no committed state where the
+  new password works while an old captured SA session is still alive.
+- The SA unlock throttle is **database-backed and shared by every application
+  worker/process** (atomic admission via a counter-row upsert): multiple
+  workers or restarts cannot bypass the failed-attempt limit. Successful
+  authentication clears the state; expired windows reset and old records are
+  cleaned; no secret is ever stored in the throttle.
 - Permanent authorization or validation errors never offer Try Again.
 
 ### Verification Officer AI (normal assistant)

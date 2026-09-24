@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import main
@@ -149,3 +150,151 @@ def test_ai_location_pin_command_creates_proposal_without_mutating_property(tmp_
     assert after["latitude"] == row["latitude"]
     assert after["longitude"] == row["longitude"]
     server.DB_PATH = old_db_path
+
+
+def _concurrency_probe_proposal(title):
+    return ai_governance.create_proposal({
+        "action_type": "CREATE_AI_TASK",
+        "target_type": "DOCUMENT",
+        "target_ids": [],
+        "before": {},
+        "after": {"title": title, "description": "race regression probe", "task_type": "ADMIN_REVIEW"},
+        "reason": "concurrency regression probe",
+        "evidence": [],
+        "confidence": 0.9,
+        "risk": "LOW",
+    }, created_by="AI_ASSISTANT")
+
+
+def test_concurrent_approval_executes_the_mutation_exactly_once(tmp_path, monkeypatch):
+    """Two simultaneous approval requests must never execute the mutation twice.
+
+    The atomic PROPOSED -> EXECUTING claim (compare-and-set in SQL) means only
+    ONE request acquires the execution claim and runs _execute(); the losing
+    request gets a safe conflict / re-attach response and cannot execute.
+    """
+    import threading
+    import time
+
+    old_db_path = server.DB_PATH
+    server.DB_PATH = str(tmp_path / "ai-concurrency-test.db")
+    server.init_db()
+    ai_governance.ensure_governance_tables()
+    try:
+        proposal = _concurrency_probe_proposal("Concurrency probe")
+        pid = proposal["proposal_id"]
+        admin = {"id": "admin-1", "full_name": "Admin One", "email": "admin1@test", "role": "ADMIN"}
+
+        real_execute = ai_governance._execute
+        calls, claims = [], []
+
+        def slow_execute(p, adm):
+            # Record the execution claim this request owns, then hold the race
+            # window open so the concurrent request is exercised mid-execution.
+            calls.append(p["proposal_id"])
+            claims.append(ai_governance.get_proposal(pid).get("execution_claim"))
+            time.sleep(0.3)
+            return real_execute(p, adm)
+
+        monkeypatch.setattr(ai_governance, "_execute", slow_execute)
+
+        results, errors = [], []
+        barrier = threading.Barrier(2)
+
+        def run():
+            barrier.wait()
+            try:
+                results.append(ai_governance.approve_proposal(pid, admin, "concurrent"))
+            except Exception as exc:  # noqa: BLE001 - recorded and asserted below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(20)
+            assert not t.is_alive(), "approval thread hung"
+
+        # Exactly ONE request owned the execution claim and ran _execute ...
+        assert calls == [pid], "only one request may acquire the claim and run _execute"
+        assert len(claims) == 1 and claims[0], "exactly one request owns the execution"
+
+        with server.get_db() as db:
+            row = db.execute(
+                "SELECT status, execution_claim FROM ai_proposals WHERE proposal_id=?", (pid,)
+            ).fetchone()
+            tasks = db.execute(
+                "SELECT COUNT(*) AS n FROM ai_tasks WHERE title=?", ("Concurrency probe",)
+            ).fetchone()["n"]
+        # ... the claim in the database belongs to that single execution ...
+        assert row["execution_claim"] == claims[0]
+        # ... the mutation happened exactly once and the proposal finished.
+        assert tasks == 1, "the underlying mutation must execute exactly once"
+        assert row["status"] == "EXECUTED"
+
+        # The losing request got a safe conflict / re-attach outcome and can
+        # never execute the mutation.
+        assert len(results) + len(errors) == 2
+        assert len(results) >= 1, "the winning request must complete"
+        for exc in errors:
+            assert isinstance(exc, HTTPException)
+            assert exc.status_code == 409
+        for r in results:
+            assert r["status"] == "EXECUTED"
+    finally:
+        server.DB_PATH = old_db_path
+
+
+def test_claimed_or_decided_states_never_execute_again(tmp_path, monkeypatch):
+    """EXECUTING, FAILED, REJECTED and EXPIRED can never run the mutation again."""
+    old_db_path = server.DB_PATH
+    server.DB_PATH = str(tmp_path / "ai-state-guard-test.db")
+    server.init_db()
+    ai_governance.ensure_governance_tables()
+    try:
+        admin = {"id": "admin-1", "full_name": "Admin One", "email": "admin1@test", "role": "ADMIN"}
+        calls = []
+        monkeypatch.setattr(ai_governance, "_execute", lambda p, a: calls.append(1))
+        for state in ("EXECUTING", "FAILED", "REJECTED", "EXPIRED"):
+            proposal = _concurrency_probe_proposal(f"State guard {state}")
+            with server.get_db() as db:
+                db.execute(
+                    "UPDATE ai_proposals SET status=?, execution_claim=? WHERE proposal_id=?",
+                    (state, "another-owners-claim" if state == "EXECUTING" else None, proposal["proposal_id"]),
+                )
+            with pytest.raises(HTTPException) as exc:
+                ai_governance.approve_proposal(proposal["proposal_id"], admin, "try again")
+            assert exc.value.status_code == 409
+            # An execution claimed by someone else can never be taken over.
+            if state == "EXECUTING":
+                with pytest.raises(HTTPException) as exc2:
+                    ai_governance.approve_proposal(proposal["proposal_id"], admin, "take over")
+                assert exc2.value.status_code == 409
+        assert calls == [], "no claimed/decided state may ever execute again"
+
+        # And completion is ownership-safe: only the executor that owns the
+        # execution claim can transition EXECUTING -> EXECUTED. If the claim is
+        # lost mid-execution (e.g. a reclaimed run after a crash), the zombie's
+        # completion can never overwrite the current owner's outcome.
+        proposal = _concurrency_probe_proposal("Ownership guard")
+        pid2 = proposal["proposal_id"]
+
+        def reassign_then_succeed(p, adm):
+            # Simulate another run taking over the execution claim.
+            with server.get_db() as db:
+                db.execute(
+                    "UPDATE ai_proposals SET execution_claim=? WHERE proposal_id=?",
+                    ("reclaimed-by-other-run", pid2),
+                )
+            return {"tasks": ["zombie-result"]}
+
+        monkeypatch.setattr(ai_governance, "_execute", reassign_then_succeed)
+        ai_governance.approve_proposal(pid2, admin, "zombie")
+        fresh = ai_governance.get_proposal(pid2)
+        # The zombie's stale completion was rejected: state and result stay
+        # with the reclaiming owner (still executing under its claim).
+        assert fresh["status"] == "EXECUTING"
+        assert fresh["execution_claim"] == "reclaimed-by-other-run"
+        assert "zombie-result" not in json.dumps(fresh.get("execution_result") or {})
+    finally:
+        server.DB_PATH = old_db_path
