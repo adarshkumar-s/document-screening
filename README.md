@@ -169,9 +169,17 @@ the Verification Officer interface as a small AI icon next to the AI Task icon.
   configured administrator identity (`valid credential → administrator
   identity → SA session`). The browser cannot submit a name, `isAdmin`,
   `unlocked=true`, hidden form fields, or JS variables and become anyone.
+- **Credential ownership is enforced**: an SA credential belongs to exactly
+  one administrator and can only be created and used by that administrator.
+  Administrator A can neither create nor use a credential of administrator B
+  (the endpoint always binds to the calling administrator; unlock only ever
+  considers the caller's own credentials).
 - Credentials are stored argon2id-hashed (never plaintext, never logged,
   never returned) and can be seeded with `SA_ACCESS_PASSWORD` or
-  configured/rotated via `POST /api/sa/credentials` (Administrator only).
+  rotated via `POST /api/sa/credentials` (Administrator only, self).
+  **Rotation is real**: it invalidates and scrubs the previous credential and
+  revokes every existing SA session for/by that identity — the new password
+  must be used to re-authenticate.
 - SA authorization is a **short-lived server-side session** bound to the
   logged-in administrator (user id + session version) and the verified
   identity. It expires (`SA_SESSION_TTL_SECONDS`, default 15 minutes), is
@@ -201,6 +209,11 @@ SA requests run through a safe task lifecycle (`assistant_tasks.py`):
   is idempotent through proposal idempotency keys, so one logical request can
   create at most one proposal and an approved proposal executes exactly once
   (a retried approval replays the stored outcome).
+- Running work is owned by a **worker lease with a real heartbeat**: a live
+  worker can never be reclaimed, however long it runs. Only a provably dead
+  lease (missed heartbeats past the lease timeout — the owning process is
+  gone) may be re-claimed, and every execution owns a `run_id` so a zombie
+  worker can never overwrite a reclaimed execution's state or result.
 - Permanent authorization or validation errors never offer Try Again.
 
 ### Verification Officer AI (normal assistant)

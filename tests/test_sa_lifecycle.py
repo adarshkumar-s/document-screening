@@ -133,6 +133,104 @@ def test_timeout_reattaches_to_running_work_without_second_execution():
     assert len(calls) == 1
 
 
+def test_live_worker_can_never_be_reclaimed():
+    """Worker lease/heartbeat: no matter how long a worker runs (far beyond the
+    lease window), its heartbeat keeps the lease fresh and Try again only
+    re-attaches - a LIVE worker can never be reclaimed or executed twice."""
+    monkeypatch_interval = assistant_tasks.HEARTBEAT_INTERVAL_SECONDS
+    monkeypatch_lease = assistant_tasks.LEASE_TIMEOUT_SECONDS
+    assistant_tasks.HEARTBEAT_INTERVAL_SECONDS = 0.05
+    assistant_tasks.LEASE_TIMEOUT_SECONDS = 0.3
+    calls = []
+    release = threading.Event()
+
+    def runner(payload, request_id):
+        calls.append(request_id)
+        release.wait(5)
+        return {"response": "late result"}
+
+    try:
+        rid = _rid("life-lease-live")
+        timed_out = assistant_tasks.submit_or_replay(
+            request_id=rid, surface="SA", user_id="u1", kind="QUERY",
+            payload={"query": "slow"}, runner=runner, wait_seconds=0.15,
+        )
+        assert timed_out["state"] == "timeout"
+
+        # Run far past the lease window: heartbeats keep the lease alive.
+        time.sleep(0.8)
+        for _ in range(2):
+            attached = assistant_tasks.retry_request(rid, "u1", runner, wait_seconds=0.15)
+            assert attached["state"] in ("running", "timeout")
+        assert len(calls) == 1, "a LIVE (heartbeating) worker must never be reclaimed"
+
+        release.set()
+        deadline = time.time() + 5
+        final = None
+        while time.time() < deadline:
+            final = assistant_tasks.get_request(rid, "u1")
+            if final["state"] == "succeeded":
+                break
+            time.sleep(0.05)
+        assert final and final["state"] == "succeeded"
+        assert len(calls) == 1
+    finally:
+        assistant_tasks.HEARTBEAT_INTERVAL_SECONDS = monkeypatch_interval
+        assistant_tasks.LEASE_TIMEOUT_SECONDS = monkeypatch_lease
+        release.set()
+
+
+def test_dead_worker_lease_is_reclaimed_and_zombie_cannot_clobber():
+    """Only a provably dead lease (missed heartbeats - owning process gone) may
+    be re-claimed; the reclaimed run owns the row (run_id) so a zombie worker
+    can never overwrite its state/result."""
+    import server
+
+    monkeypatch_lease = assistant_tasks.LEASE_TIMEOUT_SECONDS
+    assistant_tasks.LEASE_TIMEOUT_SECONDS = 0.2
+    rid = _rid("life-lease-dead")
+    now = time.time()
+    try:
+        # Simulate a crashed worker: RUNNING with an expired lease and no
+        # ticker (the owning process died).
+        assistant_tasks.ensure_tasks_table()
+        with server.get_db() as db:
+            db.execute(
+                "INSERT INTO assistant_requests (request_id, surface, user_id, kind, payload, payload_hash, state,"
+                " attempts, result, cancel_requested, created_at, updated_at, started_at, run_id, heartbeat_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, "SA", "u1", "QUERY", '{"query": "crashed"}', "hash-dead", "RUNNING",
+                 1, "{}", 0, now, now, now - 600, "dead-run", now - 600),
+            )
+        time.sleep(0.3)  # push past the lease window
+
+        calls = []
+
+        def runner(payload, request_id):
+            calls.append(1)
+            return {"response": "recovered once"}
+
+        reclaimed = assistant_tasks.retry_request(rid, "u1", runner, wait_seconds=5)
+        assert reclaimed["state"] == "succeeded"
+        assert reclaimed["result"]["response"] == "recovered once"
+        assert calls == [1], "a dead lease is reclaimed exactly once"
+
+        # A zombie of the DEAD run tries to write its outcome: the run_id
+        # guard must reject it and keep the reclaimed execution's result.
+        assistant_tasks._mark_finished(rid, "dead-run", assistant_tasks.STATE_SUCCEEDED,
+                                      {"response": "zombie garbage"}, None, None)
+        final = assistant_tasks.get_request(rid, "u1")
+        assert final["result"]["response"] == "recovered once"
+        assert final["state"] == "succeeded"
+
+        # And a retry now only replays.
+        replay = assistant_tasks.retry_request(rid, "u1", runner, wait_seconds=5)
+        assert replay["replayed"] is True
+        assert calls == [1]
+    finally:
+        assistant_tasks.LEASE_TIMEOUT_SECONDS = monkeypatch_lease
+
+
 def test_provider_failure_is_retryable_but_permanent_errors_are_not():
     calls = []
 

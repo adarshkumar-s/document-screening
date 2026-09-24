@@ -104,29 +104,100 @@ def test_sa_requires_admin_login_and_password_cannot_be_skipped(make_user_client
     assert ok.json()["welcome"] == f"Welcome, {real['full_name']}"
 
 
-def test_credential_resolves_to_configured_administrator_identity(make_user_client):
-    """valid credential -> administrator identity -> SA session (the name is
-    NEVER accepted from the browser)."""
-    admin_a, admin_a_headers, _ = make_user_client("ADMIN", prefix="saga")
-    _admin_b, _b_headers, admin_b_email = make_user_client("ADMIN", prefix="sagb")
+def test_credential_cannot_be_used_or_created_across_administrators(make_user_client):
+    """SECURITY: administrator A can neither USE nor CREATE an SA credential
+    belonging to administrator B.
+
+    ``valid credential -> administrator identity -> SA session`` still holds,
+    but the credential must belong to the logged-in administrator - and the
+    verified name is never accepted from the browser.
+    """
+    admin_a, admin_a_headers, admin_a_email = make_user_client("ADMIN", prefix="saga")
+    admin_b, admin_b_headers, admin_b_email = make_user_client("ADMIN", prefix="sagb")
 
     import server
 
     with server.get_db() as db:
         db.execute("UPDATE users SET full_name=? WHERE LOWER(email)=?", ("Adarsh", admin_b_email.lower()))
     # The credential is configured for Adarsh's identity only.
-    _make_sa_credential(admin_b_email)
+    _make_sa_credential(admin_b_email, "Adarsh Access Pass 1!")
 
-    # A different signed-in administrator presenting the credential becomes the
-    # VERIFIED identity (Adarsh) - the submitted "name" cannot fake this.
-    ok = _unlock(admin_a, extra={"name": "Not Adarsh"}, headers=admin_a_headers)
+    # A cannot USE B's credential: ownership is checked server-side.
+    stolen = _unlock(admin_a, password="Adarsh Access Pass 1!",
+                     extra={"name": "Adarsh", "isAdmin": True, "unlocked": True},
+                     headers=admin_a_headers)
+    assert stolen.status_code == 401
+    status = admin_a.get("/api/sa/session", headers=admin_a_headers)
+    assert status.json()["unlocked"] is False
+
+    # A cannot CREATE a credential belonging to B: the endpoint always binds
+    # to the CALLING administrator. A spoofed admin_email field is ignored.
+    forged = admin_a.post("/api/sa/credentials", headers=admin_a_headers,
+                          json={"password": "Forged For Adarsh 1!", "admin_email": admin_b_email, "label": "x"})
+    assert forged.status_code == 200, forged.text
+    assert forged.json()["admin"]["full_name"] != "Adarsh"
+
+    # The forged credential belongs to A: B cannot use it ...
+    b_with_forged = _unlock(admin_b, password="Forged For Adarsh 1!", headers=admin_b_headers)
+    assert b_with_forged.status_code == 401
+    # ... and B's own password still resolves to B ("Welcome, Adarsh").
+    ok = _unlock(admin_b, password="Adarsh Access Pass 1!", headers=admin_b_headers)
     assert ok.status_code == 200, ok.text
     assert ok.json()["admin"]["full_name"] == "Adarsh"
     assert ok.json()["welcome"] == "Welcome, Adarsh"
 
-    status = admin_a.get("/api/sa/session", headers=admin_a_headers)
-    assert status.json()["unlocked"] is True
-    assert status.json()["admin"]["full_name"] == "Adarsh"
+    # A's own credential resolves to A's own verified identity.
+    ok_a = _unlock(admin_a, password="Forged For Adarsh 1!", headers=admin_a_headers)
+    assert ok_a.status_code == 200, ok_a.text
+    with server.get_db() as db:
+        real_a = db.execute("SELECT full_name FROM users WHERE LOWER(email)=?", (admin_a_email.lower(),)).fetchone()
+    assert ok_a.json()["admin"]["full_name"] == real_a["full_name"]
+
+
+def test_credential_rotation_invalidates_old_password_and_existing_sessions(make_user_client):
+    """Rotation must actually invalidate the old credential and revoke every
+    existing SA session (re-authentication with the new password required)."""
+    import server
+
+    admin, admin_headers, admin_email = make_user_client("ADMIN", prefix="sagr")
+    old_password = "Original SA Password 1!"
+    new_password = "Rotated SA Password 2!"
+    _make_sa_credential(admin_email, old_password)
+
+    assert _unlock(admin, password=old_password, headers=admin_headers).status_code == 200
+    captured_cookie = admin.cookies.get("sa_session")
+    assert captured_cookie
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is True
+
+    # Rotate via the administrator endpoint (self only).
+    rotated = admin.post("/api/sa/credentials", headers=admin_headers,
+                         json={"password": new_password, "label": "rotate"})
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["rotated"] is True
+
+    # 1) The OLD password stops working immediately.
+    old_try = _unlock(admin, password=old_password, headers=admin_headers)
+    assert old_try.status_code == 401
+    # 2) Every EXISTING SA session is revoked server-side (captured cookie
+    #    replay included) - re-authentication with the new password is needed.
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is False
+    replay = admin.post("/api/admin/assistant/query", headers=admin_headers,
+                        cookies={"sa_session": captured_cookie},
+                        json={"query": "Show recent activity", "request_id": _rid("req-rotated")})
+    assert replay.status_code == 401
+    # 3) The old credential is scrubbed from storage (no usable hash left).
+    with server.get_db() as db:
+        rows = db.execute(
+            "SELECT c.secret_hash, c.is_active FROM sa_credentials c JOIN users u ON u.id=c.admin_user_id WHERE LOWER(u.email)=?",
+            (admin_email.lower(),),
+        ).fetchall()
+    for row in rows:
+        if not row["is_active"]:
+            assert old_password not in (row["secret_hash"] or "")
+            assert not (row["secret_hash"] or "").startswith("$argon2"), "retired hashes must be scrubbed"
+    # 4) The NEW password opens a fresh session.
+    assert _unlock(admin, password=new_password, headers=admin_headers).status_code == 200
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is True
 
 
 def test_wrong_password_opens_no_session_and_password_never_leaks(make_user_client):
@@ -141,15 +212,17 @@ def test_wrong_password_opens_no_session_and_password_never_leaks(make_user_clie
     status = admin.get("/api/sa/session", headers=admin_headers)
     assert status.json()["unlocked"] is False
 
-    # The secret is stored hashed (argon2id), never plaintext.
+    # The secret is stored hashed (argon2id), never plaintext. Retired
+    # (rotated) credentials are scrubbed to a non-verifying placeholder.
     import server
 
     with server.get_db() as db:
-        rows = db.execute("SELECT secret_hash FROM sa_credentials").fetchall()
+        rows = db.execute("SELECT secret_hash, is_active FROM sa_credentials").fetchall()
     assert rows
     joined = " ".join(r["secret_hash"] for r in rows)
     assert secret not in joined
-    assert all(r["secret_hash"].startswith("$argon2") for r in rows)
+    assert all(r["secret_hash"].startswith("$argon2") for r in rows if r["is_active"])
+    assert all(secret not in (r["secret_hash"] or "") for r in rows)
 
     # Nothing about the secret is written to the audit trail.
     audit = admin.get("/api/audit", headers=admin_headers)

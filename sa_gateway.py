@@ -122,12 +122,48 @@ def ensure_sa_tables() -> None:
 # ------------------------------------------------------------------
 # Credentials (server-side configuration)
 # ------------------------------------------------------------------
-def create_sa_credential(admin_user_id: str, password: str, label: str = "") -> Dict[str, Any]:
-    """Register (or rotate) the AI access password for an administrator.
+# Inactive credentials never retain a usable secret: rotation overwrites the
+# stored hash with this non-verifying placeholder immediately.
+_RETIRED_SECRET_HASH = "RETIRED"
+
+
+def revoke_sa_sessions_for_identity(admin_user_id: str) -> int:
+    """Revoke every SA session established for OR by an administrator identity.
+
+    Used on credential rotation so an old credential's sessions cannot outlive
+    it (defense in depth alongside the per-account logout revocation).
+    """
+    try:
+        ensure_sa_tables()
+    except Exception:
+        return 0
+    try:
+        with _get_db() as db:
+            cur = db.execute(
+                "UPDATE sa_sessions SET revoked_at=? WHERE revoked_at IS NULL AND (admin_user_id=? OR bound_user_id=?)",
+                (_now(), admin_user_id, admin_user_id),
+            )
+        return int(getattr(cur, "rowcount", 0) or 0)
+    except Exception:
+        return 0
+
+
+def create_sa_credential(admin_user_id: str, password: str, label: str = "", rotate: bool = False) -> Dict[str, Any]:
+    """Register — or, with ``rotate=True``, rotate — the AI access password.
 
     The password is hashed immediately with argon2id and never persisted or
-    logged in plaintext. An admin user may hold several credentials; each one
-    resolves to that administrator identity.
+    logged in plaintext.
+
+    Rotation semantics (``rotate=True``):
+    * every previous credential of that administrator is invalidated AND its
+      stored hash is scrubbed (the old password stops working immediately);
+    * every existing SA session established for/by that administrator is
+      revoked server-side (re-authentication with the new password is
+      required).
+
+    This function is server-side configuration (deployment seeding). The HTTP
+    endpoint only ever calls it for the CALLING administrator's own identity,
+    so one administrator can never create a credential belonging to another.
     """
     if not password or len(password) < 8:
         raise HTTPException(
@@ -146,20 +182,30 @@ def create_sa_credential(admin_user_id: str, password: str, label: str = "") -> 
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="SA credentials can only be configured for an active administrator identity.",
             )
+        if rotate:
+            # Invalidate AND scrub every previous credential of this identity.
+            db.execute(
+                "UPDATE sa_credentials SET is_active=0, secret_hash=? WHERE admin_user_id=?",
+                (_RETIRED_SECRET_HASH, admin_user_id),
+            )
         cred_id = "SAC-" + uuid.uuid4().hex[:12]
         secret_hash = server.hash_password(password)  # argon2id; never plaintext
         db.execute(
-            "INSERT INTO sa_credentials (id, admin_user_id, label, secret_hash, is_active, created_at) "
-            "VALUES (?,?,?,?,1,?)",
+            "INSERT INTO sa_credentials (id, admin_user_id, label, secret_hash, is_active, created_at) VALUES (?,?,?,?,1,?)",
             (cred_id, admin_user_id, (label or "")[:120], secret_hash, _now()),
         )
+    revoked = 0
+    if rotate:
+        # Existing SA sessions die with the old credential.
+        revoked = revoke_sa_sessions_for_identity(admin_user_id)
     server.log_audit(
         user["full_name"],
-        "SA_CREDENTIAL_CONFIGURED",
-        f"AI access credential configured for administrator {user['full_name']}",
+        "SA_CREDENTIAL_ROTATED" if rotate else "SA_CREDENTIAL_CONFIGURED",
+        f"AI access credential {'rotated' if rotate else 'configured'} for administrator {user['full_name']}"
+        + (f"; {revoked} existing SA session(s) revoked" if rotate else ""),
         None,
     )
-    return {"credential_id": cred_id, "admin_user_id": admin_user_id}
+    return {"credential_id": cred_id, "admin_user_id": admin_user_id, "revoked_sessions": revoked}
 
 
 def seed_sa_credential_from_env() -> None:
@@ -194,12 +240,16 @@ def seed_sa_credential_from_env() -> None:
         print(f"[SA CREDENTIAL SEED WARNING] {type(exc).__name__}")
 
 
-def _verify_sa_password(password: str) -> Optional[Dict[str, Any]]:
-    """Resolve ``password`` to an already configured administrator identity.
+def _verify_sa_password(password: str, bound_user_id: str) -> Optional[Dict[str, Any]]:
+    """Resolve ``password`` to the CALLING administrator's own identity.
 
-    Returns the credential row (joined with its administrator) or None.
-    Constant work per configured credential; the secret is compared with the
-    argon2 verifier and never exposed.
+    Ownership rule: an SA credential belongs to exactly one administrator and
+    can only ever be USED by that administrator's authenticated session.
+    Administrator A presenting administrator B's credential gets nowhere - the
+    candidate set is restricted to credentials owned by the logged-in account.
+
+    Returns the credential row (joined with its administrator) or None. The
+    secret is compared with the argon2 verifier and never exposed.
     """
     server = _get_server()
     ensure_sa_tables()
@@ -208,7 +258,8 @@ def _verify_sa_password(password: str) -> Optional[Dict[str, Any]]:
         rows = db.execute(
             "SELECT c.id AS credential_id, c.admin_user_id, u.full_name, u.email, u.role, u.is_active "
             "FROM sa_credentials c JOIN users u ON u.id = c.admin_user_id "
-            "WHERE c.is_active=1"
+            "WHERE c.is_active=1 AND c.admin_user_id=?",
+            (bound_user_id,),
         ).fetchall()
         for row in rows:
             if not row["is_active"]:
@@ -424,8 +475,10 @@ class SAUnlockReq(BaseModel):
 
 
 class SACredentialReq(BaseModel):
+    # The credential always belongs to the CALLING administrator. Any identity
+    # fields a browser might add (admin_email, name, ...) are ignored by
+    # design: administrator A can never create a credential for administrator B.
     password: str
-    admin_email: Optional[str] = None
     label: str = ""
 
 
@@ -447,7 +500,7 @@ def sa_unlock(req: SAUnlockReq, request: Request, user: dict = Depends(current_a
             detail="Too many failed attempts. Try again later.",
         )
 
-    credential = _verify_sa_password(req.password)
+    credential = _verify_sa_password(req.password, bound_user_id)
     if not credential:
         _register_failure(bound_user_id)
         _get_server().log_audit(
@@ -466,8 +519,7 @@ def sa_unlock(req: SAUnlockReq, request: Request, user: dict = Depends(current_a
     server.log_audit(
         credential["full_name"],
         "SA_UNLOCK",
-        f"SA session opened for verified administrator {credential['full_name']}"
-        + (f" (logged in as {user.get('full_name')})" if user.get("id") != credential["admin_user_id"] else ""),
+        f"SA session opened for verified administrator {credential['full_name']}",
         None,
     )
     from fastapi.responses import JSONResponse
@@ -525,31 +577,23 @@ def sa_status(request: Request, user: dict = Depends(current_admin_user)):
 
 @router.post("/credentials")
 def sa_configure_credential(req: SACredentialReq, user: dict = Depends(current_admin_user)):
-    """Administrator-only: register/rotate an AI access credential.
+    """Administrator-only: ROTATE the AI access credential of the calling
+    administrator.
 
-    The credential resolves to an active administrator identity (defaults to
-    the calling administrator). The secret is hashed immediately and is never
-    returned.
+    Ownership rule: the credential is always bound to the CALLING
+    administrator's own identity - one administrator can never create or
+    rotate a credential belonging to another. Rotation invalidates and scrubs
+    the previous credential and revokes every existing SA session for/by that
+    identity (the new password must be used to re-authenticate). The secret is
+    hashed immediately and is never returned.
     """
-    server = _get_server()
-    target = user
-    if req.admin_email:
-        with _get_db() as db:
-            row = db.execute(
-                "SELECT id, full_name, email, role, is_active FROM users WHERE LOWER(email)=?",
-                (req.admin_email.strip().lower(),),
-            ).fetchone()
-        if not row or not row["is_active"] or server.normalize_role(row["role"]) != server.ROLE_ADMIN:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="SA credentials can only target an active administrator identity.",
-            )
-        target = dict(row)
-    created = create_sa_credential(target["id"], req.password, req.label)
+    created = create_sa_credential(user["id"], req.password, req.label, rotate=True)
     return {
         "status": "ok",
         "credential_id": created["credential_id"],
-        "admin": {"full_name": target["full_name"]},
+        "rotated": True,
+        "revoked_sessions": created.get("revoked_sessions", 0),
+        "admin": {"full_name": user["full_name"]},
     }
 
 
