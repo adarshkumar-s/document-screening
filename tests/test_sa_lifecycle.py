@@ -13,6 +13,7 @@ These tests prove the at-most-once guarantees end to end:
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -133,6 +134,56 @@ def test_timeout_reattaches_to_running_work_without_second_execution():
     assert len(calls) == 1
 
 
+def test_task_claim_cas_is_single_winner_and_fail_closed():
+    """The claim CAS awards the execution to exactly ONE concurrent caller and
+    is FAIL-CLOSED: losing (or a missing rowcount) is never a won claim."""
+    import threading
+
+    import server
+
+    rid = _rid("claim-race")
+    now = time.time()
+    assistant_tasks.ensure_tasks_table()
+    with server.get_db() as db:
+        db.execute(
+            "INSERT INTO assistant_requests (request_id, surface, user_id, kind, payload, payload_hash, state,"
+            " attempts, result, cancel_requested, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (rid, "SA", "u1", "QUERY", '{"query": "claim me"}', "hash-claim", "PENDING", 0, "{}", 0, now, now),
+        )
+    wins, barrier = [], threading.Barrier(2)
+
+    def try_claim():
+        barrier.wait()
+        row = assistant_tasks._claim(rid, (assistant_tasks.STATE_PENDING,))
+        if row is not None:
+            wins.append(row)
+
+    threads = [threading.Thread(target=try_claim) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(15)
+        assert not t.is_alive(), "claim thread hung"
+    assert len(wins) == 1, "exactly one request may win the execution claim"
+    assert wins[0]["state"] == "RUNNING"
+    assert wins[0]["run_id"]
+
+    # FAIL-CLOSED source guard: no claim/completion CAS anywhere may default a
+    # missing rowcount to success (the fail-open bug this fixes).
+    root = Path(__file__).resolve().parents[1]
+    for module_file in ("ai_governance.py", "assistant_tasks.py", "sa_gateway.py"):
+        src = (root / module_file).read_text(encoding="utf-8")
+        assert 'getattr(cur, "rowcount", 1)' not in src
+        assert 'getattr(cur,"rowcount",1)' not in src
+
+    # Cleanup: release the claim for other tests sharing nothing (tmp rows are
+    # fine to leave; the request id is unique).
+    refused = assistant_tasks._mark_finished(rid, "not-the-owner", assistant_tasks.STATE_SUCCEEDED,
+                                             {"response": "x"}, None, None)
+    assert refused is False
+
+
 def test_live_worker_can_never_be_reclaimed():
     """Worker lease/heartbeat: no matter how long a worker runs (far beyond the
     lease window), its heartbeat keeps the lease fresh and Try again only
@@ -216,9 +267,11 @@ def test_dead_worker_lease_is_reclaimed_and_zombie_cannot_clobber():
         assert calls == [1], "a dead lease is reclaimed exactly once"
 
         # A zombie of the DEAD run tries to write its outcome: the run_id
-        # guard must reject it and keep the reclaimed execution's result.
-        assistant_tasks._mark_finished(rid, "dead-run", assistant_tasks.STATE_SUCCEEDED,
-                                      {"response": "zombie garbage"}, None, None)
+        # guard must reject it (fail-closed: ownership refused) and keep the
+        # reclaimed execution's result.
+        refused = assistant_tasks._mark_finished(rid, "dead-run", assistant_tasks.STATE_SUCCEEDED,
+                                                 {"response": "zombie garbage"}, None, None)
+        assert refused is False, "a non-owner completion write must be refused"
         final = assistant_tasks.get_request(rid, "u1")
         assert final["result"]["response"] == "recovered once"
         assert final["state"] == "succeeded"

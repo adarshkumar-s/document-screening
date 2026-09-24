@@ -231,6 +231,12 @@ def test_concurrent_approval_executes_the_mutation_exactly_once(tmp_path, monkey
         # ... the mutation happened exactly once and the proposal finished.
         assert tasks == 1, "the underlying mutation must execute exactly once"
         assert row["status"] == "EXECUTED"
+        with server.get_db() as db:
+            n_exec_events = db.execute(
+                "SELECT COUNT(*) AS n FROM ai_approval_events WHERE proposal_id=? AND event_type='AI_PROPOSAL_EXECUTED'",
+                (pid,),
+            ).fetchone()["n"]
+        assert n_exec_events == 1, "exactly one owner may emit the EXECUTED audit event"
 
         # The losing request got a safe conflict / re-attach outcome and can
         # never execute the mutation.
@@ -272,10 +278,11 @@ def test_claimed_or_decided_states_never_execute_again(tmp_path, monkeypatch):
                 assert exc2.value.status_code == 409
         assert calls == [], "no claimed/decided state may ever execute again"
 
-        # And completion is ownership-safe: only the executor that owns the
-        # execution claim can transition EXECUTING -> EXECUTED. If the claim is
-        # lost mid-execution (e.g. a reclaimed run after a crash), the zombie's
-        # completion can never overwrite the current owner's outcome.
+        # And completion is ownership-safe AND fail-closed: only the executor
+        # that owns the execution claim can transition EXECUTING -> EXECUTED.
+        # If the claim is lost mid-execution, the zombie's completion is
+        # refused - no false EXECUTED event, no result clobbering - and the
+        # caller gets a safe conflict/re-attach response.
         proposal = _concurrency_probe_proposal("Ownership guard")
         pid2 = proposal["proposal_id"]
 
@@ -289,12 +296,87 @@ def test_claimed_or_decided_states_never_execute_again(tmp_path, monkeypatch):
             return {"tasks": ["zombie-result"]}
 
         monkeypatch.setattr(ai_governance, "_execute", reassign_then_succeed)
-        ai_governance.approve_proposal(pid2, admin, "zombie")
+        with pytest.raises(HTTPException) as exc:
+            ai_governance.approve_proposal(pid2, admin, "zombie")
+        assert exc.value.status_code == 409  # safe conflict / re-attach
+
         fresh = ai_governance.get_proposal(pid2)
         # The zombie's stale completion was rejected: state and result stay
         # with the reclaiming owner (still executing under its claim).
         assert fresh["status"] == "EXECUTING"
         assert fresh["execution_claim"] == "reclaimed-by-other-run"
         assert "zombie-result" not in json.dumps(fresh.get("execution_result") or {})
+        with server.get_db() as db:
+            n_exec_events = db.execute(
+                "SELECT COUNT(*) AS n FROM ai_approval_events WHERE proposal_id=? AND event_type='AI_PROPOSAL_EXECUTED'",
+                (pid2,),
+            ).fetchone()["n"]
+            n_fail_events = db.execute(
+                "SELECT COUNT(*) AS n FROM ai_approval_events WHERE proposal_id=? AND event_type='AI_PROPOSAL_FAILED'",
+                (pid2,),
+            ).fetchone()["n"]
+        # Fail-closed audit: the stale executor emits neither EXECUTED nor a
+        # false FAILED for the claim it no longer owns.
+        assert n_exec_events == 0
+        assert n_fail_events == 0
+    finally:
+        server.DB_PATH = old_db_path
+
+
+def test_failed_execution_completion_is_fail_closed_and_audited(tmp_path, monkeypatch):
+    """The EXECUTING -> FAILED path applies the identical ownership check."""
+    old_db_path = server.DB_PATH
+    server.DB_PATH = str(tmp_path / "ai-fail-ownership-test.db")
+    server.init_db()
+    ai_governance.ensure_governance_tables()
+    try:
+        admin = {"id": "admin-1", "full_name": "Admin One", "email": "admin1@test", "role": "ADMIN"}
+
+        # (a) Legitimate failure: FAILED is recorded and audited exactly once.
+        proposal = _concurrency_probe_proposal("Legit failure")
+        pid_a = proposal["proposal_id"]
+
+        def fail_execute(p, adm):
+            raise RuntimeError("executor blew up")
+
+        monkeypatch.setattr(ai_governance, "_execute", fail_execute)
+        with pytest.raises(RuntimeError):
+            ai_governance.approve_proposal(pid_a, admin, "will fail")
+        fresh = ai_governance.get_proposal(pid_a)
+        assert fresh["status"] == "FAILED"
+        assert "executor blew up" in json.dumps(fresh.get("execution_result") or {})
+        with server.get_db() as db:
+            n_fail = db.execute(
+                "SELECT COUNT(*) AS n FROM ai_approval_events WHERE proposal_id=? AND event_type='AI_PROPOSAL_FAILED'",
+                (pid_a,),
+            ).fetchone()["n"]
+        assert n_fail == 1, "a legitimate failure keeps its audit event"
+
+        # (b) Ownership lost before the failure: no overwrite, no false event.
+        proposal = _concurrency_probe_proposal("Stale failure")
+        pid_b = proposal["proposal_id"]
+
+        def reassign_then_fail(p, adm):
+            with server.get_db() as db:
+                db.execute(
+                    "UPDATE ai_proposals SET execution_claim=? WHERE proposal_id=?",
+                    ("reclaimed-by-other-run", pid_b),
+                )
+            raise RuntimeError("stale executor blew up")
+
+        monkeypatch.setattr(ai_governance, "_execute", reassign_then_fail)
+        with pytest.raises(RuntimeError):
+            ai_governance.approve_proposal(pid_b, admin, "will fail stale")
+        fresh = ai_governance.get_proposal(pid_b)
+        # The current owner's claim/state/result are untouched.
+        assert fresh["status"] == "EXECUTING"
+        assert fresh["execution_claim"] == "reclaimed-by-other-run"
+        assert "stale executor blew up" not in json.dumps(fresh.get("execution_result") or {})
+        with server.get_db() as db:
+            n_fail = db.execute(
+                "SELECT COUNT(*) AS n FROM ai_approval_events WHERE proposal_id=? AND event_type='AI_PROPOSAL_FAILED'",
+                (pid_b,),
+            ).fetchone()["n"]
+        assert n_fail == 0, "a stale executor must never emit a false FAILED event"
     finally:
         server.DB_PATH = old_db_path

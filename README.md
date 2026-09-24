@@ -217,9 +217,15 @@ SA requests run through a safe task lifecycle (`assistant_tasks.py`):
 - Proposal approval is a **single-writer execution claim** (`PROPOSED ->
   EXECUTING` compare-and-set in SQL): of two concurrent approvals exactly one
   can acquire the claim and run the mutation, the other gets a safe
-  conflict/re-attach response, and completion is ownership-guarded
-  (`execution_claim`) so a zombie can never overwrite an outcome. An already
-  `EXECUTED` approval still replays its stored result.
+  conflict/re-attach response, and completion is ownership-guarded and
+  **fail-closed** (`execution_claim`, exactly-one-row writes on
+  `EXECUTING -> EXECUTED/FAILED`): a missing rowcount is never treated as
+  success, a stale executor can never overwrite an outcome or emit a false
+  audit event, and it receives a safe conflict/re-attach response instead of
+  reporting its stale result. An already `EXECUTED` approval still replays
+  its stored result. The assistant request claims (`_claim` /
+  `_claim_stale_running` / `_mark_finished`) use the same fail-closed
+  exactly-one-row ownership checks.
 - Credential rotation commits **atomically in one transaction** (old
   credentials deactivated + hashes scrubbed + existing SA sessions revoked +
   new credential registered together): there is no committed state where the

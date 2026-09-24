@@ -472,23 +472,34 @@ def approve_proposal(pid, admin, note=""):
     _event(pid,admin["full_name"],"AI_PROPOSAL_APPROVED",f"Administrator approved proposal. {note[:240]}")
     try:
         result=_execute(p,admin)
-        # Ownership-safe completion: only THIS executor (its unique claim)
-        # can transition EXECUTING -> EXECUTED.
-        with _server().get_db() as db:
-            db.execute(
-                "UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=? AND execution_claim=?",
-                (EXECUTED,time.time(),_json(result),pid,EXECUTING,claim))
-        _event(pid,admin["full_name"],"AI_PROPOSAL_EXECUTED",f"Executed approved {p['action_type']} proposal.")
-        return get_proposal(pid)
     except Exception as exc:
         # Ownership-safe completion: only THIS executor can mark its own claim
-        # FAILED; a zombie can never clobber a reclaimed/replayed outcome.
+        # FAILED. FAIL-CLOSED: the write must touch exactly one row - if the
+        # claim was replaced, the current owner's state/result is never
+        # overwritten and NO false AI_PROPOSAL_FAILED event is emitted. A
+        # missing rowcount is never treated as success.
         with _server().get_db() as db:
-            db.execute(
+            cur=db.execute(
                 "UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=? AND execution_claim=?",
                 (FAILED,time.time(),_json({"error":str(exc)}),pid,EXECUTING,claim))
-        _event(pid,admin["full_name"],"AI_PROPOSAL_FAILED",f"Approved proposal failed: {type(exc).__name__}")
+        if (getattr(cur,"rowcount",0) or 0)==1:
+            _event(pid,admin["full_name"],"AI_PROPOSAL_FAILED",f"Approved proposal failed: {type(exc).__name__}")
         raise
+    # Ownership-safe completion: only THIS executor (its unique claim) can
+    # transition EXECUTING -> EXECUTED. FAIL-CLOSED: the write must touch
+    # exactly one row; a missing rowcount is never treated as success.
+    with _server().get_db() as db:
+        cur=db.execute(
+            "UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=? AND execution_claim=?",
+            (EXECUTED,time.time(),_json(result),pid,EXECUTING,claim))
+    if (getattr(cur,"rowcount",0) or 0)!=1:
+        # Ownership lost mid-execution (claim replaced): emit NO EXECUTED
+        # event and never report this stale executor's result as the
+        # proposal's outcome. Safe conflict / re-attach: observe the current
+        # owner's state via the proposal detail endpoint.
+        raise HTTPException(409,"Proposal execution ownership was lost; another execution owns the outcome. Re-attach via the proposal detail endpoint.")
+    _event(pid,admin["full_name"],"AI_PROPOSAL_EXECUTED",f"Executed approved {p['action_type']} proposal.")
+    return get_proposal(pid)
 
 def reject_proposal(pid, admin, note=""):
     p=get_proposal(pid)

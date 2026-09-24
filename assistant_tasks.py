@@ -255,20 +255,25 @@ def _classify_exception(exc: BaseException) -> tuple:
     return ERROR_INTERNAL, "The request failed.", False
 
 
-def _mark_finished(request_id: str, run_id: Optional[str], state: str, result: Dict[str, Any], error_code, error_detail) -> None:
+def _mark_finished(request_id: str, run_id: Optional[str], state: str, result: Dict[str, Any], error_code, error_detail) -> bool:
     """Persist a worker outcome. Never runs inside another open transaction.
 
     The ``run_id`` guard means only the execution that OWNS the current claim
     may write its outcome: a zombie worker whose lease was reclaimed can never
     overwrite the state or result of the reclaimed execution (its logical
     effects are single anyway via the proposal idempotency key).
+
+    Returns True only when the owned completion write touched exactly one row
+    (FAIL-CLOSED: a missing rowcount is never treated as success). False means
+    this caller no longer owned the claim - the write was refused, and the
+    current owner's state/result were left untouched.
     """
     now = time.time()
     with _get_db() as db:
         # The result of work that already ran is preserved - even if the row
         # was cancelled while the worker was in flight - so a retry can replay
         # it instead of ever executing again.
-        db.execute(
+        cur = db.execute(
             "UPDATE assistant_requests SET result=?, error_code=?, error_detail=?, finished_at=?, updated_at=?, "
             "state = CASE WHEN state=? THEN ? ELSE state END WHERE request_id=? AND run_id=?",
             (
@@ -283,6 +288,7 @@ def _mark_finished(request_id: str, run_id: Optional[str], state: str, result: D
                 run_id,
             ),
         )
+    return (getattr(cur, "rowcount", 0) or 0) == 1
 
 
 def get_request(request_id: str, user_id: str) -> Optional[Dict[str, Any]]:
@@ -310,7 +316,9 @@ def _claim(request_id: str, allowed_states: tuple) -> Optional[Dict[str, Any]]:
             f"run_id=?, error_code=NULL, error_detail=NULL WHERE request_id=? AND state IN ({placeholders})",
             (STATE_RUNNING, now, now, now, run_id, request_id, *allowed_states),
         )
-        won = getattr(cur, "rowcount", 1) == 1
+        # FAIL-CLOSED: the claim CAS must touch exactly one row. A missing
+        # rowcount is never treated as a won claim.
+        won = (getattr(cur, "rowcount", 0) or 0) == 1
         if not won:
             return None
         row = db.execute(
@@ -339,7 +347,9 @@ def _claim_stale_running(request_id: str) -> Optional[Dict[str, Any]]:
             "WHERE request_id=? AND state=? AND COALESCE(heartbeat_at, started_at, updated_at) < ?",
             (STATE_RUNNING, now, now, now, run_id, request_id, STATE_RUNNING, cutoff),
         )
-        if getattr(cur, "rowcount", 1) != 1:
+        # FAIL-CLOSED: the reclaim CAS must touch exactly one row. A missing
+        # rowcount is never treated as a won reclaim.
+        if (getattr(cur, "rowcount", 0) or 0) != 1:
             return None
         row = db.execute(
             "SELECT * FROM assistant_requests WHERE request_id=? AND run_id=?", (request_id, run_id)
