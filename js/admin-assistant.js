@@ -1,8 +1,139 @@
+let saSessionId = null;
+let saAdminLabel = null;
+
+function saIsActive() { return !!saSessionId; }
+
+function setSaHeader(active, label) {
+  const title=document.querySelector('#adminAssistantWidget .assistant-title h3');
+  const badge=document.querySelector('#adminAssistantWidget .badge-read-only');
+  const briefing=document.getElementById('btnGenerateBriefing');
+  if (title) {
+    const entry=document.getElementById('saEntryBtn');
+    if (entry) { entry.textContent=active ? 'SA · Superior Administrator AI' : 'Admin AI'; }
+    else { title.textContent=active ? 'SA · Superior Administrator AI' : 'AI Admin Assistant'; }
+  }
+  if (badge) { badge.textContent=active ? (label || 'SA') : 'Administrator'; badge.className=active ? 'badge-read-only sa-live-badge' : 'badge-read-only'; }
+  if (briefing) briefing.textContent=active ? '📊 SA Activity Report' : '📊 Generate System Briefing';
+  if (briefing) briefing.onclick=active ? showSaReport : triggerSystemBriefing;
+}
+
+async function beginSaActivation(code) {
+  try {
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate-options',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,administrator:''})});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
+    renderSaIdentityOptions(d.options || [], code);
+    document.getElementById('saActivationModal')?.classList.remove('hidden');
+  } catch(e) {
+    appendAssistantMessage(e.message || 'SA activation failed.','error-bubble');
+  }
+}
+
+function renderSaIdentityOptions(options, code) {
+  const root=document.getElementById('saIdentityOptions'); if(!root) return;
+  root.replaceChildren();
+  document.getElementById('saPasswordStep')?.classList.add('hidden');
+  root.classList.remove('hidden');
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+  options.forEach(o=>{
+    const b=document.createElement('button'); b.type='button'; b.className='sa-identity-card';
+    b.innerHTML='<span class="sa-avatar">'+String(o.name||'?').charAt(0)+'</span><strong></strong><small>Administrator</small>';
+    b.querySelector('strong').textContent=o.name;
+    b.onclick=()=>selectSaIdentity(code,o.name);
+    root.appendChild(b);
+  });
+}
+
+let saActivationCode = '';
+let saSelectedIdentity = '';
+
+function selectSaIdentity(code,name) {
+  saActivationCode=code;
+  saSelectedIdentity=name;
+  document.getElementById('saIdentityOptions')?.classList.add('hidden');
+  document.getElementById('saPasswordStep')?.classList.remove('hidden');
+  const nameEl=document.getElementById('saSelectedName'); if(nameEl) nameEl.textContent=name;
+  const avatar=document.getElementById('saSelectedAvatar'); if(avatar) avatar.textContent=String(name||'?').charAt(0);
+  const input=document.getElementById('saIdentityPassword');
+  if(input){input.value=''; setTimeout(()=>input.focus(),50);}
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+}
+
+function backToSaIdentities() {
+  document.getElementById('saPasswordStep')?.classList.add('hidden');
+  document.getElementById('saIdentityOptions')?.classList.remove('hidden');
+  const input=document.getElementById('saIdentityPassword'); if(input) input.value='';
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+}
+
+async function submitSaPassword() {
+  const passwordInput=document.getElementById('saIdentityPassword');
+  const submit=document.getElementById('saPasswordSubmit');
+  const password=passwordInput?.value || '';
+  if(!saSelectedIdentity || !password){ 
+    const box=document.getElementById('saActivationError'); if(box){box.textContent='Enter the password for the selected administrator.';box.classList.remove('hidden');}
+    return;
+  }
+  if(submit) submit.disabled=true;
+  try {
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate',{
+      method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code:saActivationCode,administrator:saSelectedIdentity,password:password})
+    });
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
+    passwordInput.value='';
+    saSessionId=d.session_id; saAdminLabel=d.admin;
+    closeSaActivation(); setSaHeader(true,saAdminLabel);
+    appendAssistantMessage('SA activated as '+saAdminLabel+'. I can now plan and coordinate work across the registered website features. Consequential actions still stop at the Administrator Approval Center before execution.','assistant-bubble');
+  } catch(e) {
+    if(passwordInput) passwordInput.value='';
+    const box=document.getElementById('saActivationError'); if(box){box.textContent=e.message;box.classList.remove('hidden');}
+  } finally { if(submit) submit.disabled=false; }
+}
+
+function closeSaActivation(){ document.getElementById('saActivationModal')?.classList.add('hidden'); }
+async function exitSaMode(){
+  if(!saSessionId) return;
+  try{await fetchAssistant('/api/admin/assistant/sa/end',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:saSessionId,query:''})});}catch(_){}
+  saSessionId=null; saAdminLabel=null; setSaHeader(false);
+  appendAssistantMessage('SA session ended. Normal Admin Assistant mode restored.','assistant-bubble');
+}
+
+async function showSaReport(){
+  if(!saSessionId) return;
+  try{
+    const r=await fetchAssistant('/api/admin/assistant/sa/report?session_id='+encodeURIComponent(saSessionId),{credentials:'same-origin'});
+    const d=await r.json(); if(!r.ok) throw new Error(d.detail||'Unable to load SA report.');
+    const root=document.getElementById('saReportList'); const panel=document.getElementById('saReportPanel');
+    const admin=document.getElementById('saReportAdmin'); if(admin) admin.textContent=' · '+(d.admin||'');
+    if(root){ root.replaceChildren(); (d.events||[]).forEach(ev=>{const row=document.createElement('div');row.className='sa-report-row';row.innerHTML='<b></b><span></span><small></small>';row.querySelector('b').textContent=ev.event_type;row.querySelector('span').textContent=ev.detail;row.querySelector('small').textContent=new Date(Number(ev.created_at||0)*1000).toLocaleString('en-IN');root.appendChild(row);});}
+    panel?.classList.remove('hidden');
+  }catch(e){appendAssistantMessage(e.message||'Unable to load SA report.','error-bubble');}
+}
+function closeSaReport(){document.getElementById('saReportPanel')?.classList.add('hidden');}
+
+// =====================================================================
+// ADMIN AI — normal administrator authentication.
+//
+// Any authenticated administrator uses the assistant directly: there is no
+// unlock gate, no AI access password prompt, and no client-side flag. Nothing
+// in this file is authoritative: the browser never sends a name/role/permission
+// field, and every request is authorized server-side from the credential alone.
+//
+// The ONE extra proof of identity is the administrator's OWN account password,
+// re-entered at FINAL APPROVAL of an AI action. It is sent once in the request
+// body, never stored (no localStorage/sessionStorage), never rendered back, and
+// cleared from the input as soon as the decision is submitted.
+// =====================================================================
+
+const SA_RETRYABLE_STATES = new Set(['timeout', 'failed_retryable', 'running', 'pending']);
+
 function assistantToken() {
   try { return window.localStorage.getItem("lrtoken") || ""; } catch (_) { return ""; }
 }
 
-function fetchAssistant(url, options = {}, timeoutMs = 30000) {
+function fetchAssistant(url, options = {}, timeoutMs = 45000) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = { ...(options.headers || {}) };
@@ -11,6 +142,21 @@ function fetchAssistant(url, options = {}, timeoutMs = 30000) {
   return fetch(url, { ...options, headers, signal: controller.signal }).finally(() => window.clearTimeout(timeout));
 }
 
+function newRequestId() {
+  try {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  } catch (_) {}
+  return 'req-' + Date.now().toString(16) + '-' + Math.random().toString(16).slice(2, 10);
+}
+
+// ---------------------------------------------------------------------
+// The assistant uses normal administrator authentication: there is no
+// unlock gate to open, poll, or lock, and no client-side permission flag.
+// ---------------------------------------------------------------------
+
+// ---------------------------------------------------------------------
+// SA chat with the safe request lifecycle (at-most-once logical requests)
+// ---------------------------------------------------------------------
 function submitAssistantQuestion(text) {
   const input = document.getElementById("assistantInput");
   if (input) {
@@ -20,55 +166,293 @@ function submitAssistantQuestion(text) {
 }
 
 async function handleAssistantSubmit(event) {
-  event.preventDefault();
+  if (event) {
+    // Exactly-once per user submit: the page bootstrap and the DOM-ready
+    // binder may both dispatch this handler for a single submit event.
+    if (event.__aaHandled) return;
+    event.__aaHandled = true;
+    if (event.preventDefault) event.preventDefault();
+  }
   const input = document.getElementById("assistantInput");
-  const log = document.getElementById("assistantChatLog");
-  const loading = document.getElementById("assistantLoading");
-  const submitBtn = document.getElementById("assistantSubmitBtn");
-
   const query = input.value.trim();
   if (!query) return;
+  input.value = "";
 
   const userMsg = document.createElement("div");
   userMsg.className = "assistant-message user-bubble";
   userMsg.textContent = query;
+  const log = document.getElementById("assistantChatLog");
   log.appendChild(userMsg);
-
-  input.value = "";
-  loading.style.display = "flex";
-  submitBtn.disabled = true;
   log.scrollTop = log.scrollHeight;
 
+  // Hidden SA-mode trigger. "SA" uses the configured activation code;
+  // "SA <code>" also works when the deployment uses a non-SA secret.
+  if (/^SA$/i.test(query) || /^SA\s+.+/i.test(query)) {
+    const code = /^SA\s+(.+)/i.test(query) ? query.replace(/^SA\s+/i, "") : "SA";
+    await beginSaActivation(code);
+    return;
+  }
+
+  // Superior SA conversation (sa_agent): plain request/response, no task
+  // envelope - its session lifecycle is managed by /sa/activate and /sa/end.
+  if (saSessionId) {
+    await submitSaAgentQuery(query);
+    return;
+  }
+
+  // One logical request = one request_id. The ORIGINAL request is preserved
+  // server-side; "Try again" reuses this id so the same logical operation can
+  // never execute twice.
+  await submitSaQuery(query, newRequestId());
+}
+
+
+async function submitSaAgentQuery(query) {
+  const loading = document.getElementById("assistantLoading");
+  const submitBtn = document.getElementById("assistantSubmitBtn");
+  if (loading) loading.style.display = "flex";
+  if (submitBtn) submitBtn.disabled = true;
   try {
-    
+    const response = await fetchAssistant("/api/admin/assistant/sa/query", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: saSessionId, query: query })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      appendAssistantMessage((data && data.detail) || "The request failed.", "error-bubble");
+      return;
+    }
+    appendAssistantMessage(data.response, data.mode === "SA" ? "assistant-bubble sa-response" : "assistant-bubble", data.records);
+    if (data.action_card) {
+      renderConfirmationCard(data.action_card);
+    }
+  } catch (e) {
+    appendAssistantMessage((e && e.message) || "Network error: The Admin AI could not be reached.", "error-bubble");
+  } finally {
+    if (loading) loading.style.display = "none";
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+async function submitSaQuery(query, requestId) {
+  const log = document.getElementById("assistantChatLog");
+  const loading = document.getElementById("assistantLoading");
+  const submitBtn = document.getElementById("assistantSubmitBtn");
+  if (loading) loading.style.display = "flex";
+  if (submitBtn) submitBtn.disabled = true;
+  try {
     const response = await fetchAssistant("/api/admin/assistant/query", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: query })
+      body: JSON.stringify({ query: query, request_id: requestId })
     });
+    await handleSaResponse(response, requestId);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      // The frontend timed out while the SERVER-SIDE request may continue
+      // running. Never blindly re-send: show Try again, which re-attaches to
+      // the same logical request.
+      showSaTimeoutCard(query, requestId);
+    } else {
+      showSaTimeoutCard(query, requestId, 'network');
+    }
+  } finally {
+    if (loading) loading.style.display = "none";
+    if (submitBtn) submitBtn.disabled = false;
+    if (log) log.scrollTop = log.scrollHeight;
+  }
+}
 
-    const data = await response.json();
-    if (!response.ok) {
-      appendAssistantMessage(`Error: ${data.detail || "Unable to process request."}`, "error-bubble");
+async function handleSaResponse(response, requestId) {
+  let data = {};
+  try { data = await response.json(); } catch (_) {}
+  if (!response.ok) {
+    if (response.status === 401) {
+      // Authorization errors are permanent: NO Try Again. The assistant uses
+      // normal administrator authentication, so re-authenticating is the fix.
+      appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
       return;
     }
-
-    appendAssistantMessage(data.response, "assistant-bubble", data.records);
-
-    if (data.action_card) {
-      renderConfirmationCard(data.action_card);
+    if (response.status === 429 || response.status >= 500 || response.status === 408) {
+      showSaTimeoutCard((data.request && data.request.query) || '', requestId, response.status === 429 ? 'throttled' : 'server');
+      return;
     }
-  } catch (error) {
-    const message = error.name === "AbortError"
-      ? "The assistant took too long to respond. Your records were not changed; try again or use a suggested query."
-      : "Network error: The assistant is temporarily unreachable.";
-    appendAssistantMessage(message, "error-bubble");
-  } finally {
-    loading.style.display = "none";
-    submitBtn.disabled = false;
-    log.scrollTop = log.scrollHeight;
+    // Permanent authorization/validation errors: never offer Try Again.
+    appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
+    return;
   }
+  await handleSaEnvelope(data, requestId);
+}
+
+async function handleSaEnvelope(env, requestId) {
+  const state = String(env.state || '').toLowerCase();
+  if (state === 'pending' || state === 'running') {
+    await pollSaRequest(requestId);
+    return;
+  }
+  if (state === 'succeeded') {
+    const result = env.result || {};
+    appendAssistantMessage(result.response || result.briefing || "", "assistant-bubble", result.records || []);
+    if (result.action_card) renderConfirmationCard(result.action_card);
+    return;
+  }
+  if (state === 'timeout' || state === 'failed_retryable') {
+    const preserved = (env.request && env.request.query) || '';
+    showSaTimeoutCard(preserved, requestId, 'retryable');
+    return;
+  }
+  if (state === 'cancelled') {
+    appendAssistantMessage("The request was cancelled. Nothing further was executed.", "error-bubble");
+    return;
+  }
+  // failed_permanent (and anything else): permanent — NO Try Again.
+  const err = env.error || {};
+  appendAssistantMessage("Error: " + (err.detail || "The request failed."), "error-bubble");
+}
+
+async function pollSaRequest(requestId, card) {
+  const started = Date.now();
+  const loading = document.getElementById("assistantLoading");
+  if (loading) loading.style.display = "flex";
+  try {
+    while (Date.now() - started < 180000) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      let env = null;
+      try {
+        const r = await fetchAssistant("/api/admin/assistant/requests/" + encodeURIComponent(requestId), { credentials: 'same-origin' }, 15000);
+        if (r.status === 401) {
+          // Authorization errors are permanent: stop polling. Re-authenticate.
+          appendAssistantMessage("Error: authorization failed while following this request.", "error-bubble");
+          return;
+        }
+        if (r.ok) env = await r.json();
+      } catch (_) {}
+      if (!env) continue;
+      const state = String(env.state || '').toLowerCase();
+      if (state === 'pending' || state === 'running') {
+        const label = card ? card.querySelector('.sa-timeout-detail') : null;
+        if (label) label.textContent = 'The request is still running server-side…';
+        continue;
+      }
+      if (card && card.parentNode) card.remove();
+      await handleSaEnvelope(env, requestId);
+      return;
+    }
+    showSaTimeoutCard('', requestId, 'retryable');
+  } finally {
+    if (loading) loading.style.display = "none";
+    const log = document.getElementById("assistantChatLog");
+    if (log) log.scrollTop = log.scrollHeight;
+  }
+}
+
+function showSaTimeoutCard(query, requestId, kind) {
+  const log = document.getElementById("assistantChatLog");
+  if (!log) return;
+  const card = document.createElement("div");
+  card.className = "assistant-message sa-timeout-card";
+  card.dataset.requestId = requestId || "";
+
+  const title = document.createElement("div");
+  title.className = "sa-timeout-title";
+  title.textContent = kind === 'network'
+    ? "The assistant timed out."
+    : kind === 'server'
+      ? "The assistant timed out."
+      : kind === 'throttled'
+        ? "Too many attempts. The assistant timed out."
+        : "The assistant timed out.";
+
+  const detail = document.createElement("div");
+  detail.className = "sa-timeout-detail";
+  detail.textContent = "The request may still be running safely on the server. Your records were not changed twice.";
+
+  const actions = document.createElement("div");
+  actions.className = "sa-timeout-actions";
+
+  // A REAL Try again button. The original request is preserved automatically
+  // (server-side and in this card) — nothing has to be typed again.
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "btn saffron sa-retry-btn";
+  retry.textContent = "Try again";
+  retry.onclick = () => tryAgainSaRequest(requestId, card);
+
+  // Cancel/dismiss path.
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "btn ghost sa-dismiss-btn";
+  dismiss.textContent = "Dismiss";
+  dismiss.onclick = () => dismissSaRequest(requestId, card);
+
+  actions.append(retry, dismiss);
+  card.append(title, detail, actions);
+  if (query) {
+    const preserved = document.createElement("div");
+    preserved.className = "sa-timeout-query";
+    preserved.textContent = query;
+    card.appendChild(preserved);
+  }
+  log.appendChild(card);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function tryAgainSaRequest(requestId, card) {
+  if (!requestId) return;
+  const retry = card ? card.querySelector('.sa-retry-btn') : null;
+  const detail = card ? card.querySelector('.sa-timeout-detail') : null;
+  if (retry) retry.disabled = true;
+  if (detail) detail.textContent = 'Re-attaching to the original request…';
+  try {
+    // Same logical request id: the server replays the stored result or
+    // re-attaches to the still-running execution. It NEVER runs a completed
+    // operation again.
+    const r = await fetchAssistant("/api/admin/assistant/requests/" + encodeURIComponent(requestId) + "/retry", {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }
+    }, 45000);
+    if (!r.ok) {
+      let data = {};
+      try { data = await r.json(); } catch (_) {}
+      if (r.status === 401) {
+        // Authorization errors are permanent: NO Try Again.
+        appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
+        return;
+      }
+      if (r.status === 404 || r.status === 400 || r.status === 422) {
+        // Permanent errors: no further Try Again loop.
+        if (card && card.parentNode) card.remove();
+        appendAssistantMessage("Error: " + (data.detail || "The request could not be retried."), "error-bubble");
+        return;
+      }
+      if (retry) retry.disabled = false;
+      if (detail) detail.textContent = 'Still unavailable. The original request is preserved — you can try again.';
+      return;
+    }
+    const env = await r.json();
+    if ((env.state || '').toLowerCase() === 'running' || (env.state || '').toLowerCase() === 'pending') {
+      await pollSaRequest(requestId, card);
+      return;
+    }
+    if (card && card.parentNode) card.remove();
+    await handleSaEnvelope(env, requestId);
+  } catch (e) {
+    if (retry) retry.disabled = false;
+    if (detail) detail.textContent = 'The assistant timed out again. The original request is preserved — you can try again.';
+  }
+}
+
+async function dismissSaRequest(requestId, card) {
+  if (requestId) {
+    try {
+      await fetchAssistant("/api/admin/assistant/requests/" + encodeURIComponent(requestId) + "/cancel", {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }
+      }, 15000);
+    } catch (_) {}
+  }
+  if (card && card.parentNode) card.remove();
 }
 
 function appendAssistantMessage(text, className, records = []) {
@@ -106,6 +490,7 @@ function renderConfirmationCard(actionData) {
   };
   actions.appendChild(open); card.append(header,body,actions); log.appendChild(card); log.scrollTop = log.scrollHeight;
 }
+
 async function triggerSystemBriefing() {
   const briefingBtn = document.getElementById("btnGenerateBriefing");
   const loading = document.getElementById("assistantLoading");
@@ -120,38 +505,28 @@ async function triggerSystemBriefing() {
   userMsg.textContent = "📊 Generate System Briefing";
   log.appendChild(userMsg);
 
+  const requestId = newRequestId();
   try {
-    
     const response = await fetchAssistant("/api/admin/assistant/briefing", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId })
     });
-
-    const data = await response.json();
-    if (!response.ok) {
-      appendAssistantMessage(`Error: ${data.detail || "Unable to generate briefing."}`, "error-bubble");
-      return;
-    }
-
-    const card = document.createElement("div");
-    card.className = "assistant-message assistant-bubble briefing-container";
-    const briefing = document.createElement("div");
-    briefing.className = "assistant-safe-text";
-    briefing.textContent = data.briefing || "";
-    card.appendChild(briefing);
-    log.appendChild(card);
+    await handleSaResponse(response, requestId);
   } catch (err) {
-    appendAssistantMessage(
-      err.name === "AbortError" ? "Briefing generation timed out. Try again shortly." : "Network error generating briefing.",
-      "error-bubble"
-    );
+    if (err.name === "AbortError") showSaTimeoutCard("Generate System Briefing", requestId);
+    else showSaTimeoutCard("Generate System Briefing", requestId, 'network');
   } finally {
     briefingBtn.disabled = false;
     loading.style.display = "none";
     log.scrollTop = log.scrollHeight;
   }
 }
+
+// No gate bootstrap: the workspace is usable for the authenticated
+// administrator, and the server authorizes every request on its own.
+
 // =====================================================================
 // AI TASK INBOX — role-to-role communication layer
 // =====================================================================
@@ -229,7 +604,6 @@ function escapeTaskText(value) {
 }
 
 async function refreshAiTasks() {
-  
   try {
     const r = await fetch('/api/admin/assistant/tasks', { headers: taskAuthHeaders() });
     if (!r.ok) return;
@@ -385,12 +759,59 @@ function renderAiApprovals(proposals) {
   });
 }
 
+// FINAL APPROVAL. The administrator re-enters their OWN account password; the
+// server verifies it against the authenticated account before anything
+// executes. The value lives only in this input for the duration of the
+// request: it is never written to localStorage/sessionStorage, never sent
+// anywhere except this one request body, and cleared when the modal closes.
+function askApprovalPassword() {
+  return new Promise(resolve => {
+    const modal = document.getElementById("approvalPasswordModal");
+    const form = document.getElementById("approvalPasswordForm");
+    const input = document.getElementById("approvalPasswordInput");
+    const cancel = document.getElementById("approvalPasswordCancel");
+    if (!modal || !form || !input) { resolve(null); return; }
+    input.value = "";
+    modal.classList.remove("hidden");
+    input.focus();
+    function cleanup(value) {
+      modal.classList.add("hidden");
+      input.value = "";   // never keep the password around
+      form.removeEventListener("submit", onSubmit);
+      cancel?.removeEventListener("click", onCancel);
+      resolve(value);
+    }
+    function onSubmit(event) {
+      event.preventDefault();
+      const value = input.value;
+      if (!value) return;
+      cleanup(value);
+    }
+    function onCancel() { cleanup(null); }
+    form.addEventListener("submit", onSubmit);
+    cancel?.addEventListener("click", onCancel);
+  });
+}
+
+function cancelApprovalPassword() {
+  document.getElementById("approvalPasswordCancel")?.click();
+}
+
 async function decideAiProposal(id, decision, primary, secondary) {
-  const note = window.prompt((decision === "approve" ? "Approval note (optional):" : "Reason for rejection (optional):"), "") ?? "";
+  const approving = decision === "approve";
+  const note = window.prompt((approving ? "Approval note (optional):" : "Reason for rejection (optional):"), "") ?? "";
+  let password = "";
+  if (approving) {
+    // Cancelling the password prompt sends nothing and executes nothing.
+    password = await askApprovalPassword();
+    if (!password) return;
+  }
   primary.disabled = true; if (secondary) secondary.disabled = true;
   try {
+    // Approval carries the password; rejection is non-consequential and does not.
+    const body = approving ? { note: note, password: password } : { note: note };
     const r = await fetch("/api/admin/ai-approval/proposals/" + encodeURIComponent(id) + "/" + decision, {
-      method:"POST", credentials:"same-origin", headers:taskAuthHeaders(), body:JSON.stringify({note})
+      method:"POST", credentials:"same-origin", headers:taskAuthHeaders(), body:JSON.stringify(body)
     });
     const data=await r.json();
     if(!r.ok) throw new Error(data.detail || "Proposal decision failed.");
@@ -400,3 +821,13 @@ async function decideAiProposal(id, decision, primary, secondary) {
     primary.disabled=false; if(secondary) secondary.disabled=false;
   }
 }
+
+
+// Bind the Admin Assistant form directly so Enter never depends on inline HTML handlers.
+document.addEventListener("DOMContentLoaded", () => {
+  const form = document.getElementById("assistantForm");
+  if (form && !form.dataset.assistantBound) {
+    form.dataset.assistantBound = "true";
+    form.addEventListener("submit", handleAssistantSubmit);
+  }
+});

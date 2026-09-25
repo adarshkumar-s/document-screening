@@ -7,224 +7,42 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
-.assistant-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 0.75rem;
-  margin-bottom: 1rem;
-}
-
-.assistant-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.badge-read-only {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  background-color: #f1f5f9;
-  color: #475569;
-  border-radius: 12px;
-}
-
-.btn-briefing {
-  background: #0f172a;
-  color: #f8fafc;
-  border: 1px solid #334155;
-  padding: 0.4rem 0.85rem;
-  border-radius: 6px;
-  font-size: 0.825rem;
-  font-weight: 500;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
+.assistant-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.75rem; margin-bottom: 1rem; }
+.assistant-title { display: flex; align-items: center; gap: 0.5rem; }
+.badge-read-only { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; background-color: #f1f5f9; color: #475569; border-radius: 12px; }
+.btn-briefing { background: #0f172a; color: #f8fafc; border: 1px solid #334155; padding: 0.4rem 0.85rem; border-radius: 6px; font-size: 0.825rem; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; }
 .btn-briefing:hover { background: #1e293b; }
-
-.assistant-chat-log {
-  max-height: 420px;
-  min-height: 160px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.75rem;
-  background-color: #fafafa;
-  border-radius: 6px;
-  border: 1px solid #f1f5f9;
-}
-
-.assistant-message {
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  font-size: 0.925rem;
-  line-height: 1.5;
-  max-width: 85%;
-}
-
-.user-bubble {
-  align-self: flex-end;
-  background-color: #2563eb;
-  color: #ffffff;
-}
-
-.assistant-bubble {
-  align-self: flex-start;
-  background-color: #ffffff;
-  color: #1e293b;
-  border: 1px solid #e2e8f0;
-}
-
-.error-bubble {
-  align-self: flex-start;
-  background-color: #fef2f2;
-  color: #991b1b;
-  border: 1px solid #fecaca;
-}
-
-.system-intro {
-  align-self: center;
-  font-size: 0.85rem;
-  color: #64748b;
-  background: transparent;
-  text-align: center;
-}
-
-.assistant-records-attachment {
-  margin-top: 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  border-top: 1px solid #e2e8f0;
-  padding-top: 0.5rem;
-}
-
-.record-attachment-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: #f8fafc;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 0.85rem;
-}
-
-.assistant-action-card {
-  background: #fffbeb;
-  border: 1px solid #fde68a;
-  border-left: 4px solid #d97706;
-  border-radius: 6px;
-  padding: 1rem;
-  margin: 0.5rem 0;
-}
-
+.assistant-chat-log { max-height: 420px; min-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem; background-color: #fafafa; border-radius: 6px; border: 1px solid #f1f5f9; }
+.assistant-message { padding: 0.75rem 1rem; border-radius: 6px; font-size: 0.925rem; line-height: 1.5; max-width: 85%; }
+.user-bubble { align-self: flex-end; background-color: #2563eb; color: #ffffff; }
+.assistant-bubble { align-self: flex-start; background-color: #ffffff; color: #1e293b; border: 1px solid #e2e8f0; }
+.error-bubble { align-self: flex-start; background-color: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.system-intro { align-self: center; font-size: 0.85rem; color: #64748b; background: transparent; text-align: center; }
+.assistant-records-attachment { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; border-top: 1px solid #e2e8f0; padding-top: 0.5rem; }
+.record-attachment-row { display: flex; justify-content: space-between; align-items: center; background: #f8fafc; padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; }
+.assistant-action-card { background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #d97706; border-radius: 6px; padding: 1rem; margin: 0.5rem 0; }
 .action-card-header { color: #92400e; margin-bottom: 0.5rem; }
 .action-card-body p { margin: 0.25rem 0; font-size: 0.875rem; color: #1f2937; }
 .action-warning { font-size: 0.8rem; color: #78350f; margin-top: 0.5rem !important; }
 .action-card-actions { display: flex; gap: 0.75rem; margin-top: 0.75rem; }
-
-.btn-confirm {
-  background: #dc2626;
-  color: #ffffff;
-  border: none;
-  padding: 0.4rem 1rem;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.85rem;
-}
-
-.btn-cancel {
-  background: #e5e7eb;
-  color: #374151;
-  border: none;
-  padding: 0.4rem 0.85rem;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.85rem;
-}
-
+.btn-confirm { background: #dc2626; color: #ffffff; border: none; padding: 0.4rem 1rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.btn-cancel { background: #e5e7eb; color: #374151; border: none; padding: 0.4rem 0.85rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 .action-result { font-size: 0.875rem; font-weight: 500; padding: 0.5rem; border-radius: 4px; }
 .action-result.success { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
 .action-result.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .action-result.cancelled { background: #f3f4f6; color: #4b5563; font-style: italic; }
-
-.briefing-container {
-  border-left: 4px solid #2563eb !important;
-  background: #fcfdfe !important;
-  padding: 1.25rem !important;
-  max-width: 95% !important;
-}
-
-.briefing-main-title {
-  font-size: 1.15rem;
-  font-weight: 700;
-  color: #0f172a;
-  margin-bottom: 0.75rem;
-  border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 0.4rem;
-}
-
-.briefing-section-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: #1e40af;
-  margin-top: 0.75rem;
-  margin-bottom: 0.35rem;
-}
-
-.briefing-container li {
-  margin-left: 1.25rem;
-  color: #334155;
-  font-size: 0.875rem;
-  line-height: 1.4;
-}
-
+.briefing-container { border-left: 4px solid #2563eb !important; background: #fcfdfe !important; padding: 1.25rem !important; max-width: 95% !important; }
+.briefing-main-title { font-size: 1.15rem; font-weight: 700; color: #0f172a; margin-bottom: 0.75rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.4rem; }
+.briefing-section-title { font-size: 0.95rem; font-weight: 600; color: #1e40af; margin-top: 0.75rem; margin-bottom: 0.35rem; }
+.briefing-container li { margin-left: 1.25rem; color: #334155; font-size: 0.875rem; line-height: 1.4; }
 .assistant-suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0.75rem 0; }
 .suggestions-label { font-size: 0.8rem; color: #64748b; font-weight: 500; }
-
-.btn-chip {
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
-  color: #334155;
-  padding: 4px 10px;
-  border-radius: 14px;
-  font-size: 0.8rem;
-  cursor: pointer;
-}
+.btn-chip { background: #f1f5f9; border: 1px solid #cbd5e1; color: #334155; padding: 4px 10px; border-radius: 14px; font-size: 0.8rem; cursor: pointer; }
 .btn-chip:hover { background: #e2e8f0; }
-
 .assistant-input-group { display: flex; gap: 0.5rem; }
-.assistant-input-group input {
-  flex: 1;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  font-size: 0.9rem;
-}
-
-.assistant-loading-indicator {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  color: #64748b;
-  padding: 0.5rem 0;
-}
-
-.spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid #cbd5e1;
-  border-top-color: #2563eb;
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-}
+.assistant-input-group input { flex: 1; padding: 0.6rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; }
+.assistant-loading-indicator { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: #64748b; padding: 0.5rem 0; }
+.spinner { width: 14px; height: 14px; border: 2px solid #cbd5e1; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .assistant-safe-text{white-space:pre-wrap;overflow-wrap:anywhere}
 .approval-policy-banner{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:12px 14px;margin:0 0 14px;background:#fff7ed;border:1px solid #fed7aa;border-left:4px solid var(--gov-saffron);border-radius:6px;color:#7c2d12;font-size:12px}
@@ -249,164 +67,192 @@
 @media(max-width:900px){.ai-proposal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.ai-proposal-grid{grid-template-columns:1fr}.ai-proposal-head{align-items:flex-start;flex-direction:column}}
 
-/* ================================================================
-   AI ADMIN COMMAND-CENTER POLISH
-   Keeps the existing assistant, APIs and governance unchanged while
-   making the dashboard faster to scan during an administrator review.
-   ================================================================ */
-.admin-assistant-container {
-  padding: 16px;
-  margin-bottom: 14px;
-  border-radius: 10px;
-  border-color: #dbe4ee;
-  box-shadow: 0 5px 18px rgba(15, 23, 42, .06);
-}
+/* AI ADMIN COMMAND-CENTER POLISH */
+.admin-assistant-container { padding: 16px; margin-bottom: 14px; border-radius: 10px; border-color: #dbe4ee; box-shadow: 0 5px 18px rgba(15, 23, 42, .06); }
+.admin-assistant-container .assistant-title { flex-wrap: wrap; }
+.admin-assistant-container .assistant-title h3::after { content: '  ·  Monitoring, risk detection & administrative assistance'; display: inline; font-size: 10px; font-weight: 500; color: #64748b; }
+.admin-assistant-container .assistant-icon { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: #eff6ff; }
+.admin-assistant-container .assistant-chat-log { max-height: 330px; min-height: 120px; background: #f8fafc; border-color: #e2e8f0; }
+.admin-assistant-container .assistant-suggestions { margin: 9px 0; gap: 6px; }
+.admin-assistant-container .btn-chip { transition: transform .12s ease, box-shadow .12s ease, background .12s ease; }
+.admin-assistant-container .btn-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 7px rgba(15,23,42,.08); }
+.admin-assistant-container .assistant-suggestions .btn-chip:nth-of-type(4) { background: #fff7ed; border-color: #fed7aa; color: #9a3412; font-weight: 800; }
+.admin-assistant-container .assistant-input-group input:focus { border-color: #94a3b8; box-shadow: 0 0 0 3px rgba(59,130,246,.08); outline: none; }
+#staffStatsRow { margin-top: 4px; }
+#staffStatsRow > div { margin-bottom: 10px !important; }
+#staffStatsRow .stat-card { transition: transform .12s ease, box-shadow .12s ease; }
+#staffStatsRow .stat-card:hover { transform: translateY(-1px); box-shadow: 0 5px 16px rgba(15,23,42,.08); }
+.ai-approval-center { border-top: 3px solid var(--gov-saffron); }
+.ai-proposal-card { transition: box-shadow .12s ease, border-color .12s ease; }
+.ai-proposal-card:hover { border-color: #cbd5e1; box-shadow: 0 5px 18px rgba(15,23,42,.07); }
+.ai-proposal-details summary { padding: 6px 0; }
+.ai-proposal-actions .btn { min-width: 112px; }
+#aiTaskFab { border: 1px solid rgba(255,255,255,.14) !important; box-shadow: 0 10px 28px rgba(15,23,42,.24) !important; }
+#aiTaskPanel { border-color: #dbe4ee !important; }
 
-.admin-assistant-container .assistant-title {
-  flex-wrap: wrap;
+/* FINAL PORTAL NAVIGATION POLISH
+   The existing administration action remains the single handler, but the
+   visible entry point is the signed-in profile card. The map stays accessible
+   as a floating control immediately above AI Tasks. */
+.gov-header { position: relative; }
+.gov-user-panel { position: relative; }
+.gov-user-panel .user-badge {
+  cursor: pointer;
+  position: relative;
+  z-index: 2;
+  transition: background-color .15s ease, box-shadow .15s ease, transform .15s ease;
 }
-
-.admin-assistant-container .assistant-title h3::after {
-  content: '  ·  Monitoring, risk detection & administrative assistance';
-  display: inline;
-  font-size: 10px;
-  font-weight: 500;
-  color: #64748b;
+.gov-user-panel .user-badge:hover,
+.gov-user-panel .user-badge:focus-visible {
+  box-shadow: 0 4px 14px rgba(0,0,0,.16);
+  transform: translateY(-1px);
+  outline: 2px solid rgba(251,191,36,.75);
+  outline-offset: 2px;
 }
-
-.admin-assistant-container .assistant-icon {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* The existing Administration button is kept as the functional trigger but
+   made invisible and placed over the profile card, avoiding a second button
+   or duplicate administration panel/handler. */
+.gov-user-panel #administrationOpenBtn {
+  display: block !important;
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 !important;
+  border: 0 !important;
   border-radius: 8px;
-  background: #eff6ff;
+  background: transparent !important;
+  color: transparent !important;
+  opacity: 0;
+  z-index: 3;
+  cursor: pointer;
 }
-
-.admin-assistant-container .assistant-chat-log {
-  max-height: 330px;
-  min-height: 120px;
-  background: #f8fafc;
-  border-color: #e2e8f0;
+.gov-user-panel #administrationOpenBtn:focus-visible {
+  opacity: .01;
+  outline: 2px solid rgba(251,191,36,.9);
+  outline-offset: 2px;
 }
-
-.admin-assistant-container .assistant-suggestions {
-  margin: 9px 0;
-  gap: 6px;
-}
-
-.admin-assistant-container .btn-chip {
-  transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
-}
-
-.admin-assistant-container .btn-chip:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 7px rgba(15,23,42,.08);
-}
-
-/* Make the most important admin action visually dominant without changing
-   its existing click handler. */
-.admin-assistant-container .assistant-suggestions .btn-chip:nth-of-type(4) {
-  background: #fff7ed;
-  border-color: #fed7aa;
-  color: #9a3412;
+/* Move the existing map link visually without changing its href/id or adding
+   another navigation element. */
+.gov-user-panel #landMapNav {
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 76px !important;
+  z-index: 9996 !important;
+  padding: 10px 14px !important;
+  border-radius: 999px !important;
+  box-shadow: 0 8px 24px rgba(15,23,42,.18);
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #0b2f55 !important;
   font-weight: 800;
+  white-space: nowrap;
 }
-
-.admin-assistant-container .assistant-input-group input:focus {
-  border-color: #94a3b8;
-  box-shadow: 0 0 0 3px rgba(59,130,246,.08);
-  outline: none;
-}
-
-/* Existing Administrator Overview metrics become a compact command-center
-   band directly beneath the assistant. */
-#staffStatsRow {
-  margin-top: 4px;
-}
-
-#staffStatsRow > div {
-  margin-bottom: 10px !important;
-}
-
-#staffStatsRow .stat-card {
-  transition: transform .12s ease, box-shadow .12s ease;
-}
-
-#staffStatsRow .stat-card:hover {
+.gov-user-panel #landMapNav:hover,
+.gov-user-panel #landMapNav:focus-visible {
+  box-shadow: 0 10px 28px rgba(15,23,42,.24);
   transform: translateY(-1px);
-  box-shadow: 0 5px 16px rgba(15,23,42,.08);
 }
-
-/* Stronger evidence hierarchy for existing AI Approval cards. */
-.ai-approval-center {
-  border-top: 3px solid var(--gov-saffron);
-}
-
-.ai-proposal-card {
-  transition: box-shadow .12s ease, border-color .12s ease;
-}
-
-.ai-proposal-card:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 5px 18px rgba(15,23,42,.07);
-}
-
-.ai-proposal-details summary {
-  padding: 6px 0;
-}
-
-.ai-proposal-actions .btn {
-  min-width: 112px;
-}
-
-/* Keep the existing floating task inbox prominent and readable. */
-#aiTaskFab {
-  border: 1px solid rgba(255,255,255,.14) !important;
-  box-shadow: 0 10px 28px rgba(15,23,42,.24) !important;
-}
-
-#aiTaskPanel {
-  border-color: #dbe4ee !important;
+@media (max-width: 560px) {
+  .gov-user-panel #landMapNav { right: 14px !important; bottom: 72px !important; padding: 8px 11px !important; font-size: 11px !important; }
+  .gov-user-panel #administrationOpenBtn { min-height: 42px; }
 }
 
 @media (max-width: 760px) {
-  .admin-assistant-container .assistant-title h3::after {
-    display: block;
-    margin-top: 2px;
-    width: 100%;
-  }
-  .assistant-header {
-    align-items: flex-start;
-    gap: 10px;
-  }
-  .assistant-header-actions .btn-briefing {
-    white-space: nowrap;
-  }
-  .assistant-message {
-    max-width: 96%;
-  }
+  .admin-assistant-container .assistant-title h3::after { display: block; margin-top: 2px; width: 100%; }
+  .assistant-header { align-items: flex-start; gap: 10px; }
+  .assistant-header-actions .btn-briefing { white-space: nowrap; }
+  .assistant-message { max-width: 96%; }
+}
+@media (max-width: 520px) {
+  .admin-assistant-container { padding: 11px; }
+  .assistant-header { flex-direction: column; }
+  .assistant-header-actions, .assistant-header-actions .btn-briefing { width: 100%; }
+  .assistant-header-actions .btn-briefing { justify-content: center; }
+  .assistant-input-group { flex-direction: column; }
+  .assistant-input-group .btn { width: 100%; }
 }
 
-@media (max-width: 520px) {
-  .admin-assistant-container {
-    padding: 11px;
-  }
-  .assistant-header {
-    flex-direction: column;
-  }
-  .assistant-header-actions,
-  .assistant-header-actions .btn-briefing {
-    width: 100%;
-  }
-  .assistant-header-actions .btn-briefing {
-    justify-content: center;
-  }
-  .assistant-input-group {
-    flex-direction: column;
-  }
-  .assistant-input-group .btn {
-    width: 100%;
-  }
+/* Secure Superior Administrator (SA) mode */
+.sa-live-badge{background:#0b2f55;color:#fff;border:1px solid #f59e0b}
+.sa-modal{position:fixed;inset:0;z-index:10020;display:flex;align-items:center;justify-content:center;padding:18px}
+.sa-backdrop{position:absolute;inset:0;background:rgba(3,15,29,.72);backdrop-filter:blur(3px)}
+.sa-dialog{position:relative;z-index:1;width:min(620px,100%);background:#fff;border-radius:12px;border-top:4px solid #f59e0b;box-shadow:0 24px 80px rgba(0,0,0,.35);overflow:hidden}
+.sa-dialog-head{display:flex;justify-content:space-between;gap:16px;padding:18px 20px;background:#0b2f55;color:#fff}
+.sa-dialog-head h3{margin:2px 0 4px;font-size:20px}
+.sa-dialog-head p{margin:0;color:#cbd5e1;font-size:12px}
+.sa-eyebrow{font-size:10px;font-weight:900;letter-spacing:.14em;color:#fbd38d}
+.sa-close{border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.08);color:#fff;border-radius:6px;width:32px;height:32px;font-size:22px;cursor:pointer}
+.sa-identity-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:20px}
+.sa-identity-card{display:flex;flex-direction:column;align-items:center;gap:6px;padding:20px 10px;border:1px solid #cbd5e1;border-radius:10px;background:#f8fafc;color:#0b2f55;cursor:pointer}
+.sa-identity-card:hover{border-color:#f59e0b;background:#fff7ed;transform:translateY(-1px)}
+.sa-identity-card small{color:#64748b}
+.sa-avatar{display:grid;place-items:center;width:46px;height:46px;border-radius:50%;background:#0b2f55;color:#fff;font-weight:900;font-size:18px}
+.sa-response{border-left:4px solid #f59e0b}
+.sa-report-panel{position:fixed;right:18px;bottom:18px;z-index:10010;width:min(620px,calc(100vw - 36px));max-height:75vh;overflow:auto;background:#fff;border:1px solid #cbd5e1;border-radius:12px;box-shadow:0 18px 55px rgba(15,23,42,.25)}
+.sa-report-head{position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#0b2f55;color:#fff}
+.sa-report-head span{color:#fbd38d;font-size:11px}
+.sa-report-row{display:grid;grid-template-columns:150px 1fr;gap:4px 10px;padding:11px 13px;border-bottom:1px solid #e2e8f0}
+.sa-report-row b{font-size:10px;color:#9a3412}
+.sa-report-row span{font-size:11px;color:#334155;overflow-wrap:anywhere}
+.sa-report-row small{grid-column:2;color:#64748b;font-size:10px}
+@media(max-width:650px){.sa-identity-grid{grid-template-columns:1fr}.sa-dialog-head{padding:15px}.sa-report-panel{right:10px;bottom:10px;width:calc(100vw - 20px)}}
+
+.sa-password-step{padding:20px;display:flex;flex-direction:column;gap:9px}
+.sa-password-step label{font-size:12px;font-weight:800;color:#0b2f55}
+.sa-password-step input{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:15px;letter-spacing:.08em}
+.sa-password-step input:focus{outline:none;border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.14)}
+.sa-password-hint{margin:0 0 3px;color:#64748b;font-size:11px;line-height:1.45}
+.sa-selected-identity{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px}
+.sa-selected-identity strong{display:block;color:#0b2f55;font-size:14px}
+.sa-selected-identity small{display:block;color:#64748b;font-size:10px;margin-top:2px}
+.sa-back-link{align-self:flex-start;border:0;background:transparent;color:#1d4ed8;padding:0;cursor:pointer;font-size:11px;font-weight:700}
+.sa-back-link:hover{text-decoration:underline}
+
+/* --- Admin AI timeout card (safe retry lifecycle) --- */
+
+/* =====================================================================
+   ADMIN AI — normal administrator access and the safe retry lifecycle.
+   There is no unlock gate; the administrator's own password is required
+   only at final approval of an AI action.
+   ===================================================================== */
+.sa-timeout-card {
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 8px 0;
+}
+.sa-timeout-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #9a3412;
+}
+.sa-timeout-detail {
+  font-size: 12px;
+  color: #7c2d12;
+  margin-top: 4px;
+}
+.sa-timeout-query {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #57534e;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px dashed #fdba74;
+  border-radius: 8px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+}
+.sa-timeout-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.sa-retry-btn,
+.sa-dismiss-btn {
+  padding: 6px 14px;
+  font-size: 12px;
 }

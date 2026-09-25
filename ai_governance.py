@@ -16,9 +16,56 @@ def _admin_user():
     s=_server()
     return s.require_roles(s.ROLE_ADMIN)
 
+def verify_administrator_password(user: Dict[str, Any], password: str) -> None:
+    """Fail-closed verification of the CALLING administrator's account password.
+
+    Final approval of an AI action is a consequential mutation, so the
+    authenticated administrator re-proves their identity with their own account
+    password immediately before the atomic approval/execution flow runs.
+
+    Security properties:
+    * The identity is the SERVER-resolved authenticated account (``user``).
+      Nothing is read from the request body, so a browser cannot choose which
+      administrator is verified (supplying another administrator's name, email
+      or id changes nothing).
+    * The stored argon2id verifier is read fresh from the users table by the
+      authenticated account id and compared with the canonical
+      ``server.verify_password`` (legacy SHA-256 records keep working).
+    * The plaintext is never persisted, logged, audited, echoed back, or stored
+      in browser storage. Only a failure EVENT without any secret material is
+      written to the audit trail.
+    * Missing or wrong password raises 401 BEFORE any execution is attempted;
+      the proposal is untouched.
+    """
+    s = _server()
+    if not isinstance(password, str) or not password:
+        raise HTTPException(status_code=401, detail="Administrator password is required to approve an AI action.")
+    admin_id = user.get("id") or ""
+    stored_hash = ""
+    is_active = True
+    if admin_id:
+        with s.get_db() as db:
+            row = db.execute("SELECT password_hash, is_active FROM users WHERE id=?", (admin_id,)).fetchone()
+        if row:
+            stored_hash = row["password_hash"] or ""
+            is_active = bool(row["is_active"])
+    verified = False
+    if stored_hash and is_active:
+        verified, _legacy_sha256 = s.verify_password(stored_hash, password)
+    if not verified:
+        # Audited WITHOUT the secret: the event records the refusal only.
+        s.log_audit(
+            user.get("full_name") or "Administrator",
+            "AI_APPROVAL_PASSWORD_FAILED",
+            "AI approval blocked: administrator password verification failed.",
+            None,
+        )
+        raise HTTPException(status_code=401, detail="Invalid administrator password.")
+
 router = APIRouter(prefix="/api/admin/ai-approval", tags=["AI Approval Center"])
 
 PROPOSED="PROPOSED"; APPROVED="APPROVED"; REJECTED="REJECTED"; EXPIRED="EXPIRED"; EXECUTED="EXECUTED"; FAILED="FAILED"
+EXECUTING="EXECUTING"  # atomic execution claim: PROPOSED -> EXECUTING -> EXECUTED/FAILED
 TTL_SECONDS=30*60
 
 ACTION_REGISTRY = {
@@ -54,11 +101,40 @@ class ProposalCreate(BaseModel):
 class DecisionReq(BaseModel):
     note: str = ""
 
+class ApproveDecisionReq(BaseModel):
+    """Final-approval input: the optional note plus the CALLING administrator's password.
+
+    Only the password is accepted. The administrator it is verified against is
+    the server-resolved authenticated account - any identity field a browser
+    might add (admin, administrator, email, user_id, name, ...) is ignored by
+    design and can never select who is verified.
+    """
+    note: str = ""
+    password: str = ""
+
 class AIProposalRequest(BaseModel):
     proposal: ProposalCreate
 
+# Startup/once-per-database DDL caching (from main): CREATE TABLE / CREATE INDEX
+# must never run inside a user request - it can block for a long time on a large
+# database. Each schema is keyed to DB_PATH so tests that swap databases still
+# get their tables. (Two separate keys: the task-table DDL must not be skipped
+# just because the governance tables were ensured first.)
+_governance_ready_for = None
+_tasks_ready_for = None
+
+
 def ensure_governance_tables():
+    """Create the governance tables once per database.
+
+    server.py calls this at startup; for the lifetime of the process every later
+    call is a no-op (keyed to DB_PATH so tests that swap databases still get
+    their tables).
+    """
+    global _governance_ready_for
     s=_server()
+    if _governance_ready_for == s.DB_PATH:
+        return
     with s.get_db() as db:
         db.execute("""
         CREATE TABLE IF NOT EXISTS ai_proposals (
@@ -79,9 +155,33 @@ def ensure_governance_tables():
           approved_by TEXT,
           approved_at REAL,
           execution_at REAL,
-          execution_result TEXT NOT NULL DEFAULT '{}'
+          execution_result TEXT NOT NULL DEFAULT '{}',
+          idempotency_key TEXT,
+          execution_claim TEXT
         )
         """)
+        # Additive migration for databases created before the idempotency key.
+        # NO-DUPLICATE-MUTATION support: one logical request creates at most
+        # one proposal, even if the request is ever re-executed after a crash.
+        try:
+            if db.is_pg:
+                db.execute("SAVEPOINT idem_sp;")
+                db.execute("ALTER TABLE ai_proposals ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
+                db.execute("ALTER TABLE ai_proposals ADD COLUMN IF NOT EXISTS execution_claim TEXT")
+                db.execute("RELEASE SAVEPOINT idem_sp;")
+            else:
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(ai_proposals)").fetchall()}
+                if "idempotency_key" not in columns:
+                    db.execute("ALTER TABLE ai_proposals ADD COLUMN idempotency_key TEXT")
+                if "execution_claim" not in columns:
+                    db.execute("ALTER TABLE ai_proposals ADD COLUMN execution_claim TEXT")
+        except Exception:
+            try:
+                if db.is_pg:
+                    db.execute("ROLLBACK TO SAVEPOINT idem_sp;")
+            except Exception:
+                pass
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_proposals_idem ON ai_proposals(idempotency_key)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ai_proposals_status ON ai_proposals(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ai_proposals_created ON ai_proposals(created_at)")
         db.execute("""
@@ -94,6 +194,7 @@ def ensure_governance_tables():
           created_at REAL NOT NULL
         )
         """)
+    _governance_ready_for = s.DB_PATH
 
 def _json(v): return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -150,8 +251,15 @@ def _validate_target(p):
                 if not u or u["role"]!="VERIFICATION_OFFICER" or not u["is_active"]:
                     raise HTTPException(400,"Every proposed assignee must be an active Verification Officer.")
 
-def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT"):
+def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT", idempotency_key: Optional[str]=None):
     ensure_governance_tables()
+    # NO-DUPLICATE-MUTATION: a logical request that already created its
+    # proposal returns the SAME proposal instead of creating another one.
+    if idempotency_key:
+        with _server().get_db() as db:
+            existing=db.execute("SELECT proposal_id FROM ai_proposals WHERE idempotency_key=?",(str(idempotency_key),)).fetchone()
+        if existing:
+            return get_proposal(existing["proposal_id"])
     p={**data}
     p["action_type"]=str(p.get("action_type","")).upper()
     p["target_type"]=str(p.get("target_type","")).upper()
@@ -164,11 +272,21 @@ def create_proposal(data: Dict[str,Any], created_by="AI_ASSISTANT"):
         p["before"] = _current_state(p["action_type"], p["target_ids"])
     pid="AI-"+uuid.uuid4().hex[:10].upper()
     now=time.time(); exp=now+TTL_SECONDS
-    with _server().get_db() as db:
-        db.execute("""INSERT INTO ai_proposals(proposal_id,action_type,target_type,target_ids,before_state,proposed_state,reason,evidence,confidence,risk,status,created_by,created_at,expires_at)
-                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                   (pid,p["action_type"],p["target_type"],_json(p["target_ids"]),_json(p.get("before",{})),_json(p.get("after",{})),str(p.get("reason","")),
-                    _json(p.get("evidence",[])),p["confidence"],p["risk"],PROPOSED,created_by,now,exp))
+    try:
+        with _server().get_db() as db:
+            db.execute("""INSERT INTO ai_proposals(proposal_id,action_type,target_type,target_ids,before_state,proposed_state,reason,evidence,confidence,risk,status,created_by,created_at,expires_at,idempotency_key)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (pid,p["action_type"],p["target_type"],_json(p["target_ids"]),_json(p.get("before",{})),_json(p.get("after",{})),str(p.get("reason","")),
+                        _json(p.get("evidence",[])),p["confidence"],p["risk"],PROPOSED,created_by,now,exp,idempotency_key))
+    except Exception:
+        # Unique-key race: a concurrent re-execution of the same logical
+        # request already created the proposal. Reuse it; never duplicate.
+        if idempotency_key:
+            with _server().get_db() as db:
+                existing=db.execute("SELECT proposal_id FROM ai_proposals WHERE idempotency_key=?",(str(idempotency_key),)).fetchone()
+            if existing:
+                return get_proposal(existing["proposal_id"])
+        raise
     _event(pid,created_by,"AI_PROPOSAL_CREATED",f"{p['action_type']} proposal created for {p['target_ids']}")
     return get_proposal(pid)
 
@@ -235,7 +353,10 @@ def _assert_before(proposal,current):
                 raise HTTPException(409,f"Property {rid} location changed since this proposal was created.")
 
 def _ensure_task_table():
+    global _tasks_ready_for
     s=_server()
+    if _tasks_ready_for == s.DB_PATH:
+        return
     with s.get_db() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS ai_tasks(
           id TEXT PRIMARY KEY, record_id TEXT, task_type TEXT NOT NULL, title TEXT NOT NULL,
@@ -243,6 +364,7 @@ def _ensure_task_table():
           assigned_by TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', parent_task_id TEXT,
           metadata TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}',
           created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+    _tasks_ready_for = s.DB_PATH
 
 def _create_task(db, rid, assigned_to, task_type, title, description, priority, actor, metadata=None):
     tid="TASK-"+uuid.uuid4().hex[:8].upper(); now=time.time()
@@ -392,33 +514,83 @@ def _execute(proposal, admin):
 def approve_proposal(pid, admin, note=""):
     p=get_proposal(pid)
     if not p: raise HTTPException(404,"Proposal not found.")
+    if p["status"]==EXECUTED:
+        # NO-DUPLICATE-MUTATION: the logical operation already executed exactly
+        # once. A retried approval (e.g. after a client timeout) replays the
+        # stored outcome instead of ever executing again.
+        p=dict(p); p["replayed"]=True
+        return p
+    if p["status"]==EXECUTING:
+        # Another request already owns the execution claim: safe conflict /
+        # re-attach (observe via GET). NEVER execute again.
+        raise HTTPException(409,"Proposal execution is already in progress.")
     if p["status"]!=PROPOSED: raise HTTPException(409,f"Proposal is {p['status']} and cannot be approved.")
     if time.time()>p["expires_at"]: raise HTTPException(409,"Proposal has expired.")
     _validate_target(p)
     current=_current_state(p["action_type"],p["target_ids"])
     _assert_before(p,current)
+    # ATOMIC EXECUTION CLAIM: PROPOSED -> EXECUTING (compare-and-set in SQL).
+    # Exactly one concurrent request can update exactly one row; only that
+    # request may run _execute(). EXECUTING/EXECUTED/FAILED/REJECTED/EXPIRED
+    # are all excluded by the WHERE clause, so none of them can execute again.
+    claim=uuid.uuid4().hex
     with _server().get_db() as db:
-        cur=db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(APPROVED,admin["full_name"],time.time(),pid,PROPOSED))
-        if getattr(cur,"rowcount",1)!=1: raise HTTPException(409,"Proposal was already decided.")
+        cur=db.execute(
+            "UPDATE ai_proposals SET status=?,approved_by=?,approved_at=?,execution_claim=? WHERE proposal_id=? AND status=?",
+            (EXECUTING,admin["full_name"],time.time(),claim,pid,PROPOSED))
+        claimed=(getattr(cur,"rowcount",0) or 0)==1
+    if not claimed:
+        # Lost the claim race: return a safe conflict/re-attach response and
+        # NEVER execute the mutation.
+        fresh=get_proposal(pid)
+        if fresh and fresh["status"]==EXECUTED:
+            fresh=dict(fresh); fresh["replayed"]=True
+            return fresh
+        if fresh and fresh["status"]==EXECUTING:
+            raise HTTPException(409,"Proposal execution is already in progress.")
+        raise HTTPException(409,f"Proposal is {fresh['status'] if fresh else 'unknown'} and cannot be approved.")
     _event(pid,admin["full_name"],"AI_PROPOSAL_APPROVED",f"Administrator approved proposal. {note[:240]}")
     try:
         result=_execute(p,admin)
-        with _server().get_db() as db:
-            db.execute("UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=?",(EXECUTED,time.time(),_json(result),pid,APPROVED))
-        _event(pid,admin["full_name"],"AI_PROPOSAL_EXECUTED",f"Executed approved {p['action_type']} proposal.")
-        return get_proposal(pid)
     except Exception as exc:
+        # Ownership-safe completion: only THIS executor can mark its own claim
+        # FAILED. FAIL-CLOSED: the write must touch exactly one row - if the
+        # claim was replaced, the current owner's state/result is never
+        # overwritten and NO false AI_PROPOSAL_FAILED event is emitted. A
+        # missing rowcount is never treated as success.
         with _server().get_db() as db:
-            db.execute("UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=?",(FAILED,time.time(),_json({"error":str(exc)}),pid,APPROVED))
-        _event(pid,admin["full_name"],"AI_PROPOSAL_FAILED",f"Approved proposal failed: {type(exc).__name__}")
+            cur=db.execute(
+                "UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=? AND execution_claim=?",
+                (FAILED,time.time(),_json({"error":str(exc)}),pid,EXECUTING,claim))
+        if (getattr(cur,"rowcount",0) or 0)==1:
+            _event(pid,admin["full_name"],"AI_PROPOSAL_FAILED",f"Approved proposal failed: {type(exc).__name__}")
         raise
+    # Ownership-safe completion: only THIS executor (its unique claim) can
+    # transition EXECUTING -> EXECUTED. FAIL-CLOSED: the write must touch
+    # exactly one row; a missing rowcount is never treated as success.
+    with _server().get_db() as db:
+        cur=db.execute(
+            "UPDATE ai_proposals SET status=?,execution_at=?,execution_result=? WHERE proposal_id=? AND status=? AND execution_claim=?",
+            (EXECUTED,time.time(),_json(result),pid,EXECUTING,claim))
+    if (getattr(cur,"rowcount",0) or 0)!=1:
+        # Ownership lost mid-execution (claim replaced): emit NO EXECUTED
+        # event and never report this stale executor's result as the
+        # proposal's outcome. Safe conflict / re-attach: observe the current
+        # owner's state via the proposal detail endpoint.
+        raise HTTPException(409,"Proposal execution ownership was lost; another execution owns the outcome. Re-attach via the proposal detail endpoint.")
+    _event(pid,admin["full_name"],"AI_PROPOSAL_EXECUTED",f"Executed approved {p['action_type']} proposal.")
+    return get_proposal(pid)
 
 def reject_proposal(pid, admin, note=""):
     p=get_proposal(pid)
     if not p: raise HTTPException(404,"Proposal not found.")
     if p["status"]!=PROPOSED: raise HTTPException(409,f"Proposal is {p['status']} and cannot be rejected.")
     with _server().get_db() as db:
-        db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(REJECTED,admin["full_name"],time.time(),pid,PROPOSED))
+        cur=db.execute("UPDATE ai_proposals SET status=?,approved_by=?,approved_at=? WHERE proposal_id=? AND status=?",(REJECTED,admin["full_name"],time.time(),pid,PROPOSED))
+        if (getattr(cur,"rowcount",0) or 0)!=1:
+            # Concurrent decision won first (e.g. an approval claimed the
+            # execution): never record a rejection that did not happen.
+            raise HTTPException(409,"Proposal was already decided.")
     _event(pid,admin["full_name"],"AI_PROPOSAL_REJECTED",f"Administrator rejected proposal. {note[:240]}")
     return get_proposal(pid)
 
@@ -438,11 +610,17 @@ def proposal_create(req:AIProposalRequest,user:dict=Depends(_admin_user())):
     return {"proposal":create_proposal(req.proposal.model_dump(),created_by="ADMIN_PREPARED")}
 
 @router.post("/proposals/{proposal_id}/approve")
-def proposal_approve(proposal_id:str,req:DecisionReq,user:dict=Depends(_admin_user())):
+def proposal_approve(proposal_id:str,req:ApproveDecisionReq,user:dict=Depends(_admin_user())):
+    # FINAL APPROVAL. The authenticated administrator's password is verified
+    # server-side FIRST; a wrong or missing password fails closed (401) and
+    # nothing is executed. Only then does the unchanged atomic approval flow
+    # run (CAS PROPOSED -> EXECUTING, ownership-checked completion).
+    verify_administrator_password(user, req.password)
     return {"proposal":approve_proposal(proposal_id,user,req.note)}
 
 @router.post("/proposals/{proposal_id}/reject")
 def proposal_reject(proposal_id:str,req:DecisionReq,user:dict=Depends(_admin_user())):
+    # Rejection is non-consequential: it requires no password.
     return {"proposal":reject_proposal(proposal_id,user,req.note)}
 
 @router.get("/proposals/{proposal_id}/events")
