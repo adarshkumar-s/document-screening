@@ -1341,14 +1341,36 @@ def sa_report(session_id: Optional[str] = None, user: dict = Depends(get_admin_d
 # -------------------------------------------------------------------
 # HTTP routes
 #
-# The Admin AI entry point is SA. Every assistant endpoint below requires a
-# live, server-side SA session bound to a verified administrator identity
-# (see sa_gateway). Browser-supplied names/flags are never trusted.
+# The Admin AI Assistant uses NORMAL administrator authentication. There is no
+# separate unlock gate: any authenticated administrator can query, brief, and
+# follow the lifecycle of their own requests. The actor for every request is the
+# authenticated account resolved server-side from the credential - a
+# browser-supplied name/role/flag is never trusted, and one administrator can
+# never read or retry another's requests.
+#
+# The only additional proof of identity is required at FINAL APPROVAL of an AI
+# action, which re-verifies the administrator's own account password
+# (see ai_governance.verify_administrator_password).
 # -------------------------------------------------------------------
-def get_sa_dependency():
-    import sa_gateway
+def get_admin_actor_dependency():
+    """Normal administrator authentication, shaped as the assistant actor.
 
-    return sa_gateway.require_sa_session
+    ``admin_user_id``/``admin_name`` are always derived from the server-resolved
+    authenticated account, which keeps request history isolated per actor.
+    """
+
+    def actor(user: dict = Depends(get_admin_dependency())) -> Dict[str, Any]:
+        return {
+            "admin_user_id": str(user.get("id") or ""),
+            "admin_name": user.get("full_name") or "Administrator",
+            # The logged-in account remains part of the actor for isolation/audit.
+            "id": user.get("id"),
+            "full_name": user.get("full_name"),
+            "email": user.get("email"),
+            "role": user.get("role"),
+        }
+
+    return actor
 
 
 def _wait_seconds() -> float:
@@ -1359,7 +1381,7 @@ def _wait_seconds() -> float:
     return max(0.2, min(120.0, value))
 
 
-def _run_sa_request(sa: Dict[str, Any], kind: str, payload: Dict[str, Any], request_id: Optional[str], runner):
+def _run_assistant_request(actor: Dict[str, Any], kind: str, payload: Dict[str, Any], request_id: Optional[str], runner):
     """Submit-or-replay the logical request with the safe task lifecycle.
 
     At-most-once execution is guaranteed by assistant_tasks + proposal
@@ -1376,7 +1398,7 @@ def _run_sa_request(sa: Dict[str, Any], kind: str, payload: Dict[str, Any], requ
         return assistant_tasks.submit_or_replay(
             request_id=rid,
             surface="SA",
-            user_id=str(sa.get("admin_user_id") or ""),  # actor isolation
+            user_id=str(actor.get("admin_user_id") or ""),  # actor isolation
             kind=kind,
             payload=payload,
             runner=runner,
@@ -1386,49 +1408,49 @@ def _run_sa_request(sa: Dict[str, Any], kind: str, payload: Dict[str, Any], requ
         raise HTTPException(status_code=400, detail=exc.detail)
 
 
-def _sa_runner(sa: Dict[str, Any]):
-    """Build the SA runner. ``request_id`` doubles as the proposal idempotency
-    key so even a re-executed request can only ever prepare ONE proposal."""
+def _assistant_runner(actor: Dict[str, Any]):
+    """Build the assistant runner. ``request_id`` doubles as the proposal
+    idempotency key so even a re-executed request can only ever prepare ONE
+    proposal."""
 
     def runner(payload: Dict[str, Any], request_id: str):
         query = str((payload or {}).get("query") or "")
         if query == "Generate System Briefing":
             return {"briefing": build_system_briefing()}
-        actor = dict(sa)
-        return run_assistant_turn(query, user=actor, idempotency_key=request_id)
+        return run_assistant_turn(query, user=dict(actor), idempotency_key=request_id)
 
     return runner
 
 
 @router.post("/query")
-def assistant_query(req: QueryReq, sa: dict = Depends(get_sa_dependency())):
+def assistant_query(req: QueryReq, actor: dict = Depends(get_admin_actor_dependency())):
     query = (req.query or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query is required.")
-    return _run_sa_request(sa, "QUERY", {"query": query}, req.request_id, _sa_runner(sa))
+    return _run_assistant_request(actor, "QUERY", {"query": query}, req.request_id, _assistant_runner(actor))
 
 
 @router.post("/briefing")
-def assistant_briefing(req: Optional[BriefingReq] = None, sa: dict = Depends(get_sa_dependency())):
-    return _run_sa_request(
-        sa, "BRIEFING", {"query": "Generate System Briefing"},
-        (req.request_id if req else None), _sa_runner(sa),
+def assistant_briefing(req: Optional[BriefingReq] = None, actor: dict = Depends(get_admin_actor_dependency())):
+    return _run_assistant_request(
+        actor, "BRIEFING", {"query": "Generate System Briefing"},
+        (req.request_id if req else None), _assistant_runner(actor),
     )
 
 
 @router.get("/requests/{request_id}")
-def assistant_request_status(request_id: str, sa: dict = Depends(get_sa_dependency())):
+def assistant_request_status(request_id: str, actor: dict = Depends(get_admin_actor_dependency())):
     """Poll a logical request. The original request is preserved server-side."""
     import assistant_tasks
 
-    envelope = assistant_tasks.get_request(request_id, str(sa.get("admin_user_id") or ""))
+    envelope = assistant_tasks.get_request(request_id, str(actor.get("admin_user_id") or ""))
     if envelope is None:
         raise HTTPException(status_code=404, detail="The request was not found.")
     return envelope
 
 
 @router.post("/requests/{request_id}/retry")
-def assistant_request_retry(request_id: str, sa: dict = Depends(get_sa_dependency())):
+def assistant_request_retry(request_id: str, actor: dict = Depends(get_admin_actor_dependency())):
     """The real 'Try again' button: re-attaches to or replays the ORIGINAL
     request. The preserved payload is authoritative - the client cannot
     substitute a new payload - and work that already ran is never re-run."""
@@ -1437,8 +1459,8 @@ def assistant_request_retry(request_id: str, sa: dict = Depends(get_sa_dependenc
     try:
         return assistant_tasks.retry_request(
             request_id,
-            str(sa.get("admin_user_id") or ""),
-            _sa_runner(sa),
+            str(actor.get("admin_user_id") or ""),
+            _assistant_runner(actor),
             wait_seconds=_wait_seconds(),
         )
     except assistant_tasks.AssistantPermanentError as exc:
@@ -1448,19 +1470,19 @@ def assistant_request_retry(request_id: str, sa: dict = Depends(get_sa_dependenc
 
 
 @router.post("/requests/{request_id}/cancel")
-def assistant_request_cancel(request_id: str, sa: dict = Depends(get_sa_dependency())):
+def assistant_request_cancel(request_id: str, actor: dict = Depends(get_admin_actor_dependency())):
     """Cancel/dismiss path for a timed-out or unwanted request. Work that
     already ran keeps its stored result (replayable, never duplicated)."""
     import assistant_tasks
 
     try:
-        return assistant_tasks.cancel_request(request_id, str(sa.get("admin_user_id") or ""))
+        return assistant_tasks.cancel_request(request_id, str(actor.get("admin_user_id") or ""))
     except assistant_tasks.AssistantPermanentError:
         raise HTTPException(status_code=404, detail="The request was not found.")
 
 
 @router.post("/execute-action")
-def assistant_execute_action(req: ActionReq, sa: dict = Depends(get_sa_dependency())):
+def assistant_execute_action(req: ActionReq, actor: dict = Depends(get_admin_actor_dependency())):
     raise HTTPException(status_code=410, detail="Legacy AI action execution is disabled. Review and approve the proposal in the AI Approval Center.")
 
 

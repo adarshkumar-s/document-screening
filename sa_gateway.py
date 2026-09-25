@@ -1,7 +1,13 @@
-"""SA gateway: secure secondary-password (security-lock) access to SA.
+"""SA gateway: AI access credential management and short-lived SA sessions.
 
-Design (the credential is verified SERVER-SIDE and resolves to an already
-configured administrator identity):
+This module is NO LONGER a gate on the Admin AI Assistant. The assistant uses
+normal administrator authentication (a logged-in administrator simply uses it),
+and the only additional proof of identity is the administrator's own account
+password re-verified server-side at FINAL APPROVAL of an AI action (see
+``ai_governance.verify_administrator_password``). Nothing in the assistant flow
+depends on an SA session any more.
+
+What remains here is the standalone AI access credential surface:
 
     valid credential -> administrator identity -> short-lived SA session
 
@@ -10,7 +16,6 @@ What is never trusted from the browser:
 * username / administrator name  (identity comes from ``sa_credentials``
   bound to a real ``users`` row; the browser cannot submit ``name=Adarsh``)
 * ``isAdmin`` / ``unlocked=true`` / hidden form fields / JS variables
-  (SA endpoints validate a server-side SA session on EVERY request)
 
 Security properties:
 
@@ -499,34 +504,6 @@ def current_admin_user(request: Request) -> Dict[str, Any]:
             detail="Access denied: SA requires an authenticated administrator.",
         )
     return user
-
-
-def require_sa_session(request: Request) -> Dict[str, Any]:
-    """Dependency enforcing BOTH admin RBAC and a live, server-side SA session.
-
-    Returns the *verified administrator identity* resolved from the credential
-    and its bound session - never anything supplied by the browser.
-    """
-    user = current_admin_user(request)
-    token = request.cookies.get(SA_SESSION_COOKIE) or ""
-    session = get_sa_session(token, user)
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="SA access requires verification. Enter the AI access password.",
-        )
-    return {
-        "session_id": session["session_id"],
-        "admin_user_id": session["admin_user_id"],
-        "admin_name": session["admin_name"],
-        "expires_at": session["expires_at"],
-        # The logged-in account remains part of the actor for isolation/audit.
-        "bound_user_id": user.get("id"),
-        "bound_user_name": user.get("full_name"),
-        "id": session["admin_user_id"],
-        "full_name": session["admin_name"],
-        "role": _get_server().ROLE_ADMIN,
-    }
 
 
 # ------------------------------------------------------------------

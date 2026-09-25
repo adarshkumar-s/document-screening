@@ -58,8 +58,10 @@ def test_ai_mutation_proposal_requires_admin_and_executes_server_side(make_user_
     listing_before = admin.get("/api/mutations", headers=admin_headers, params={"q": village})
     assert listing_before.json()["total"] == 0
 
+    # Final approval requires the calling administrator's own password.
     approved = admin.post(f"/api/admin/ai-approval/proposals/{proposal_id}/approve",
-                          headers=admin_headers, json={"note": "Evidence verified"})
+                          headers=admin_headers,
+                          json={"note": "Evidence verified", "password": "Strong Land Password 123!"})
     assert approved.status_code == 200
     assert approved.json()["proposal"]["status"] == "EXECUTED"
     result = approved.json()["proposal"]["execution_result"]

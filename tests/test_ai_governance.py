@@ -78,7 +78,9 @@ def test_create_verification_case_requires_admin_approval_and_executes_server_si
     }})
     assert proposal.status_code == 200
     pid=proposal.json()["proposal"]["proposal_id"]
-    approved = client.post(f"/api/admin/ai-approval/proposals/{pid}/approve", headers=headers, json={"note":"Approved for verification"})
+    # Final approval re-verifies the authenticated administrator's password.
+    approved = client.post(f"/api/admin/ai-approval/proposals/{pid}/approve", headers=headers,
+                           json={"note":"Approved for verification", "password":"Admin@123"})
     assert approved.status_code == 200
     assert approved.json()["proposal"]["status"] == "EXECUTED"
     assert approved.json()["proposal"]["execution_result"]["cases"]

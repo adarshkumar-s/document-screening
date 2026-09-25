@@ -1,13 +1,18 @@
-"""SA gateway security: the Admin AI entry point is SA behind a verified
-secondary password (security lock).
+"""SA gateway security: the standalone AI access credential surface - and the
+fact that the Admin AI Assistant is NOT gated by it.
 
-Covers the hard requirements:
+The assistant uses NORMAL administrator authentication: an authenticated
+administrator simply uses it, with no unlock gate. The only additional proof of
+identity is the administrator's own account password re-verified server-side at
+FINAL APPROVAL of an AI action (see ``tests/test_approval_password.py``).
+
+Covers the hard requirements of the credential surface:
 * password verified server-side and resolved to an administrator identity;
 * the browser cannot supply the administrator name/role/unlock flag;
 * SA sessions are short-lived, server-side, bound to the logged-in admin,
   revoked on logout / expiry / version bump;
 * passwords are never logged, returned, or stored in plaintext;
-* SA endpoints are unreachable without a live SA session.
+* one administrator can never use or create another administrator's credential.
 """
 import re
 import time
@@ -47,22 +52,34 @@ def _unlock(client, password=SA_PASSWORD, extra=None, headers=None):
 
 
 # ------------------------------------------------------------------
-# UI contract (Admin AI 🔒 gateway; no separate visible SA button)
+# UI contract: the Admin AI Assistant has NO unlock gate. The
+# administrator's own password is required only at final approval.
 # ------------------------------------------------------------------
-def test_ui_shows_admin_ai_locked_and_password_prompt():
+def test_ui_has_no_unlock_gate_for_the_admin_assistant():
     html = (ROOT / "index.html").read_text()
     js = (ROOT / "js" / "admin-assistant.js").read_text()
 
-    # The panel shows "Admin AI 🔒" as the entry point.
-    assert "Admin AI \U0001F512" in html
-    # SA is NOT directly accessible before authentication: the prompt is
-    # "Enter AI access password" and the workspace starts hidden.
-    assert "Enter AI access password" in html
-    assert 'id="saWorkspace" hidden' in html
-    assert "Welcome, " in js  # rendered with the verified administrator name
+    # The panel is plain "Admin AI" - no lock badge, no gateway prompt.
+    assert "Admin AI" in html
+    assert "Admin AI \U0001F512" not in html
+    assert "Enter AI access password" not in html
+    assert "saGatePrompt" not in html
+    assert "saUnlockForm" not in html
+    assert "saLockBtn" not in html
+    # The workspace is available to the authenticated administrator.
+    assert 'id="saWorkspace"' in html
+    assert 'id="saWorkspace" hidden' not in html
     # There is NO separate visible "SA" button.
     assert not re.search(r">\s*SA\s*</button>", html)
-    # The client never stores or trusts an unlock flag; the server decides.
+    # No gate state, gate calls, or gate endpoints remain in the client.
+    for removed in (
+        "openSaGate", "closeSaGate", "handleSaUnlock", "handleSaLock",
+        "renderSaLocked", "renderSaUnlocked", "refreshSaSession",
+        "saUnlocked", "saGateOpen",
+        "/api/sa/unlock", "/api/sa/lock", "/api/sa/session",
+    ):
+        assert removed not in js, f"gate leftover in JS: {removed}"
+    # The client never stores or trusts an authorization flag; the server decides.
     assert "localStorage.setItem" not in js or "unlocked" not in js.split("localStorage.setItem")[0][-80:]
     assert 'unlocked=true' not in js
 
@@ -178,13 +195,18 @@ def test_credential_rotation_invalidates_old_password_and_existing_sessions(make
     # 1) The OLD password stops working immediately.
     old_try = _unlock(admin, password=old_password, headers=admin_headers)
     assert old_try.status_code == 401
-    # 2) Every EXISTING SA session is revoked server-side (captured cookie
-    #    replay included) - re-authentication with the new password is needed.
+    # 2) Every EXISTING SA session is revoked server-side: the captured cookie
+    #    replay is dead and re-authentication with the new password is needed.
+    #    The Admin AI Assistant itself does NOT depend on an SA session, so it
+    #    keeps working for the authenticated administrator.
     assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is False
-    replay = admin.post("/api/admin/assistant/query", headers=admin_headers,
-                        cookies={"sa_session": captured_cookie},
-                        json={"query": "Show recent activity", "request_id": _rid("req-rotated")})
-    assert replay.status_code == 401
+    replay = admin.get("/api/sa/session", headers=admin_headers,
+                       cookies={"sa_session": captured_cookie})
+    assert replay.json()["unlocked"] is False
+    assistant = admin.post("/api/admin/assistant/query", headers=admin_headers,
+                           cookies={"sa_session": captured_cookie},
+                           json={"query": "Show recent activity", "request_id": _rid("req-rotated")})
+    assert assistant.status_code == 200, assistant.text
     # 3) The old credential is scrubbed from storage (no usable hash left).
     with server.get_db() as db:
         rows = db.execute(
@@ -234,50 +256,61 @@ def test_wrong_password_opens_no_session_and_password_never_leaks(make_user_clie
     assert secret not in ok.text
 
 
-def test_sa_session_is_required_for_every_sa_call(make_user_client):
-    """Client-side `unlocked=true` / `isAdmin` / hidden fields are worthless."""
+def test_assistant_uses_normal_admin_auth_not_an_sa_session(make_user_client):
+    """No unlock gate: an authenticated administrator uses the assistant
+    directly. Client-side `unlocked=true` / `isAdmin` / hidden fields remain
+    worthless, and browser-supplied identity never selects the actor."""
     admin, admin_headers, admin_email = make_user_client("ADMIN", prefix="sags")
-    _make_sa_credential(admin_email)
+    _make_sa_credential(admin_email)  # a credential exists but is not needed
 
     probe_id = _rid("req-probe")
     probe = {"query": "What needs my attention?", "request_id": probe_id,
              "unlocked": True, "isAdmin": True, "name": "Adarsh"}
-    denied = admin.post("/api/admin/assistant/query", headers=admin_headers, json=probe)
-    assert denied.status_code in (401, 403)
-    denied2 = admin.post("/api/admin/assistant/briefing", headers=admin_headers,
-                         json={"request_id": _rid("req-brief"), "unlocked": True})
-    assert denied2.status_code in (401, 403)
-    denied3 = admin.get("/api/admin/assistant/requests/" + probe_id, headers=admin_headers)
-    assert denied3.status_code in (401, 403)
-
-    assert _unlock(admin, headers=admin_headers).status_code == 200
+    # No /api/sa/unlock call anywhere in this test: normal admin auth is enough.
     allowed = admin.post("/api/admin/assistant/query", headers=admin_headers, json=probe)
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["state"] == "succeeded"
+    assert admin.get("/api/admin/assistant/requests/" + probe_id, headers=admin_headers).status_code == 200
+    briefed = admin.post("/api/admin/assistant/briefing", headers=admin_headers,
+                         json={"request_id": _rid("req-brief"), "unlocked": True})
+    assert briefed.status_code == 200, briefed.text
+
+    # Nothing above opened an SA session - the credential surface is untouched.
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is False
+
+    # A non-administrator is still refused by the normal RBAC.
+    officer, officer_headers, _ = make_user_client("VERIFICATION_OFFICER", prefix="sagsv")
+    assert officer.post("/api/admin/assistant/query", headers=officer_headers,
+                        json={"query": "admin stuff", "request_id": _rid("req-officer")}).status_code == 403
 
 
 def test_logout_revokes_sa_session_server_side(make_user_client):
+    import server
+
     admin, admin_headers, admin_email = make_user_client("ADMIN", prefix="sagl")
     _make_sa_credential(admin_email)
     assert _unlock(admin, headers=admin_headers).status_code == 200
 
     captured_sa_cookie = admin.cookies.get("sa_session")
     assert captured_sa_cookie
-    assert admin.post("/api/admin/assistant/query", headers=admin_headers,
-                      json={"query": "Show recent activity", "request_id": _rid("req-logout")}).status_code == 200
+    admin_id = admin.get("/api/auth/me", headers=admin_headers).json()["user"]["id"]
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is True
 
     out = admin.post("/api/auth/logout", headers=admin_headers)
     assert out.status_code == 200
 
-    # Even replaying the captured (still unexpired) cookie cannot get back in:
-    # revocation happened server-side on logout, not just client-side.
-    forged = admin.post(
-        "/api/admin/assistant/query",
-        headers=admin_headers,
-        cookies={"sa_session": captured_sa_cookie},
-        json={"query": "Show recent activity", "request_id": _rid("req-logout")},
-    )
-    assert forged.status_code in (401, 403)
+    # Revocation happened SERVER-SIDE on logout, not just client-side: the row
+    # is marked revoked and replaying the captured (still unexpired) cookie
+    # cannot open the credential surface again.
+    with server.get_db() as db:
+        row = db.execute(
+            "SELECT revoked_at FROM sa_gateway_sessions WHERE bound_user_id=? ORDER BY created_at DESC LIMIT 1",
+            (admin_id,),
+        ).fetchone()
+    assert row and row["revoked_at"], "logout must revoke the SA session server-side"
+    forged = admin.get("/api/sa/session", headers=admin_headers,
+                       cookies={"sa_session": captured_sa_cookie})
+    assert forged.json()["unlocked"] is False
 
 
 def test_sa_session_expires_and_requires_reauthentication(make_user_client):
@@ -290,31 +323,52 @@ def test_sa_session_expires_and_requires_reauthentication(make_user_client):
     with server.get_db() as db:
         db.execute("UPDATE sa_gateway_sessions SET expires_at=? WHERE revoked_at IS NULL", (time.time() - 5,))
 
-    denied = admin.post("/api/admin/assistant/query", headers=admin_headers,
-                        json={"query": "What needs my attention?", "request_id": _rid("req-expire")})
-    assert denied.status_code == 401
-    status = admin.get("/api/sa/session", headers=admin_headers)
-    assert status.json()["unlocked"] is False
+    # The expired session no longer authorizes the credential surface ...
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is False
+    # ... while the Admin AI Assistant keeps working: it never needed one.
+    allowed = admin.post("/api/admin/assistant/query", headers=admin_headers,
+                         json={"query": "What needs my attention?", "request_id": _rid("req-expire")})
+    assert allowed.status_code == 200, allowed.text
 
     # Re-authentication opens a fresh session.
     assert _unlock(admin, headers=admin_headers).status_code == 200
-    allowed = admin.post("/api/admin/assistant/query", headers=admin_headers,
-                         json={"query": "What needs my attention?", "request_id": _rid("req-expire")})
-    assert allowed.status_code == 200
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is True
 
 
 def test_password_change_bumps_version_and_kills_sa_session(make_user_client):
     admin, admin_headers, admin_email = make_user_client("ADMIN", prefix="sagp")
     _make_sa_credential(admin_email)
     assert _unlock(admin, headers=admin_headers).status_code == 200
+    captured_sa_cookie = admin.cookies.get("sa_session")
+    assert captured_sa_cookie
+    assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is True
 
+    new_password = "A Whole New Pass 456!"
     changed = admin.post("/api/auth/change-password", headers=admin_headers,
-                         json={"current_password": "Strong Land Password 123!", "new_password": "A Whole New Pass 456!"})
+                         json={"current_password": "Strong Land Password 123!", "new_password": new_password})
     assert changed.status_code == 200
 
-    denied = admin.post("/api/admin/assistant/query", headers=admin_headers,
-                        json={"query": "What needs my attention?", "request_id": _rid("req-pwchg")})
-    assert denied.status_code == 401
+    # The version bump invalidates every token issued before the change ...
+    assert admin.get("/api/sa/session", headers=admin_headers).status_code == 401
+
+    # ... and the still-unexpired SA session is dead server-side: the session
+    # is bound to the OLD account version, so even a fresh login with the NEW
+    # password cannot resurrect the captured cookie.
+    from fastapi.testclient import TestClient
+
+    import main
+
+    fresh = TestClient(main.app)
+    relogin = fresh.post("/api/auth/login", json={"email": admin_email, "password": new_password})
+    assert relogin.status_code == 200, relogin.text
+    fresh_headers = {"Authorization": "Bearer " + relogin.json()["token"]}
+    replay = fresh.get("/api/sa/session", headers=fresh_headers,
+                       cookies={"sa_session": captured_sa_cookie})
+    assert replay.json()["unlocked"] is False
+    # The assistant itself keeps working for the re-authenticated administrator
+    # (approval-password semantics live in tests/test_approval_password.py).
+    assert fresh.post("/api/admin/assistant/query", headers=fresh_headers,
+                      json={"query": "What needs my attention?", "request_id": _rid("req-pwchg")}).status_code == 200
 
 
 def test_lock_endpoint_closes_sa(make_user_client):
@@ -325,9 +379,11 @@ def test_lock_endpoint_closes_sa(make_user_client):
 
     assert admin.post("/api/sa/lock", headers=admin_headers).status_code == 200
     assert admin.get("/api/sa/session", headers=admin_headers).json()["unlocked"] is False
-    denied = admin.post("/api/admin/assistant/query", headers=admin_headers,
-                        json={"query": "What needs my attention?", "request_id": _rid("req-lock")})
-    assert denied.status_code == 401
+    # Locking the credential surface never locks the Admin AI Assistant: it
+    # uses normal administrator authentication.
+    allowed = admin.post("/api/admin/assistant/query", headers=admin_headers,
+                         json={"query": "What needs my attention?", "request_id": _rid("req-lock")})
+    assert allowed.status_code == 200, allowed.text
 
 
 def test_unlock_throttles_repeated_failures(make_user_client):
@@ -340,23 +396,17 @@ def test_unlock_throttles_repeated_failures(make_user_client):
     assert 429 in codes
 
 
-def test_sa_request_actor_isolation_between_administrators(make_user_client):
-    """One administrator can never read or retry another's SA requests."""
-    import server
+def test_assistant_request_actor_isolation_between_administrators(make_user_client):
+    """One administrator can never read or retry another's assistant requests
+    (the actor is the authenticated account, not the credential surface)."""
+    admin_a, a_headers, _a_email = make_user_client("ADMIN", prefix="sagaa")
+    admin_b, b_headers, _b_email = make_user_client("ADMIN", prefix="sagbb")
 
-    admin_a, a_headers, a_email = make_user_client("ADMIN", prefix="sagaa")
-    admin_b, b_headers, b_email = make_user_client("ADMIN", prefix="sagbb")
-    # Each administrator gets their own DISTINCT credential.
-    _make_sa_credential(a_email, "Admin A Access Pass 1!")
-    _make_sa_credential(b_email, "Admin B Access Pass 2!")
-
-    assert _unlock(admin_a, password="Admin A Access Pass 1!", headers=a_headers).status_code == 200
     iso_id = _rid("req-isolation")
     made = admin_a.post("/api/admin/assistant/query", headers=a_headers,
                         json={"query": "Show recent activity", "request_id": iso_id})
     assert made.status_code == 200
 
-    assert _unlock(admin_b, password="Admin B Access Pass 2!", headers=b_headers).status_code == 200
     stolen = admin_b.get(f"/api/admin/assistant/requests/{iso_id}", headers=b_headers)
     assert stolen.status_code == 404
     stolen_retry = admin_b.post(f"/api/admin/assistant/requests/{iso_id}/retry", headers=b_headers)

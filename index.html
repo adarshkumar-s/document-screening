@@ -384,51 +384,34 @@
         <div id="staff-tab-dashboard" class="hidden">
           
           <!-- ========================================== -->
-          <!-- ADMIN AI 🔒 — gateway to SA.               -->
-          <!-- SA is NOT accessible before the AI access  -->
-          <!-- password is verified server-side and the   -->
-          <!-- verified administrator name comes from the -->
-          <!-- server, never from the browser.            -->
+          <!-- ADMIN AI — normal administrator access.    -->
+          <!-- Any authenticated administrator uses the   -->
+          <!-- assistant directly; there is no unlock     -->
+          <!-- gate. The administrator's OWN account      -->
+          <!-- password is required only at FINAL         -->
+          <!-- APPROVAL of an AI action, verified         -->
+          <!-- server-side against the authenticated      -->
+          <!-- account (never a browser-supplied name).   -->
           <!-- ========================================== -->
           <div class="admin-assistant-container" id="adminAssistantWidget">
             <div class="assistant-header">
               <div class="assistant-title">
                 <span class="assistant-icon">✨</span>
-                <h3 style="margin:0;font-size:16px;color:var(--gov-navy)"><button type="button" id="saEntryBtn" class="sa-entry-btn" onclick="openSaGate()">Admin AI 🔒</button></h3>
+                <h3 style="margin:0;font-size:16px;color:var(--gov-navy)"><span id="saEntryBtn">Admin AI</span></h3>
                 <span class="badge-read-only">Administrator</span>
               </div>
               <div class="assistant-header-actions">
-                <span id="saWelcome" class="sa-welcome" hidden></span>
-                <button type="button" class="btn ghost" id="saLockBtn" onclick="handleSaLock()" hidden>🔒 Lock</button>
-                <button type="button" class="btn-briefing" id="btnGenerateBriefing" onclick="triggerSystemBriefing()" hidden>
+                <button type="button" class="btn-briefing" id="btnGenerateBriefing" onclick="triggerSystemBriefing()">
                   📊 Generate System Briefing
                 </button>
               </div>
             </div>
 
-            <!-- Locked state: enter AI access password -->
-            <div id="saGatePrompt" class="sa-gate" hidden>
-              <form id="saUnlockForm" onsubmit="handleSaUnlock(event)">
-                <label for="saUnlockPassword" class="sa-gate-label">Enter AI access password</label>
-                <div class="assistant-input-group">
-                  <input
-                    type="password"
-                    id="saUnlockPassword"
-                    autocomplete="off"
-                    required
-                  />
-                  <button type="submit" id="saUnlockBtn" class="btn saffron">Unlock</button>
-                  <button type="button" id="saUnlockCancel" class="btn ghost" onclick="closeSaGate()">Cancel</button>
-                </div>
-                <div id="saUnlockError" class="sa-gate-error" hidden></div>
-              </form>
-            </div>
-
-            <!-- Unlocked state: the SA assistant workspace -->
-            <div id="saWorkspace" hidden>
+            <!-- Assistant workspace: usable by the authenticated administrator -->
+            <div id="saWorkspace">
               <div class="assistant-chat-log" id="assistantChatLog">
                 <div class="assistant-message system-intro">
-                  SA is online. Ask about pending records, review activity, or click "Generate System Briefing".
+                  Admin AI is online. Ask about pending records, review activity, or click "Generate System Briefing".
                 </div>
               </div>
 
@@ -484,6 +467,33 @@
           <div id="saReportPanel" class="sa-report-panel hidden">
             <div class="sa-report-head"><div><b>SA Activity Report</b><span id="saReportAdmin"></span></div><button type="button" class="btn ghost" onclick="closeSaReport()">Close</button></div>
             <div id="saReportList"></div>
+          </div>
+
+          <!-- FINAL APPROVAL: the administrator's own password is required to
+               approve an AI action. It is sent once in the request body,
+               verified server-side against the authenticated account, and is
+               never stored in the browser or rendered back. -->
+          <div id="approvalPasswordModal" class="sa-modal hidden" role="dialog" aria-modal="true" aria-labelledby="approvalPasswordTitle">
+            <div class="sa-backdrop" onclick="cancelApprovalPassword()"></div>
+            <div class="sa-dialog">
+              <div class="sa-dialog-head">
+                <div>
+                  <div class="sa-eyebrow">FINAL APPROVAL</div>
+                  <h3 id="approvalPasswordTitle">Administrator password</h3>
+                  <p>Re-enter your own account password to approve and execute this AI action. It is verified on the server.</p>
+                </div>
+                <button type="button" class="sa-close" onclick="cancelApprovalPassword()">×</button>
+              </div>
+              <form id="approvalPasswordForm" class="sa-password-step">
+                <label for="approvalPasswordInput">Your administrator password</label>
+                <input id="approvalPasswordInput" type="password" autocomplete="off" required>
+                <p class="sa-password-hint">This password is checked only by the server. It is never displayed, logged, or stored in the browser.</p>
+                <div class="assistant-input-group">
+                  <button type="submit" id="approvalPasswordSubmit" class="btn saffron">Approve &amp; Execute</button>
+                  <button type="button" id="approvalPasswordCancel" class="btn ghost">Cancel</button>
+                </div>
+              </form>
+            </div>
           </div>
 
           <!-- Existing Dashboard Stats Grid -->
