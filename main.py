@@ -12,10 +12,12 @@ from land_intel import (
 from court_cases import router as court_cases_router
 from demo_scenarios import demo_router
 from backup_restore import backup_router
+from land_intelligence import router as land_intelligence_router
 
 # The canonical server owns authentication, OCR, AI, audit, document, task,
-# and admin behavior. This entrypoint adds only the map/history surface,
-# AI approval, Land Intelligence, and the additive litigation register.
+# and admin behavior. This entrypoint adds the map/history surface,
+# AI approval, Land Intelligence, litigation register, and the bounded OCR /
+# parcel-intelligence extensions.
 app.include_router(map_router)
 app.include_router(document_history_router)
 app.include_router(ai_approval_router)
@@ -26,3 +28,4 @@ app.include_router(report_router)
 app.include_router(court_cases_router)
 app.include_router(demo_router)
 app.include_router(backup_router)
+app.include_router(land_intelligence_router)
