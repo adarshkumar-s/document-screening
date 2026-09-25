@@ -58,8 +58,26 @@ class DecisionReq(BaseModel):
 class AIProposalRequest(BaseModel):
     proposal: ProposalCreate
 
+# Startup/once-per-database DDL caching (from main): CREATE TABLE / CREATE INDEX
+# must never run inside a user request - it can block for a long time on a large
+# database. Each schema is keyed to DB_PATH so tests that swap databases still
+# get their tables. (Two separate keys: the task-table DDL must not be skipped
+# just because the governance tables were ensured first.)
+_governance_ready_for = None
+_tasks_ready_for = None
+
+
 def ensure_governance_tables():
+    """Create the governance tables once per database.
+
+    server.py calls this at startup; for the lifetime of the process every later
+    call is a no-op (keyed to DB_PATH so tests that swap databases still get
+    their tables).
+    """
+    global _governance_ready_for
     s=_server()
+    if _governance_ready_for == s.DB_PATH:
+        return
     with s.get_db() as db:
         db.execute("""
         CREATE TABLE IF NOT EXISTS ai_proposals (
@@ -119,6 +137,7 @@ def ensure_governance_tables():
           created_at REAL NOT NULL
         )
         """)
+    _governance_ready_for = s.DB_PATH
 
 def _json(v): return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -277,7 +296,10 @@ def _assert_before(proposal,current):
                 raise HTTPException(409,f"Property {rid} location changed since this proposal was created.")
 
 def _ensure_task_table():
+    global _tasks_ready_for
     s=_server()
+    if _tasks_ready_for == s.DB_PATH:
+        return
     with s.get_db() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS ai_tasks(
           id TEXT PRIMARY KEY, record_id TEXT, task_type TEXT NOT NULL, title TEXT NOT NULL,
@@ -285,6 +307,7 @@ def _ensure_task_table():
           assigned_by TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', parent_task_id TEXT,
           metadata TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}',
           created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+    _tasks_ready_for = s.DB_PATH
 
 def _create_task(db, rid, assigned_to, task_type, title, description, priority, actor, metadata=None):
     tid="TASK-"+uuid.uuid4().hex[:8].upper(); now=time.time()

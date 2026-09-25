@@ -152,8 +152,6 @@ POST                /api/admin/data-management/restore            (admin only)
 
 All existing `/api/auth`, `/api/documents`, OCR, validation, task, administrator, AI-governance, comparison, and audit routes remain owned by `server.py` and continue to be available through `main:app`.
 
-The compatibility property/workflow APIs used by existing governed paths remain available inside the mapping support layer; they are not the replacement map UI or its data source.
-
 ## SA / Admin AI and the Verification Officer AI
 
 The Admin panel's AI entry point is now `Admin AI 🔒` — the gateway to **SA**,
@@ -274,6 +272,8 @@ SA parts of `js/admin-assistant.js` (UI). Tests live in
 `tests/test_sa_gateway.py`, `tests/test_sa_lifecycle.py`, and
 `tests/test_officer_assistant.py`.
 
+The compatibility property/workflow APIs used by existing governed paths remain available inside the mapping support layer; they are not the replacement map UI or its data source.
+
 ## Data boundary and safety
 
 The map consumes uploaded document fields and mapping-only coordinates. It does not scrape a government portal, redistribute government cadastral data, or send uploaded documents to tile/geocoding providers. A map position is labelled as exact, village-level approximate, or unresolved. Approximate coordinates never represent a legal parcel boundary.
@@ -281,6 +281,27 @@ The map consumes uploaded document fields and mapping-only coordinates. It does 
 Ownership changes are signals for human review. AI and deterministic checks can recommend review but cannot approve ownership, declare fraud, or change a consequential record without the existing governed approval flow.
 
 Do not commit secrets, credentials, or real sensitive documents. Set `JWT_SECRET` and `ADMIN_INITIAL_PASSWORD` privately in deployments. The default local database path is controlled by the existing application configuration.
+
+
+## AI Admin Assistant and Superior SA mode
+
+The normal **AI Admin Assistant** remains the default assistant and keeps its existing authority. Its knowledge now covers the portal's document, verification, Land Intelligence, mapping, litigation, reporting, audit, administration, backup/restore, and AI-governance surfaces.
+
+Typing the configured SA activation phrase in the assistant input opens the secure **SA** identity gate. The UI presents **Gautam**, **Adarsh**, and **Devi Cr**; the selected identity must match the authenticated administrator account, so the selector cannot be used for impersonation.
+
+SA provides project-wide, multi-step administrator assistance: it can plan investigations across registered website capabilities, execute independent read-only checks in parallel, retain investigation context within the conversation, and prepare consequential operations. Consequential operations are never executed directly by SA. They become proposals in the existing AI Approval Center, where the administrator must approve them; the server re-validates the current target state before execution.
+
+Every SA session is recorded with the authenticated administrator, admin.<identity> label, session ID, task, plan, evidence, proposals, completion events, timestamps, and errors. The **SA Activity Report** button exposes the current session report, and GET /api/admin/assistant/sa/report can retrieve an administrator's report.
+
+### SA configuration
+
+Set these deployment variables privately:
+
+SA_ACTIVATION_CODE=<your private activation phrase>
+SA_SESSION_TTL_SECONDS=3600
+SA_MODEL=gemini-3.6-flash
+
+Do not commit the real activation phrase. Production refuses to activate SA unless SA_ACTIVATION_CODE is configured.
 
 ## Local run
 

@@ -288,7 +288,7 @@ def test_sa_session_expires_and_requires_reauthentication(make_user_client):
     import server
 
     with server.get_db() as db:
-        db.execute("UPDATE sa_sessions SET expires_at=? WHERE revoked_at IS NULL", (time.time() - 5,))
+        db.execute("UPDATE sa_gateway_sessions SET expires_at=? WHERE revoked_at IS NULL", (time.time() - 5,))
 
     denied = admin.post("/api/admin/assistant/query", headers=admin_headers,
                         json={"query": "What needs my attention?", "request_id": _rid("req-expire")})
@@ -407,7 +407,7 @@ def test_rotation_is_atomic_single_transaction(make_user_client, monkeypatch):
             "SELECT is_active, secret_hash FROM sa_credentials WHERE admin_user_id=?", (admin_id,)
         ).fetchall()
         n_revoked = db.execute(
-            "SELECT COUNT(*) AS n FROM sa_sessions WHERE (admin_user_id=? OR bound_user_id=?) "
+            "SELECT COUNT(*) AS n FROM sa_gateway_sessions WHERE (admin_user_id=? OR bound_user_id=?) "
             "AND revoked_at IS NOT NULL",
             (admin_id, admin_id),
         ).fetchone()["n"]
@@ -442,7 +442,7 @@ def test_rotation_is_atomic_single_transaction(make_user_client, monkeypatch):
     assert all(t == 1 for (t, _sql) in events), "every rotation statement must share that transaction"
     tx_sqls = [sql for (_t, sql) in events]
     assert any(q.startswith("UPDATE sa_credentials") for q in tx_sqls), "old credentials scrubbed in-tx"
-    assert any(q.startswith("UPDATE sa_sessions") for q in tx_sqls), "old sessions revoked in-tx"
+    assert any(q.startswith("UPDATE sa_gateway_sessions") for q in tx_sqls), "old sessions revoked in-tx"
     assert any(q.startswith("INSERT INTO sa_credentials") for q in tx_sqls), "new credential in-tx"
 
     # Post-conditions (deep coverage in the rotation test above): old password

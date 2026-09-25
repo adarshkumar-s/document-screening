@@ -1,3 +1,118 @@
+let saSessionId = null;
+let saAdminLabel = null;
+
+function saIsActive() { return !!saSessionId; }
+
+function setSaHeader(active, label) {
+  const title=document.querySelector('#adminAssistantWidget .assistant-title h3');
+  const badge=document.querySelector('#adminAssistantWidget .badge-read-only');
+  const briefing=document.getElementById('btnGenerateBriefing');
+  if (title) {
+    const entry=document.getElementById('saEntryBtn');
+    if (entry) { entry.textContent=active ? 'SA · Superior Administrator AI' : 'Admin AI 🔒'; }
+    else { title.textContent=active ? 'SA · Superior Administrator AI' : 'AI Admin Assistant'; }
+  }
+  if (badge) { badge.textContent=active ? (label || 'SA') : 'Administrator'; badge.className=active ? 'badge-read-only sa-live-badge' : 'badge-read-only'; }
+  if (briefing) briefing.textContent=active ? '📊 SA Activity Report' : '📊 Generate System Briefing';
+  if (briefing) briefing.onclick=active ? showSaReport : triggerSystemBriefing;
+}
+
+async function beginSaActivation(code) {
+  try {
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate-options',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,administrator:''})});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
+    renderSaIdentityOptions(d.options || [], code);
+    document.getElementById('saActivationModal')?.classList.remove('hidden');
+  } catch(e) {
+    appendAssistantMessage(e.message || 'SA activation failed.','error-bubble');
+  }
+}
+
+function renderSaIdentityOptions(options, code) {
+  const root=document.getElementById('saIdentityOptions'); if(!root) return;
+  root.replaceChildren();
+  document.getElementById('saPasswordStep')?.classList.add('hidden');
+  root.classList.remove('hidden');
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+  options.forEach(o=>{
+    const b=document.createElement('button'); b.type='button'; b.className='sa-identity-card';
+    b.innerHTML='<span class="sa-avatar">'+String(o.name||'?').charAt(0)+'</span><strong></strong><small>Administrator</small>';
+    b.querySelector('strong').textContent=o.name;
+    b.onclick=()=>selectSaIdentity(code,o.name);
+    root.appendChild(b);
+  });
+}
+
+let saActivationCode = '';
+let saSelectedIdentity = '';
+
+function selectSaIdentity(code,name) {
+  saActivationCode=code;
+  saSelectedIdentity=name;
+  document.getElementById('saIdentityOptions')?.classList.add('hidden');
+  document.getElementById('saPasswordStep')?.classList.remove('hidden');
+  const nameEl=document.getElementById('saSelectedName'); if(nameEl) nameEl.textContent=name;
+  const avatar=document.getElementById('saSelectedAvatar'); if(avatar) avatar.textContent=String(name||'?').charAt(0);
+  const input=document.getElementById('saIdentityPassword');
+  if(input){input.value=''; setTimeout(()=>input.focus(),50);}
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+}
+
+function backToSaIdentities() {
+  document.getElementById('saPasswordStep')?.classList.add('hidden');
+  document.getElementById('saIdentityOptions')?.classList.remove('hidden');
+  const input=document.getElementById('saIdentityPassword'); if(input) input.value='';
+  const error=document.getElementById('saActivationError'); if(error){error.textContent='';error.classList.add('hidden');}
+}
+
+async function submitSaPassword() {
+  const passwordInput=document.getElementById('saIdentityPassword');
+  const submit=document.getElementById('saPasswordSubmit');
+  const password=passwordInput?.value || '';
+  if(!saSelectedIdentity || !password){ 
+    const box=document.getElementById('saActivationError'); if(box){box.textContent='Enter the password for the selected administrator.';box.classList.remove('hidden');}
+    return;
+  }
+  if(submit) submit.disabled=true;
+  try {
+    const r=await fetchAssistant('/api/admin/assistant/sa/activate',{
+      method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code:saActivationCode,administrator:saSelectedIdentity,password:password})
+    });
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail || 'SA activation failed.');
+    passwordInput.value='';
+    saSessionId=d.session_id; saAdminLabel=d.admin;
+    closeSaActivation(); setSaHeader(true,saAdminLabel);
+    appendAssistantMessage('SA activated as '+saAdminLabel+'. I can now plan and coordinate work across the registered website features. Consequential actions still stop at the Administrator Approval Center before execution.','assistant-bubble');
+  } catch(e) {
+    if(passwordInput) passwordInput.value='';
+    const box=document.getElementById('saActivationError'); if(box){box.textContent=e.message;box.classList.remove('hidden');}
+  } finally { if(submit) submit.disabled=false; }
+}
+
+function closeSaActivation(){ document.getElementById('saActivationModal')?.classList.add('hidden'); }
+async function exitSaMode(){
+  if(!saSessionId) return;
+  try{await fetchAssistant('/api/admin/assistant/sa/end',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:saSessionId,query:''})});}catch(_){}
+  saSessionId=null; saAdminLabel=null; setSaHeader(false);
+  appendAssistantMessage('SA session ended. Normal Admin Assistant mode restored.','assistant-bubble');
+}
+
+async function showSaReport(){
+  if(!saSessionId) return;
+  try{
+    const r=await fetchAssistant('/api/admin/assistant/sa/report?session_id='+encodeURIComponent(saSessionId),{credentials:'same-origin'});
+    const d=await r.json(); if(!r.ok) throw new Error(d.detail||'Unable to load SA report.');
+    const root=document.getElementById('saReportList'); const panel=document.getElementById('saReportPanel');
+    const admin=document.getElementById('saReportAdmin'); if(admin) admin.textContent=' · '+(d.admin||'');
+    if(root){ root.replaceChildren(); (d.events||[]).forEach(ev=>{const row=document.createElement('div');row.className='sa-report-row';row.innerHTML='<b></b><span></span><small></small>';row.querySelector('b').textContent=ev.event_type;row.querySelector('span').textContent=ev.detail;row.querySelector('small').textContent=new Date(Number(ev.created_at||0)*1000).toLocaleString('en-IN');root.appendChild(row);});}
+    panel?.classList.remove('hidden');
+  }catch(e){appendAssistantMessage(e.message||'Unable to load SA report.','error-bubble');}
+}
+function closeSaReport(){document.getElementById('saReportPanel')?.classList.add('hidden');}
+
 // =====================================================================
 // ADMIN AI 🔒 — gateway to SA.
 //
@@ -163,7 +278,13 @@ function submitAssistantQuestion(text) {
 }
 
 async function handleAssistantSubmit(event) {
-  event.preventDefault();
+  if (event) {
+    // Exactly-once per user submit: the page bootstrap and the DOM-ready
+    // binder may both dispatch this handler for a single submit event.
+    if (event.__aaHandled) return;
+    event.__aaHandled = true;
+    if (event.preventDefault) event.preventDefault();
+  }
   const input = document.getElementById("assistantInput");
   const query = input.value.trim();
   if (!query) return;
@@ -176,10 +297,55 @@ async function handleAssistantSubmit(event) {
   log.appendChild(userMsg);
   log.scrollTop = log.scrollHeight;
 
+  // Hidden SA-mode trigger. "SA" uses the configured activation code;
+  // "SA <code>" also works when the deployment uses a non-SA secret.
+  if (/^SA$/i.test(query) || /^SA\s+.+/i.test(query)) {
+    const code = /^SA\s+(.+)/i.test(query) ? query.replace(/^SA\s+/i, "") : "SA";
+    await beginSaActivation(code);
+    return;
+  }
+
+  // Superior SA conversation (sa_agent): plain request/response, no task
+  // envelope - its session lifecycle is managed by /sa/activate and /sa/end.
+  if (saSessionId) {
+    await submitSaAgentQuery(query);
+    return;
+  }
+
   // One logical request = one request_id. The ORIGINAL request is preserved
   // server-side; "Try again" reuses this id so the same logical operation can
   // never execute twice.
   await submitSaQuery(query, newRequestId());
+}
+
+
+async function submitSaAgentQuery(query) {
+  const loading = document.getElementById("assistantLoading");
+  const submitBtn = document.getElementById("assistantSubmitBtn");
+  if (loading) loading.style.display = "flex";
+  if (submitBtn) submitBtn.disabled = true;
+  try {
+    const response = await fetchAssistant("/api/admin/assistant/sa/query", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: saSessionId, query: query })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      appendAssistantMessage((data && data.detail) || "The request failed.", "error-bubble");
+      return;
+    }
+    appendAssistantMessage(data.response, data.mode === "SA" ? "assistant-bubble sa-response" : "assistant-bubble", data.records);
+    if (data.action_card) {
+      renderConfirmationCard(data.action_card);
+    }
+  } catch (e) {
+    appendAssistantMessage((e && e.message) || "Network error: The Admin AI could not be reached.", "error-bubble");
+  } finally {
+    if (loading) loading.style.display = "none";
+    if (submitBtn) submitBtn.disabled = false;
+  }
 }
 
 async function submitSaQuery(query, requestId) {
@@ -728,3 +894,13 @@ async function decideAiProposal(id, decision, primary, secondary) {
     primary.disabled=false; if(secondary) secondary.disabled=false;
   }
 }
+
+
+// Bind the Admin Assistant form directly so Enter never depends on inline HTML handlers.
+document.addEventListener("DOMContentLoaded", () => {
+  const form = document.getElementById("assistantForm");
+  if (form && !form.dataset.assistantBound) {
+    form.dataset.assistantBound = "true";
+    form.addEventListener("submit", handleAssistantSubmit);
+  }
+});

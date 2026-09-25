@@ -446,7 +446,7 @@
                 <button type="button" class="btn-chip" onclick="submitAssistantQuestion(\'Show low-confidence records\')">Show low-confidence records</button>
               </div>
 
-              <form id="assistantForm" onsubmit="handleAssistantSubmit(event)">
+              <form id="assistantForm" action="javascript:void(0)">
                 <div class="assistant-input-group">
                   <input
                     type="text"
@@ -461,6 +461,30 @@
             </div>
           </div>
           <!-- ========================================== -->
+
+          <div id="saActivationModal" class="sa-modal hidden" role="dialog" aria-modal="true" aria-labelledby="saTitle">
+            <div class="sa-backdrop" onclick="closeSaActivation()"></div>
+            <div class="sa-dialog">
+              <div class="sa-dialog-head">
+                <div><div class="sa-eyebrow">SECURE ADMIN MODE</div><h3 id="saTitle">Activate SA</h3><p id="saSubtitle">Select the administrator identity you want to use for this SA session.</p></div>
+                <button type="button" class="sa-close" onclick="closeSaActivation()">×</button>
+              </div>
+              <div id="saIdentityOptions" class="sa-identity-grid"></div>
+              <div id="saPasswordStep" class="sa-password-step hidden">
+                <button type="button" class="sa-back-link" onclick="backToSaIdentities()">← Choose a different administrator</button>
+                <div class="sa-selected-identity"><span id="saSelectedAvatar" class="sa-avatar">?</span><div><strong id="saSelectedName">Administrator</strong><small>SA identity authentication</small></div></div>
+                <label for="saIdentityPassword">Administrator password</label>
+                <input id="saIdentityPassword" type="password" autocomplete="current-password" inputmode="numeric" placeholder="Enter the selected administrator password">
+                <p class="sa-password-hint">This password is checked only by the server. It is never displayed or stored in the browser.</p>
+                <button type="button" id="saPasswordSubmit" class="btn saffron" onclick="submitSaPassword()">Unlock SA</button>
+              </div>
+              <div id="saActivationError" class="errorbox hidden"></div>
+            </div>
+          </div>
+          <div id="saReportPanel" class="sa-report-panel hidden">
+            <div class="sa-report-head"><div><b>SA Activity Report</b><span id="saReportAdmin"></span></div><button type="button" class="btn ghost" onclick="closeSaReport()">Close</button></div>
+            <div id="saReportList"></div>
+          </div>
 
           <!-- Existing Dashboard Stats Grid -->
           <div id="staffStatsRow"></div>
@@ -803,6 +827,71 @@
 <script src="js/app.js?v=32"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
+<script>
+(function () {
+  function bootAdminAssistant() {
+    const form = document.getElementById("assistantForm");
+    const input = document.getElementById("assistantInput");
+    const log = document.getElementById("assistantChatLog");
+    const loading = document.getElementById("assistantLoading");
+    const button = document.getElementById("assistantSubmitBtn");
+    if (!form || !input || !log || form.dataset.aiBootstrap === "1") return;
+    form.dataset.aiBootstrap = "1";
+
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      const query = input.value.trim();
+      if (!query) return;
+
+      if (typeof window.handleAssistantSubmit === "function") {
+        try {
+          await window.handleAssistantSubmit(event);
+          return;
+        } catch (_) {}
+      }
+
+      const user = document.createElement("div");
+      user.className = "assistant-message user-bubble";
+      user.textContent = query;
+      log.appendChild(user);
+      input.value = "";
+      if (loading) loading.style.display = "flex";
+      if (button) button.disabled = true;
+
+      try {
+        const headers = {"Content-Type":"application/json"};
+        try {
+          const token = localStorage.getItem("lrtoken");
+          if (token) headers.Authorization = "Bearer " + token;
+        } catch (_) {}
+        const response = await fetch("/api/admin/assistant/query", {
+          method:"POST",
+          credentials:"same-origin",
+          headers:headers,
+          body:JSON.stringify({query:query})
+        });
+        const data = await response.json();
+        const msg = document.createElement("div");
+        msg.className = "assistant-message " + (response.ok ? "assistant-bubble" : "error-bubble");
+        msg.textContent = response.ok ? (data.response || "No response returned.") : ("Error: " + (data.detail || "Unable to process request."));
+        log.appendChild(msg);
+      } catch (error) {
+        const msg = document.createElement("div");
+        msg.className = "assistant-message error-bubble";
+        msg.textContent = "Network error: The Admin AI could not be reached.";
+        log.appendChild(msg);
+      } finally {
+        if (loading) loading.style.display = "none";
+        if (button) button.disabled = false;
+        log.scrollTop = log.scrollHeight;
+      }
+    }, true);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootAdminAssistant);
+  else bootAdminAssistant();
+})();
+</script>
 <!-- Verification Officer AI (normal assistant: read-only, server-enforced) -->
 <script src="js/officer-assistant.js"></script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->

@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import sys
 import threading
 import time
 import uuid
@@ -99,7 +100,7 @@ def ensure_sa_tables() -> None:
         )
         db.execute(
             """
-            CREATE TABLE IF NOT EXISTS sa_sessions (
+            CREATE TABLE IF NOT EXISTS sa_gateway_sessions (
                 session_id TEXT PRIMARY KEY,
                 token_hash TEXT NOT NULL UNIQUE,
                 credential_id TEXT NOT NULL,
@@ -113,7 +114,7 @@ def ensure_sa_tables() -> None:
             """
         )
         db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sa_sessions_bound ON sa_sessions(bound_user_id)"
+            "CREATE INDEX IF NOT EXISTS idx_sa_gw_sessions_bound ON sa_gateway_sessions(bound_user_id)"
         )
         # Shared, database-backed unlock throttle: every application
         # worker/process enforces the SAME limit (no process-local state).
@@ -143,7 +144,7 @@ def _revoke_identity_sessions_in(db, admin_user_id: str) -> int:
     """Revoke every SA session established for OR by an administrator identity,
     on an EXISTING transaction (so rotation can be one atomic unit)."""
     cur = db.execute(
-        "UPDATE sa_sessions SET revoked_at=? WHERE revoked_at IS NULL AND (admin_user_id=? OR bound_user_id=?)",
+        "UPDATE sa_gateway_sessions SET revoked_at=? WHERE revoked_at IS NULL AND (admin_user_id=? OR bound_user_id=?)",
         (_now(), admin_user_id, admin_user_id),
     )
     return int(getattr(cur, "rowcount", 0) or 0)
@@ -396,7 +397,7 @@ def issue_sa_session(credential: Dict[str, Any], bound_user: Dict[str, Any]) -> 
     expires = created + sa_session_ttl_seconds()
     with _get_db() as db:
         db.execute(
-            "INSERT INTO sa_sessions (session_id, token_hash, credential_id, admin_user_id, bound_user_id, "
+            "INSERT INTO sa_gateway_sessions (session_id, token_hash, credential_id, admin_user_id, bound_user_id, "
             "bound_user_version, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)",
             (
                 session_id,
@@ -432,7 +433,7 @@ def revoke_sa_sessions_for_user(bound_user_id: str) -> int:
     try:
         with _get_db() as db:
             cur = db.execute(
-                "UPDATE sa_sessions SET revoked_at=? WHERE bound_user_id=? AND revoked_at IS NULL",
+                "UPDATE sa_gateway_sessions SET revoked_at=? WHERE bound_user_id=? AND revoked_at IS NULL",
                 (_now(), bound_user_id),
             )
         return int(getattr(cur, "rowcount", 0) or 0)
@@ -455,7 +456,7 @@ def get_sa_session(token: str, bound_user: Dict[str, Any]) -> Optional[Dict[str,
     with _get_db() as db:
         row = db.execute(
             "SELECT s.*, u.full_name AS admin_name, u.role AS admin_role, u.is_active AS admin_active "
-            "FROM sa_sessions s JOIN users u ON u.id = s.admin_user_id WHERE s.token_hash=?",
+            "FROM sa_gateway_sessions s JOIN users u ON u.id = s.admin_user_id WHERE s.token_hash=?",
             (_hash_token(token),),
         ).fetchone()
     if not row:
@@ -666,4 +667,4 @@ def sa_configure_credential(req: SACredentialReq, user: dict = Depends(current_a
 try:
     ensure_sa_tables()
 except Exception as exc:  # pragma: no cover - defensive bootstrap path
-    print(f"[SA TABLE WARNING] {type(exc).__name__}")
+    print(f"[SA TABLE WARNING] {type(exc).__name__}", file=sys.stderr)
