@@ -1,16 +1,12 @@
 """Production ASGI entrypoint for the Document Screening application."""
 
+import os
 from fastapi.responses import FileResponse
 
 from server import BASE_DIR, app
 from ai_governance import router as ai_approval_router
 from mapping import document_history_router, map_router
-from land_intel import (
-    encumbrance_router,
-    land_router,
-    mutation_router,
-    report_router,
-)
+from land_intel import encumbrance_router, land_router, mutation_router, report_router
 from court_cases import router as court_cases_router
 from demo_scenarios import demo_router
 from backup_restore import backup_router
