@@ -838,3 +838,8 @@ body.administration-open { overflow: hidden; }
 .li-confirm { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; margin-top: 12px; }
 
 .li-report-done { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border: 1px solid #86efac; background: var(--gov-green-light); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+
+/* Bulk OCR */
+.bulk-summary { margin-bottom: 6px; }
+.bulk-items-list { max-height: 380px; overflow-y: auto; border: 1px solid var(--gov-border-light); border-radius: 6px; padding: 4px 8px; background: #fff; }
+.bulk-items-list .chip { font-size: 10px; }

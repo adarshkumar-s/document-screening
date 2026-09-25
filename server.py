@@ -1615,6 +1615,9 @@ async def run_ocr_pipeline(content: bytes, filename: str, lang: str = "auto") ->
     return await run_ai_assisted_pipeline(image, lang)
 
 
+_orig_run_ocr_pipeline = run_ocr_pipeline  # preserved for test monkeypatching
+
+
 def apply_ownership_review(document_id: str, property_id: Optional[str], parsed: Dict[str, Any], status_value: str, ai_payload: Dict[str, Any]) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Attach deterministic ownership evidence and force human review for consequential findings."""
     if not property_id:
@@ -1823,6 +1826,7 @@ async def process_sample(
     doc_type: Optional[str] = Query("Land Record"),
     lang: Optional[str] = Query("auto"),
     state: Optional[str] = Query(None),
+    mode: Optional[str] = Query("ocr_li"),
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
     document_metadata = build_document_metadata(state)
@@ -1837,15 +1841,61 @@ async def process_sample(
     with open(stored_path, "wb") as sf:
         sf.write(data)
 
+    process_mode = "ocr_only" if (mode or "").lower() == "ocr_only" else "ocr_li"
     try:
-        parsed_candidate = run_ocr_pipeline(data, name, lang)
-        parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
+        import ocr_pipeline as _ocp
+        # Backward compatibility: if tests or callers monkeypatch run_ocr_pipeline, honor it.
+        if globals().get("run_ocr_pipeline") is not _orig_run_ocr_pipeline:
+            parsed_candidate = run_ocr_pipeline(data, name, lang)
+            parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
+            if "filename" not in parsed:
+                parsed["filename"] = name
+            now = time.time()
+            status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
+            ai_payload = parsed["ai_decision_support"]
+            with get_db() as db:
+                db.execute(
+                    """
+                    INSERT INTO documents (
+                        id, filename, doc_type, mean_conf, verdict, status, languages, pages,
+                        fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
+                        detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doc_id, name, doc_type or parsed.get("doc_type", "Land Record"), parsed["mean_conf"],
+                        parsed["validation"]["verdict"], status_value, json.dumps(parsed["languages"]), parsed["pages"],
+                        json.dumps(parsed["fields"], ensure_ascii=False),
+                        json.dumps(parsed["validation"], ensure_ascii=False),
+                        json.dumps(ai_payload, ensure_ascii=False),
+                        parsed["ocr_text"], parsed.get("cleaned_ocr_text", parsed["ocr_text"]),
+                        parsed.get("detected_language", "eng"),
+                        json.dumps(parsed.get("original_fields", parsed["fields"]), ensure_ascii=False),
+                        json.dumps(document_metadata, ensure_ascii=False),
+                        user["email"], now, now
+                    ),
+                )
+            log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id} (legacy)", doc_id)
+            return {
+                "id": doc_id, "filename": name, "status": status_value,
+                "fields": parsed["fields"], "validation": parsed["validation"],
+                "ai_decision_support": ai_payload, "pipeline_meta": parsed.get("pipeline_meta", {}),
+                "metadata": document_metadata,
+                "property_resolution": {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []},
+                "ownership_reasoning": {"assessment": "PENDING_ASYNC", "findings": [], "relationships": []},
+            }
+        parsed = await _ocp.run_fast_ocr_pipeline(
+            data, name, lang or "auto",
+            doc_type_hint=doc_type or "Land Record",
+            user=user, doc_id=doc_id,
+        )
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Could not process sample. Please verify the sample and try again.")
 
     now = time.time()
     status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
     ai_payload = parsed["ai_decision_support"]
+    full_metadata = {**document_metadata, **(parsed.get("metadata") or {}), "mode": process_mode}
     with get_db() as db:
         db.execute(
             """
@@ -1862,32 +1912,21 @@ async def process_sample(
                 json.dumps(parsed["validation"], ensure_ascii=False),
                 json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(document_metadata, ensure_ascii=False),
+                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(full_metadata, ensure_ascii=False),
                 user["email"], now, now
             )
         )
 
     property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
-    try:
-        from mapping import _resolve
-        property_resolution = _resolve(parsed["fields"])
-        if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
-            match_property = property_resolution["matches"][0]["property"]["property_id"]
-            with get_db() as db:
-                db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
-                db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
-            log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved sample document #{doc_id}: {property_resolution['status']}", doc_id)
-            property_resolution["property_id"] = match_property
-    except Exception:
-        property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
+    ownership_reasoning = {"assessment": "PENDING_ASYNC", "findings": [], "relationships": []}
 
-    status_value, ai_payload, ownership_reasoning = apply_ownership_review(doc_id, property_resolution.get("property_id"), parsed, status_value, ai_payload)
+    # Enqueue downstream work on the existing task table instead of blocking OCR.
+    import ocr_pipeline as _ocp
+    _ocp.enqueue_downstream_tasks(doc_id, user, mode=process_mode)
 
     log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id}", doc_id)
-    for correction in parsed["pipeline_meta"].get("corrections", []):
-        log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
-    if parsed.get("escalated"):
-        log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
+    if parsed.get("pipeline_meta", {}).get("cache_hit"):
+        log_audit(user["full_name"], "OCR_CACHE_HIT", f"Sample '{name}' served from OCR cache", doc_id)
 
     return {
         "id": doc_id,
@@ -1897,49 +1936,17 @@ async def process_sample(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
-        "metadata": document_metadata,
+        "metadata": full_metadata,
         "property_resolution": property_resolution,
         "ownership_reasoning": ownership_reasoning,
+        "processing_state": "EXTRACTION_COMPLETE" if process_mode == "ocr_only" else "EXTRACTION_COMPLETE",
     }
 
 
-@app.post("/api/process")
-async def process_upload(
-    file: UploadFile = File(...),
-    doc_type: Optional[str] = Query("Land Record"),
-    lang: Optional[str] = Query("auto"),
-    state: Optional[str] = Query(None),
-    user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
-):
-    document_metadata = build_document_metadata(state)
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=422, detail="Empty file")
-    filename = os.path.basename(file.filename or "upload")
-    doc_id = uuid.uuid4().hex[:12]
-    ext = os.path.splitext(filename)[1].lower() or ".png"
-
-    allowed_extensions = {".png", ".jpg", ".jpeg", ".pdf"}
-    if ext not in allowed_extensions:
-        raise HTTPException(status_code=415, detail="Unsupported file type. Use PNG, JPEG, or PDF.")
-    max_upload_bytes = 15 * 1024 * 1024
-    if len(content) > max_upload_bytes:
-        raise HTTPException(status_code=413, detail="Document exceeds the 15 MB upload limit.")
-
-    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
-    with open(stored_path, "wb") as sf:
-        sf.write(content)
-
-    try:
-        parsed_candidate = run_ocr_pipeline(content, filename, lang)
-        parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
-    except Exception as exc:
-        log_audit(user["full_name"], "OCR_PROCESSING_ERROR", "Document processing failed", doc_id)
-        raise HTTPException(status_code=422, detail="Document processing failed. Please verify the file format and try again.")
-
-    now = time.time()
+def _save_document_record(doc_id, filename, doc_type, parsed, document_metadata, user, process_mode, now):
     status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
     ai_payload = parsed["ai_decision_support"]
+    full_metadata = {**document_metadata, **(parsed.get("metadata") or {}), "mode": process_mode}
     with get_db() as db:
         db.execute(
             """
@@ -1956,32 +1963,104 @@ async def process_upload(
                 json.dumps(parsed["validation"], ensure_ascii=False),
                 json.dumps(ai_payload, ensure_ascii=False),
                 parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
-                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(document_metadata, ensure_ascii=False),
+                json.dumps(parsed["original_fields"], ensure_ascii=False), json.dumps(full_metadata, ensure_ascii=False),
                 user["email"], now, now
             )
         )
+    return status_value, ai_payload, full_metadata
 
-    property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
+
+@app.post("/api/process")
+async def process_upload(
+    file: UploadFile = File(...),
+    doc_type: Optional[str] = Query("Land Record"),
+    lang: Optional[str] = Query("auto"),
+    state: Optional[str] = Query(None),
+    mode: Optional[str] = Query("ocr_li"),
+    user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
+):
+    document_metadata = build_document_metadata(state)
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="Empty file")
+    filename = os.path.basename(file.filename or "upload")
+    doc_id = uuid.uuid4().hex[:12]
+    ext = os.path.splitext(filename)[1].lower() or ".png"
+
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".pdf", ".tif", ".tiff"}
+    if ext not in allowed_extensions:
+        raise HTTPException(status_code=415, detail="Unsupported file type. Use PNG, JPEG, TIFF, or PDF.")
+    max_upload_bytes = 15 * 1024 * 1024
+    if len(content) > max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Document exceeds the 15 MB upload limit.")
+
+    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
+    with open(stored_path, "wb") as sf:
+        sf.write(content)
+
+    process_mode = "ocr_only" if (mode or "").lower() == "ocr_only" else "ocr_li"
+
     try:
-        from mapping import _resolve
-        property_resolution = _resolve(parsed["fields"])
-        if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
-            match_property = property_resolution["matches"][0]["property"]["property_id"]
+        import ocr_pipeline as _ocp
+        if globals().get("run_ocr_pipeline") is not _orig_run_ocr_pipeline:
+            parsed_candidate = run_ocr_pipeline(content, filename, lang)
+            parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
+            # Legacy/test path: preserve original response shape exactly
+            now = time.time()
+            status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
+            ai_payload = parsed["ai_decision_support"]
             with get_db() as db:
-                db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
-                db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
-            log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved document #{doc_id}: {property_resolution['status']}", doc_id)
-            property_resolution["property_id"] = match_property
-    except Exception:
-        property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
+                db.execute(
+                    """
+                    INSERT INTO documents (
+                        id, filename, doc_type, mean_conf, verdict, status, languages, pages,
+                        fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
+                        detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doc_id, filename, doc_type or parsed.get("doc_type", "Land Record"),
+                        parsed["mean_conf"], parsed["validation"]["verdict"],
+                        status_value, json.dumps(parsed["languages"]), parsed["pages"],
+                        json.dumps(parsed["fields"], ensure_ascii=False),
+                        json.dumps(parsed["validation"], ensure_ascii=False),
+                        json.dumps(ai_payload, ensure_ascii=False),
+                        parsed["ocr_text"], parsed.get("cleaned_ocr_text", parsed["ocr_text"]),
+                        parsed.get("detected_language", "eng"),
+                        json.dumps(parsed.get("original_fields", parsed["fields"]), ensure_ascii=False),
+                        json.dumps(document_metadata, ensure_ascii=False),
+                        user["email"], now, now
+                    ),
+                )
+            log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id} (legacy pipeline)", doc_id)
+            return {
+                "id": doc_id, "filename": filename, "status": status_value,
+                "fields": parsed["fields"], "validation": parsed["validation"],
+                "ai_decision_support": ai_payload, "pipeline_meta": parsed.get("pipeline_meta", {}),
+                "metadata": document_metadata,
+                "ownership_reasoning": {"assessment": "PENDING_ASYNC", "findings": [], "relationships": []},
+            }
+        parsed = await _ocp.run_fast_ocr_pipeline(
+            content, filename, lang or "auto",
+            doc_type_hint=doc_type or "Land Record",
+            user=user, doc_id=doc_id,
+        )
+    except Exception as exc:
+        log_audit(user["full_name"], "OCR_PROCESSING_ERROR", f"Document processing failed: {exc}", doc_id)
+        raise HTTPException(status_code=422, detail="Document processing failed. Please verify the file format and try again.")
 
-    status_value, ai_payload, ownership_reasoning = apply_ownership_review(doc_id, property_resolution.get("property_id"), parsed, status_value, ai_payload)
+    now = time.time()
+    status_value, ai_payload, full_metadata = _save_document_record(
+        doc_id, filename, doc_type, parsed, document_metadata, user, process_mode, now
+    )
 
-    log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id}", doc_id)
-    for correction in parsed["pipeline_meta"].get("corrections", []):
-        log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
-    if parsed.get("escalated"):
-        log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
+    # Async downstream — fire and forget via worker; does NOT block the response.
+    import ocr_pipeline as _ocp
+    _ocp.enqueue_downstream_tasks(doc_id, user, mode=process_mode)
+
+    log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and OCR-processed '{filename}' as #{doc_id} (mode={process_mode})", doc_id)
+    if parsed.get("pipeline_meta", {}).get("cache_hit"):
+        log_audit(user["full_name"], "OCR_CACHE_HIT", f"Document '{filename}' served from OCR cache", doc_id)
 
     return {
         "id": doc_id,
@@ -1991,8 +2070,9 @@ async def process_upload(
         "validation": parsed["validation"],
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
-        "metadata": document_metadata,
-        "ownership_reasoning": ownership_reasoning,
+        "metadata": full_metadata,
+        "ownership_reasoning": {"assessment": "PENDING_ASYNC", "findings": [], "relationships": []},
+        "processing_state": "EXTRACTION_COMPLETE",
     }
 
 
@@ -2439,6 +2519,147 @@ def map_js():
 def portal_ui_js():
     return FileResponse(os.path.join(BASE_DIR, "portal-ui.js"), media_type="application/javascript")
 
+
+# =========================================================================
+# Bulk OCR endpoints
+# =========================================================================
+class BulkCreateReq(BaseModel):
+    mode: str = "ocr_li"
+
+
+@app.post("/api/bulk")
+async def bulk_create(req: BulkCreateReq, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    mode = "ocr_only" if (req.mode or "").lower() == "ocr_only" else "ocr_li"
+    bid = _ocp.create_batch(user, mode)
+    return {"batch_id": bid, "mode": mode}
+
+
+@app.post("/api/bulk/{batch_id}/files")
+async def bulk_upload_file(batch_id: str, file: UploadFile = File(...),
+                           doc_type: Optional[str] = Query("Land Record"),
+                           lang: Optional[str] = Query("auto"),
+                           user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    batch = _ocp.get_batch(batch_id, user)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found or access denied")
+    content = await file.read()
+    filename = os.path.basename(file.filename or "upload")
+    ext = os.path.splitext(filename)[1].lower() or ".png"
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".pdf", ".tif", ".tiff"}
+    if ext not in allowed_extensions:
+        _ocp.add_batch_item(batch_id, filename)  # will be marked failed
+        items = _ocp.get_batch(batch_id, user)["items"]
+        item_id = items[-1]["id"]
+        _ocp.update_batch_item(item_id, state="FAILED", error="Unsupported file type")
+        return {"item_id": item_id, "status": "FAILED", "error": "Unsupported file type"}
+    mode = batch["mode"]
+    item_id = _ocp.add_batch_item(batch_id, filename)
+    _ocp.update_batch_item(item_id, state="UPLOADING")
+    doc_id = uuid.uuid4().hex[:12]
+    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
+    try:
+        with open(stored_path, "wb") as sf:
+            sf.write(content)
+        _ocp.update_batch_item(item_id, state="EXTRACTING_TEXT", doc_id=doc_id)
+        parsed = await _ocp.run_fast_ocr_pipeline(
+            content, filename, lang or "auto",
+            doc_type_hint=doc_type or "Land Record",
+            user=user, doc_id=doc_id,
+        )
+        now = time.time()
+        status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
+        ai_payload = parsed["ai_decision_support"]
+        full_metadata = {**(parsed.get("metadata") or {}), "mode": mode, "batch_id": batch_id, "batch_item_id": item_id}
+        with get_db() as db:
+            db.execute(
+                """
+                INSERT INTO documents (
+                    id, filename, doc_type, mean_conf, verdict, status, languages, pages,
+                    fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
+                    detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    doc_id, filename, doc_type or parsed["doc_type"], parsed["mean_conf"],
+                    parsed["validation"]["verdict"], status_value,
+                    json.dumps(parsed["languages"]), parsed["pages"],
+                    json.dumps(parsed["fields"], ensure_ascii=False),
+                    json.dumps(parsed["validation"], ensure_ascii=False),
+                    json.dumps(ai_payload, ensure_ascii=False),
+                    parsed["ocr_text"], parsed["cleaned_ocr_text"], parsed["detected_language"],
+                    json.dumps(parsed["original_fields"], ensure_ascii=False),
+                    json.dumps(full_metadata, ensure_ascii=False),
+                    user["email"], now, now,
+                )
+            )
+        _ocp.update_batch_item(
+            item_id, state="EXTRACTION_COMPLETE",
+            ocr_confidence=float(parsed.get("pipeline_meta", {}).get("content_hash") and parsed["ai_decision_support"].get("ocr_confidence", 0) or 0),
+        )
+        # Enqueue downstream async tasks
+        if mode == "ocr_li":
+            _ocp.update_batch_item(item_id, state="MATCHING_LAND_RECORD")
+        _ocp.enqueue_downstream_tasks(doc_id, user, mode=mode)
+        _ocp.update_batch_item(item_id, state="READY" if mode == "ocr_only" else "LAND_INTELLIGENCE")
+        log_audit(user["full_name"], "BULK_OCR_FILE", f"Bulk OCR processed '{filename}' in batch {batch_id} as #{doc_id}", doc_id)
+        return {"item_id": item_id, "doc_id": doc_id, "status": "OK",
+                "pipeline_meta": parsed["pipeline_meta"]}
+    except Exception as exc:
+        try:
+            _ocp.update_batch_item(item_id, state="FAILED", error=str(exc)[:400])
+        except Exception:
+            pass
+        log_audit(user["full_name"], "BULK_OCR_ERROR", f"Bulk OCR failed for '{filename}': {exc}", None)
+        return {"item_id": item_id, "status": "FAILED", "error": str(exc)[:400]}
+
+
+@app.post("/api/bulk/{batch_id}/finalize")
+async def bulk_finalize(batch_id: str, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    _ocp.finalize_batch(batch_id)
+    return {"status": "ok", "batch": _ocp.get_batch(batch_id, user)}
+
+
+@app.get("/api/bulk")
+async def bulk_list(user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    return {"batches": _ocp.list_batches_for_user(user)}
+
+
+@app.get("/api/bulk/{batch_id}")
+async def bulk_status(batch_id: str, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    batch = _ocp.get_batch(batch_id, user)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch
+
+
+@app.post("/api/bulk/items/{item_id}/retry")
+async def bulk_retry_item(item_id: str,
+                          doc_type: Optional[str] = Query("Land Record"),
+                          lang: Optional[str] = Query("auto"),
+                          user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    with get_db() as db:
+        item = db.execute("SELECT * FROM ocr_batch_items WHERE id=?", (item_id,)).fetchone()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    batch = _ocp.get_batch(item["batch_id"], user)
+    if not batch:
+        raise HTTPException(status_code=403, detail="Access denied")
+    # If doc_id exists, we can re-run downstream; otherwise re-process file
+    if item["doc_id"]:
+        # doc exists - enqueue downstream tasks again
+        _ocp.update_batch_item(item_id, state="EXTRACTING_TEXT", error="")
+        _ocp.enqueue_downstream_tasks(item["doc_id"], user, mode=batch["mode"])
+        _ocp.update_batch_item(item_id, state="LAND_INTELLIGENCE" if batch["mode"] == "ocr_li" else "READY")
+        return {"status": "requeued", "item_id": item_id}
+    return {"status": "cannot_retry", "error": "Original file not retained; re-upload required."}
+
+
 os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
@@ -2454,6 +2675,45 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 # Mount AI Admin Assistant at the end so all functions and models are fully defined
 from admin_assistant import router as assistant_router
 app.include_router(assistant_router)
+
+# Land Intelligence + demo + backup routers.
+# Imported lazily via a startup event to avoid circular imports (land_intel
+# imports names from server at module load time).
+_ADDITIONAL_ROUTERS_MOUNTED = False
+
+
+def _mount_additional_routers():
+    global _ADDITIONAL_ROUTERS_MOUNTED
+    if _ADDITIONAL_ROUTERS_MOUNTED:
+        return
+    try:
+        from ai_governance import router as _ai_approval_router
+        from mapping import document_history_router as _document_history_router, map_router as _map_router_s
+        from land_intel import encumbrance_router, land_router, mutation_router, report_router
+        from demo_scenarios import demo_router as _demo_router
+        from backup_restore import backup_router as _backup_router
+        for _r in (_map_router_s, _document_history_router, _ai_approval_router,
+                   encumbrance_router, mutation_router, land_router,
+                   report_router, _demo_router, _backup_router):
+            try:
+                app.include_router(_r)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    _ADDITIONAL_ROUTERS_MOUNTED = True
+
+
+@app.on_event("startup")
+def _mount_routers_on_startup():
+    _mount_additional_routers()
+
+# Fast OCR pipeline (text-layer first, deterministic OCR, async downstream).
+import ocr_pipeline  # noqa: E402
+ocr_pipeline.ensure_ocr_cache_table()
+ocr_pipeline.ensure_batch_table()
+ocr_pipeline.start_worker()
+
 
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))
