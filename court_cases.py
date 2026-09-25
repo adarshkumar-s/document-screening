@@ -422,6 +422,8 @@ def litigation_page(user: Dict[str, Any] = Depends(get_current_user)):
 <script>
 async function load(){const s=document.getElementById('survey').value.trim(),v=document.getElementById('village').value.trim();if(!s){alert('Enter a survey number');return}const r=await fetch('/api/court-cases?survey='+encodeURIComponent(s)+'&village='+encodeURIComponent(v));const d=await r.json();let h='';if(d.active)h+='<div class="card danger"><b>🔴 ACTIVE LITIGATION</b><p>'+d.active+' active case(s) require review.</p></div>';if(!d.court_cases.length)h+='<div class="card">🟢 No court cases registered for this land.</div>';for(const c of d.court_cases){h+='<div class="card"><b>'+esc(c.case_number)+'</b> · '+esc(c.case_type)+' · '+esc(c.status)+'<p>'+esc(c.court_name)+' · filed '+esc(c.filed_date)+'</p><p>'+esc(c.parties)+'</p><p>'+esc(c.relief_sought)+'</p><p>'+esc(c.decision_summary)+'</p></div>'}document.getElementById('out').innerHTML=h}
 function esc(s){return String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}
+// Deep links from SA Investigation evidence (/litigation?survey=&village=&case=) prefill the search and run it.
+(function(){const q=new URLSearchParams(window.location.search);const s=q.get('survey')||'';const v=q.get('village')||'';const c=q.get('case')||'';if(s){document.getElementById('survey').value=s;document.getElementById('village').value=v;load();}if(c){document.getElementById('out').insertAdjacentHTML('afterbegin','<p class="muted">Opened from an SA investigation for case '+esc(c)+'. Only cases registered in this system are shown.</p>');}})();
 </script></div></body></html>""")
 
 # Initialize schema on import so the first request is not responsible for the migration.

@@ -9,6 +9,7 @@
   <!-- AI Admin Assistant Stylesheet -->
   <link rel="stylesheet" href="css/admin-assistant.css">
   <link rel="stylesheet" href="css/ui-enhancements.css">
+  <link rel="stylesheet" href="css/sa-investigation.css">
 </head>
 <body>
 
@@ -628,6 +629,13 @@
           <div id="landIntelWorkspace"></div>
         </div>
 
+        <div id="staff-tab-investigations" class="hidden">
+          <!-- SA Investigations: cards, contradiction-first detail flow and the administrator
+               decision step. Rendered by js/sa-investigation.js from /api/sa/investigations;
+               the existing Land Intelligence / court-case / mutation views stay authoritative. -->
+          <div id="saInvestigationWorkspace"></div>
+        </div>
+
         <div id="staff-tab-consistency" class="hidden">
           <div class="card">
             <div class="card-header">
@@ -836,7 +844,8 @@
 <!-- Scripts -->
 <!-- Land Intelligence workspace (Records / Mutations / Encumbrances / Risk / Reports + Data Management) -->
 <script src="js/land-intel.js"></script>
-<script src="js/app.js?v=32"></script>
+<script src="js/sa-investigation.js"></script>
+<script src="js/app.js?v=33"></script>
 <script src="js/ui-enhancements.js"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>

@@ -2110,7 +2110,7 @@ async def process_upload(
     if parsed.get("escalated"):
         log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
 
-    return {
+    response = {
         "id": doc_id,
         "filename": filename,
         "status": status_value,
@@ -2121,6 +2121,16 @@ async def process_upload(
         "metadata": document_metadata,
         "ownership_reasoning": ownership_reasoning,
     }
+    # SA Investigation auto-start (administrator uploads): a background task on
+    # the shared assistant lifecycle. It never blocks or fails the upload.
+    try:
+        import sa_investigation as _sa_inv
+        investigation_ref = _sa_inv.auto_start_for_upload(doc_id, user)
+        if investigation_ref:
+            response["sa_investigation"] = investigation_ref
+    except Exception as exc:  # pragma: no cover - upload must stay unaffected
+        print(f"[SA INVESTIGATION WARNING] {exc}")
+    return response
 
 
 @app.get("/api/documents/{doc_id}/file")
@@ -2618,6 +2628,13 @@ app.include_router(officer_assistant_router)
 # Depends(_admin_user()) at import time.
 import ai_governance as _ai_governance
 _ai_governance.ensure_governance_tables()
+
+# SA Investigation: SA orchestrates the existing Land Intelligence services for
+# an uploaded document and proposes a recommendation through the governance
+# flow above. Tables are created here at startup, never inside a request.
+import sa_investigation as _sa_investigation
+app.include_router(_sa_investigation.router)
+_sa_investigation.ensure_investigation_tables()
 
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))

@@ -1,0 +1,149 @@
+/* SA Investigation workspace — contradiction-first review of an uploaded land
+   document against the existing registers. Uses the portal palette from
+   css/style.css; nothing here overrides existing components. */
+
+.sai-sub { font-size: 11.5px; color: var(--muted); }
+.sai-desc { font-size: 12.5px; margin: 4px 0; line-height: 1.45; }
+.sai-footnote { margin: 12px 0 0; font-size: 11px; color: var(--muted); }
+.sai-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: #f1f5f9; color: #334155; border: 1px solid var(--gov-border-light); margin: 1px 2px 1px 0; }
+
+/* State / recommendation pills */
+.sai-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 800; letter-spacing: .3px; border: 1px solid transparent; vertical-align: middle; }
+.sai-pill-ok { background: var(--gov-green-light); color: var(--gov-green); border-color: #86efac; }
+.sai-pill-bad { background: var(--err-light); color: var(--err); border-color: #fca5a5; }
+.sai-pill-warn { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.sai-pill-run { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+
+/* Severity chips (transparent severity: label always visible) */
+.sai-sev { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 10px; font-weight: 900; letter-spacing: .4px; border: 1px solid transparent; vertical-align: middle; }
+.sai-sev-critical { background: #7f1d1d; color: #fff; }
+.sai-sev-high { background: var(--err-light); color: var(--err); border-color: #fca5a5; }
+.sai-sev-medium { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.sai-sev-low { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+.sai-sev-info { background: #f1f5f9; color: #475569; border-color: var(--gov-border-light); }
+
+/* Evidence status labels: FOUND / NOT FOUND IN SEARCHED SOURCES / POSSIBLE MATCH / CONFLICT / UNKNOWN / SOURCE UNAVAILABLE */
+.sai-status { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9.5px; font-weight: 800; letter-spacing: .3px; border: 1px dashed transparent; vertical-align: middle; }
+.sai-status-found { color: var(--gov-green); border-color: #86efac; background: var(--gov-green-light); }
+.sai-status-conflict { color: var(--err); border-color: #fca5a5; background: var(--err-light); }
+.sai-status-possible { color: #b45309; border-color: #fde68a; background: #fffbeb; }
+.sai-status-unavailable { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
+.sai-status-notfound { color: #475569; border-color: var(--gov-border); background: #f8fafc; }
+
+/* Certainty labels: Confirmed / Strong match / Possible / Unknown / Not searched */
+.sai-cert { display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 9.5px; font-weight: 700; background: #f8fafc; color: #475569; border: 1px solid var(--gov-border-light); vertical-align: middle; }
+.sai-cert-confirmed { color: var(--gov-green); border-color: #86efac; }
+.sai-cert-strong-match { color: #1d4ed8; border-color: #bfdbfe; }
+.sai-cert-possible { color: #b45309; border-color: #fde68a; }
+.sai-cert-conflict { color: var(--err); border-color: #fca5a5; }
+
+/* Cards in the list */
+.sai-card { border: 1px solid var(--gov-border); border-left: 4px solid var(--gov-navy); border-radius: 8px; padding: 12px 14px; margin: 10px 0; background: #fff; }
+.sai-card-running { border-left-color: #1d4ed8; }
+.sai-card-failed { border-left-color: var(--err); }
+.sai-card-head { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.sai-card-title { font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sai-card-side { text-align: right; min-width: 200px; }
+.sai-card-badges { margin: 8px 0 4px; display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.sai-card-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; flex-wrap: wrap; }
+.sai-reason { font-size: 12.5px; margin: 6px 0 0; padding: 6px 10px; background: #f8fafc; border-radius: 6px; border: 1px solid var(--gov-border-light); }
+.sai-progress-line { font-size: 12px; color: #1d4ed8; display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.sai-failure { font-size: 12.5px; color: var(--err); background: var(--err-light); border: 1px solid #fca5a5; border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+
+/* Alerts */
+.sai-alert { border: 1px solid #fca5a5; border-left: 4px solid var(--err); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #fff; }
+.sai-alert-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.sai-why { margin: 6px 0; font-size: 12px; }
+.sai-why summary { cursor: pointer; font-weight: 700; color: var(--gov-navy); }
+.sai-why ul { margin: 4px 0 0 18px; }
+
+/* Detail flow */
+.sai-flow { display: flex; gap: 4px; flex-wrap: wrap; margin: 10px 0 14px; }
+.sai-flow-step { font-size: 11px; font-weight: 700; color: var(--gov-navy); text-decoration: none; padding: 3px 8px; border: 1px solid var(--gov-border-light); border-radius: 999px; background: #f8fafc; }
+.sai-flow-step:hover { border-color: var(--gov-navy); }
+.sai-section { border-top: 1px solid var(--gov-border-light); padding: 14px 0; }
+.sai-section h4 { margin: 0 0 8px; font-size: 13.5px; color: var(--gov-navy); display: flex; align-items: center; gap: 8px; }
+.sai-section h5, .sai-scenario h5, .sai-explain h5, .sai-graph h5 { margin: 6px 0 4px; font-size: 11.5px; color: var(--gov-navy); text-transform: uppercase; letter-spacing: .4px; }
+.sai-kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; border-bottom: 1px dashed var(--gov-border-light); }
+.sai-kv span { color: var(--muted); }
+.sai-table { font-size: 12px; }
+.sai-table td, .sai-table th { vertical-align: top; }
+.sai-source { font-size: 12px; margin: 4px 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sai-links { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin: 4px 0; }
+.sai-link { font: inherit; font-size: 11px; font-weight: 700; color: var(--gov-navy); background: #fff; border: 1px solid var(--gov-border); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+.sai-link:hover { background: #eff6ff; border-color: #bfdbfe; }
+.sai-evidence { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--gov-border-light); border-radius: 6px; background: #fbfdff; margin: 2px 0; }
+
+/* Contradiction-first strip and separated confidences */
+.sai-contradictions { border: 1px solid #fca5a5; background: #fff7f7; border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.sai-contradictions h4 { margin: 0 0 6px; font-size: 13px; color: #991b1b; }
+.sai-contra-row { font-size: 12.5px; padding: 3px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sai-contra-row a { color: var(--gov-navy); font-weight: 700; }
+.sai-confidences { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 10px 0 14px; }
+.sai-conf { border: 1px solid var(--gov-border-light); border-radius: 8px; padding: 8px 10px; background: #fff; }
+.sai-conf-head { display: flex; justify-content: space-between; font-size: 11.5px; font-weight: 700; gap: 6px; }
+.sai-conf-track { height: 6px; background: #e2e8f0; border-radius: 999px; margin: 6px 0; overflow: hidden; }
+.sai-conf-fill { height: 100%; background: linear-gradient(90deg, #1d4ed8, #15803d); border-radius: 999px; }
+.sai-conf-why { font-size: 10.5px; color: var(--muted); line-height: 1.35; max-height: 4.2em; overflow: hidden; }
+.sai-conf:hover .sai-conf-why { max-height: none; }
+
+/* Findings */
+.sai-finding { border: 1px solid var(--gov-border-light); border-left: 4px solid #94a3b8; border-radius: 6px; padding: 8px 10px; margin: 8px 0; background: #fff; }
+.sai-finding-critical { border-left-color: #7f1d1d; }
+.sai-finding-high { border-left-color: var(--err); }
+.sai-finding-medium { border-left-color: #d97706; }
+.sai-finding-low { border-left-color: #1d4ed8; }
+.sai-finding-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.sai-why-btn { font: inherit; font-size: 11px; font-weight: 700; color: var(--gov-navy); background: none; border: none; padding: 2px 0; cursor: pointer; text-decoration: underline; }
+.sai-why-body { font-size: 12px; background: #f8fafc; border-radius: 6px; padding: 6px 10px; margin-top: 4px; }
+.sai-why-body ul { margin: 2px 0 0 18px; }
+
+/* Progress stages */
+.sai-progress { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.sai-stage { display: flex; gap: 10px; align-items: center; font-size: 12.5px; padding: 3px 0; }
+.sai-stage-dot { width: 10px; height: 10px; border-radius: 50%; background: #cbd5e1; flex: none; }
+.sai-stage-done .sai-stage-dot { background: var(--gov-green); }
+.sai-stage-running .sai-stage-dot { background: #1d4ed8; box-shadow: 0 0 0 4px rgba(29, 78, 216, .2); }
+.sai-stage-failed .sai-stage-dot { background: var(--err); }
+.sai-stage-skipped .sai-stage-dot { background: #a78bfa; }
+
+/* Timeline */
+.sai-timeline { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--gov-border); }
+.sai-tl { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 6px 0 6px 12px; position: relative; font-size: 12.5px; }
+.sai-tl::before { content: ''; position: absolute; left: -6px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: var(--gov-navy); }
+.sai-tl-self::before { background: #f59e0b; }
+.sai-tl-anomaly::before { background: var(--err); }
+.sai-tl-date { font-weight: 700; color: var(--gov-navy); }
+
+/* Scenarios */
+.sai-scenario { border: 1px solid var(--gov-border-light); border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: #fff; }
+.sai-scenario.open { border-color: var(--gov-navy); }
+.sai-scenario-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.sai-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 16px; font-size: 12px; }
+.sai-grid2 ul { margin: 0 0 0 18px; padding: 0; }
+
+/* Evidence graph */
+.sai-graph { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; font-size: 11.5px; }
+.sai-graph-col { border: 1px solid var(--gov-border-light); border-radius: 6px; padding: 6px 8px; min-width: 150px; background: #fbfdff; }
+.sai-graph-node { padding: 2px 0; border-bottom: 1px dashed var(--gov-border-light); }
+.sai-graph-node:last-child { border-bottom: none; }
+.sai-graph-arrow { align-self: center; color: var(--muted); font-size: 18px; }
+
+/* Recommendation, decision and reproducibility */
+.sai-rec { border: 1px solid var(--gov-border); border-radius: 8px; padding: 10px 12px; background: #fff; font-size: 12.5px; }
+.sai-explain { margin-top: 8px; border-top: 1px dashed var(--gov-border); padding-top: 8px; font-size: 12.5px; }
+.sai-explain ul { margin: 4px 0 0 18px; }
+.sai-decide { border: 1px solid #fde68a; background: #fffbeb; border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+.sai-decide-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.sai-decision-done { border: 1px solid var(--gov-border); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; background: #fff; }
+.sai-repro { margin-top: 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--gov-border-light); padding-top: 8px; }
+
+/* Small card on the document review page / upload editor */
+.sai-attach { margin-top: 14px; }
+.sai-mini { border: 1px solid var(--gov-border); border-left: 4px solid var(--gov-navy); border-radius: 8px; padding: 10px 12px; background: #fff; margin: 10px 0; }
+.sai-mini-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+
+@media (max-width: 720px) {
+  .sai-card-side { text-align: left; min-width: 0; }
+  .sai-tl { grid-template-columns: 1fr; }
+}

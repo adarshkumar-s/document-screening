@@ -1285,6 +1285,13 @@
       S.sub = 'records';
       openLandDetail(landId).catch(alertError);
     },
+    openMutation(mutationId) {
+      // Deep link target for SA Investigation evidence ([Open Mutation]).
+      switchStaffTab('landintel');
+      S.sub = 'mutations';
+      S.openMutation = mutationId;
+      renderPanes();
+    },
     renderWorkspace: renderPanes,
     renderDataManagement,
     attachDocumentLandContext,
