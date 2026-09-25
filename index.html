@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="css/style.css">
   <!-- AI Admin Assistant Stylesheet -->
   <link rel="stylesheet" href="css/admin-assistant.css">
+  <link rel="stylesheet" href="css/ui-enhancements.css">
   <link rel="stylesheet" href="css/sa-investigation.css">
 </head>
 <body>
@@ -110,6 +111,7 @@
 
   <div class="gov-header">
     <div class="gov-brand-container">
+      <img class="vectorflow-logo vectorflow-logo-header" src="/assets/vectorflow.png" alt="VectorFlow" onerror="this.style.display='none'">
       <div class="gov-titles">
         <div class="gov-sub-title">Digital India Land Records Modernization Programme (DILRMP)</div>
         <div class="gov-main-title">Digital Land Records Portal</div>
@@ -499,6 +501,7 @@
 
           <!-- Existing Dashboard Stats Grid -->
           <div id="staffStatsRow"></div>
+          <section id="landIntelDashboardEnhancements" class="ui-enhancement-section"><div class="ui-section-heading"><div><div class="ui-eyebrow">LAND INTELLIGENCE</div><h3>Land Intelligence at a glance</h3><p>Review mutations, encumbrances, court cases and risk signals from the dashboard.</p></div><button type="button" class="btn saffron" id="openLandIntelDashboardBtn">Open Land Intelligence</button></div><div class="ui-intel-grid"><article class="ui-intel-card"><div class="ui-intel-icon">🗺️</div><div><h4>Land Records</h4><p>Search parcels and open the intelligence record.</p></div><button class="btn ghost ui-card-action" data-intel-action="records">View records</button></article><article class="ui-intel-card"><div class="ui-intel-icon">🔄</div><div><h4>Mutation &amp; Ownership</h4><p>Create or review ownership changes.</p></div><button class="btn ghost ui-card-action" data-intel-action="mutations">Create mutation</button></article><article class="ui-intel-card"><div class="ui-intel-icon">📜</div><div><h4>Encumbrances</h4><p>Check registered charges and restrictions.</p></div><button class="btn ghost ui-card-action" data-intel-action="encumbrances">Review charges</button></article><article class="ui-intel-card"><div class="ui-intel-icon">⚖️</div><div><h4>Court Cases</h4><p>See litigation linked to a parcel.</p></div><button class="btn ghost ui-card-action" data-intel-action="litigation">Review cases</button></article><article class="ui-intel-card"><div class="ui-intel-icon">🚩</div><div><h4>Risk Review</h4><p>Inspect review signals and evidence.</p></div><button class="btn ghost ui-card-action" data-intel-action="risk">Open risk review</button></article><article class="ui-intel-card"><div class="ui-intel-icon">📊</div><div><h4>Reports</h4><p>Generate land-intelligence summaries.</p></div><button class="btn ghost ui-card-action" data-intel-action="reports">Open reports</button></article></div><div id="landIntelDashboardSummary" class="ui-intel-summary">Land Intelligence shortcuts are ready.</div></section>
         </div>
 
         <!-- UPLOAD TAB -->
@@ -691,10 +694,7 @@
 
         <div id="staff-tab-records" class="hidden">
           <div class="card">
-            <div class="card-header">
-              <h3 class="card-title">All Records</h3>
-              <input type="text" id="staffSearchInput" placeholder="Search ID, Owner, Village, Type..." style="width:260px;padding:6px 10px;font-size:12px">
-            </div>
+            <div class="card-header ui-records-header"><div><h3 class="card-title">All Records</h3><div id="staffRecordsSummary" class="ui-records-summary">Search across ID, filename, owner, survey/khasra, village, district, type and status.</div></div><div class="ui-record-search"><input type="search" id="staffSearchInput" placeholder="Search records…" aria-label="Search all records" style="width:260px;padding:6px 10px;font-size:12px"><button type="button" class="btn ghost" id="staffSearchClear">Clear</button></div></div>
             <table class="gov-table" id="staffRecordsTable">
               <thead><tr><th>ID</th><th>File Name</th><th>Type</th><th>Status</th><th>Confidence</th><th>Details</th><th style="text-align:right">Action</th></tr></thead>
               <tbody></tbody>
@@ -724,6 +724,8 @@
     </div>
   </div>
 </div>
+
+<footer class="site-footer"><div class="site-footer-inner"><div class="site-footer-brand"><img src="/assets/vectorflow.png" alt="VectorFlow" class="site-footer-logo"><div><strong>Digital Land Records Portal</strong><span>DILRMP · Land Intelligence</span></div></div><nav class="site-footer-links"><span>Land Intelligence</span><span>Data Management</span><span>Accessibility</span><span>Audit &amp; Security</span></nav><div class="site-footer-meta">© <span id="siteFooterYear"></span> VectorFlow · Land-records workflow</div></div></footer>
 
 <!-- ADMINISTRATION PANEL: existing staff interfaces are mounted here once, not duplicated. -->
 <div id="administrationModal" class="administration-modal hidden" role="dialog" aria-modal="true" aria-labelledby="administrationTitle" aria-hidden="true">
@@ -844,6 +846,7 @@
 <script src="js/land-intel.js"></script>
 <script src="js/sa-investigation.js"></script>
 <script src="js/app.js?v=33"></script>
+<script src="js/ui-enhancements.js"></script>
 <!-- AI Admin Assistant Script -->
 <script src="js/admin-assistant.js"></script>
 <script>
