@@ -26,14 +26,9 @@ def _rid(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
-def _sa_admin(make_user_client, prefix="salo"):
-    admin, headers, email = make_user_client("ADMIN", prefix=prefix)
-    import sa_gateway
-
-    sa_gateway.create_sa_credential(admin.get("/api/auth/me", headers=headers).json()["user"]["id"],
-                                    "SA Lifecycle Pass 1!", label="lifecycle")
-    r = admin.post("/api/sa/unlock", headers=headers, json={"password": "SA Lifecycle Pass 1!"})
-    assert r.status_code == 200, r.text
+def _assistant_admin(make_user_client, prefix="salo"):
+    """An ordinary authenticated administrator: the assistant needs no unlock."""
+    admin, headers, _email = make_user_client("ADMIN", prefix=prefix)
     return admin, headers
 
 
@@ -461,7 +456,7 @@ def test_sa_timeout_then_try_again_never_duplicates_the_proposal(make_user_clien
     proposal or re-execute the completed logical operation."""
     import admin_assistant
 
-    admin, headers = _sa_admin(make_user_client, prefix="salo1")
+    admin, headers = _assistant_admin(make_user_client, prefix="salo1")
     doc_id = insert_land_document(status="DRAFT")
 
     calls = []
@@ -506,7 +501,7 @@ def test_sa_timeout_then_try_again_never_duplicates_the_proposal(make_user_clien
 def test_sa_timeout_envelope_and_polling_pick_up_the_preserved_result(make_user_client, monkeypatch):
     import admin_assistant
 
-    admin, headers = _sa_admin(make_user_client, prefix="salo2")
+    admin, headers = _assistant_admin(make_user_client, prefix="salo2")
     release = threading.Event()
     calls = []
 
@@ -550,7 +545,7 @@ def test_sa_timeout_envelope_and_polling_pick_up_the_preserved_result(make_user_
 def test_sa_permanent_errors_never_offer_retry(make_user_client, monkeypatch):
     import admin_assistant
 
-    admin, headers = _sa_admin(make_user_client, prefix="salo3")
+    admin, headers = _assistant_admin(make_user_client, prefix="salo3")
 
     def boom(prompt, user=None, idempotency_key=None):
         raise ValueError("validation exploded")
@@ -578,7 +573,7 @@ def test_sa_permanent_errors_never_offer_retry(make_user_client, monkeypatch):
 def test_cancel_endpoint_dismisses_without_duplicating(make_user_client, monkeypatch):
     import admin_assistant
 
-    admin, headers = _sa_admin(make_user_client, prefix="salo4")
+    admin, headers = _assistant_admin(make_user_client, prefix="salo4")
     release = threading.Event()
 
     def slow_turn(prompt, user=None, idempotency_key=None):

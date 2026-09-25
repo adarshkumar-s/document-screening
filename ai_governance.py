@@ -16,6 +16,52 @@ def _admin_user():
     s=_server()
     return s.require_roles(s.ROLE_ADMIN)
 
+def verify_administrator_password(user: Dict[str, Any], password: str) -> None:
+    """Fail-closed verification of the CALLING administrator's account password.
+
+    Final approval of an AI action is a consequential mutation, so the
+    authenticated administrator re-proves their identity with their own account
+    password immediately before the atomic approval/execution flow runs.
+
+    Security properties:
+    * The identity is the SERVER-resolved authenticated account (``user``).
+      Nothing is read from the request body, so a browser cannot choose which
+      administrator is verified (supplying another administrator's name, email
+      or id changes nothing).
+    * The stored argon2id verifier is read fresh from the users table by the
+      authenticated account id and compared with the canonical
+      ``server.verify_password`` (legacy SHA-256 records keep working).
+    * The plaintext is never persisted, logged, audited, echoed back, or stored
+      in browser storage. Only a failure EVENT without any secret material is
+      written to the audit trail.
+    * Missing or wrong password raises 401 BEFORE any execution is attempted;
+      the proposal is untouched.
+    """
+    s = _server()
+    if not isinstance(password, str) or not password:
+        raise HTTPException(status_code=401, detail="Administrator password is required to approve an AI action.")
+    admin_id = user.get("id") or ""
+    stored_hash = ""
+    is_active = True
+    if admin_id:
+        with s.get_db() as db:
+            row = db.execute("SELECT password_hash, is_active FROM users WHERE id=?", (admin_id,)).fetchone()
+        if row:
+            stored_hash = row["password_hash"] or ""
+            is_active = bool(row["is_active"])
+    verified = False
+    if stored_hash and is_active:
+        verified, _legacy_sha256 = s.verify_password(stored_hash, password)
+    if not verified:
+        # Audited WITHOUT the secret: the event records the refusal only.
+        s.log_audit(
+            user.get("full_name") or "Administrator",
+            "AI_APPROVAL_PASSWORD_FAILED",
+            "AI approval blocked: administrator password verification failed.",
+            None,
+        )
+        raise HTTPException(status_code=401, detail="Invalid administrator password.")
+
 router = APIRouter(prefix="/api/admin/ai-approval", tags=["AI Approval Center"])
 
 PROPOSED="PROPOSED"; APPROVED="APPROVED"; REJECTED="REJECTED"; EXPIRED="EXPIRED"; EXECUTED="EXECUTED"; FAILED="FAILED"
@@ -54,6 +100,17 @@ class ProposalCreate(BaseModel):
 
 class DecisionReq(BaseModel):
     note: str = ""
+
+class ApproveDecisionReq(BaseModel):
+    """Final-approval input: the optional note plus the CALLING administrator's password.
+
+    Only the password is accepted. The administrator it is verified against is
+    the server-resolved authenticated account - any identity field a browser
+    might add (admin, administrator, email, user_id, name, ...) is ignored by
+    design and can never select who is verified.
+    """
+    note: str = ""
+    password: str = ""
 
 class AIProposalRequest(BaseModel):
     proposal: ProposalCreate
@@ -553,11 +610,17 @@ def proposal_create(req:AIProposalRequest,user:dict=Depends(_admin_user())):
     return {"proposal":create_proposal(req.proposal.model_dump(),created_by="ADMIN_PREPARED")}
 
 @router.post("/proposals/{proposal_id}/approve")
-def proposal_approve(proposal_id:str,req:DecisionReq,user:dict=Depends(_admin_user())):
+def proposal_approve(proposal_id:str,req:ApproveDecisionReq,user:dict=Depends(_admin_user())):
+    # FINAL APPROVAL. The authenticated administrator's password is verified
+    # server-side FIRST; a wrong or missing password fails closed (401) and
+    # nothing is executed. Only then does the unchanged atomic approval flow
+    # run (CAS PROPOSED -> EXECUTING, ownership-checked completion).
+    verify_administrator_password(user, req.password)
     return {"proposal":approve_proposal(proposal_id,user,req.note)}
 
 @router.post("/proposals/{proposal_id}/reject")
 def proposal_reject(proposal_id:str,req:DecisionReq,user:dict=Depends(_admin_user())):
+    # Rejection is non-consequential: it requires no password.
     return {"proposal":reject_proposal(proposal_id,user,req.note)}
 
 @router.get("/proposals/{proposal_id}/events")

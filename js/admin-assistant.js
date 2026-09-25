@@ -9,7 +9,7 @@ function setSaHeader(active, label) {
   const briefing=document.getElementById('btnGenerateBriefing');
   if (title) {
     const entry=document.getElementById('saEntryBtn');
-    if (entry) { entry.textContent=active ? 'SA · Superior Administrator AI' : 'Admin AI 🔒'; }
+    if (entry) { entry.textContent=active ? 'SA · Superior Administrator AI' : 'Admin AI'; }
     else { title.textContent=active ? 'SA · Superior Administrator AI' : 'AI Admin Assistant'; }
   }
   if (badge) { badge.textContent=active ? (label || 'SA') : 'Administrator'; badge.className=active ? 'badge-read-only sa-live-badge' : 'badge-read-only'; }
@@ -114,17 +114,18 @@ async function showSaReport(){
 function closeSaReport(){document.getElementById('saReportPanel')?.classList.add('hidden');}
 
 // =====================================================================
-// ADMIN AI 🔒 — gateway to SA.
+// ADMIN AI — normal administrator authentication.
 //
-// The visible entry point is "Admin AI 🔒". SA is only usable after the AI
-// access password is verified SERVER-SIDE and resolves to an administrator
-// identity. Nothing in this file is authoritative: the browser never sends a
-// name/role/unlocked flag, and every SA call re-validates the server-side SA
-// session. Client state below exists purely to render the UI.
+// Any authenticated administrator uses the assistant directly: there is no
+// unlock gate, no AI access password prompt, and no client-side flag. Nothing
+// in this file is authoritative: the browser never sends a name/role/permission
+// field, and every request is authorized server-side from the credential alone.
+//
+// The ONE extra proof of identity is the administrator's OWN account password,
+// re-entered at FINAL APPROVAL of an AI action. It is sent once in the request
+// body, never stored (no localStorage/sessionStorage), never rendered back, and
+// cleared from the input as soon as the decision is submitted.
 // =====================================================================
-let saUnlocked = false;      // display hint only — the server is authoritative
-let saAdminName = '';
-let saGateOpen = false;
 
 const SA_RETRYABLE_STATES = new Set(['timeout', 'failed_retryable', 'running', 'pending']);
 
@@ -149,122 +150,9 @@ function newRequestId() {
 }
 
 // ---------------------------------------------------------------------
-// SA session (server-side state; verified identity name comes from server)
+// The assistant uses normal administrator authentication: there is no
+// unlock gate to open, poll, or lock, and no client-side permission flag.
 // ---------------------------------------------------------------------
-function openSaGate() {
-  // SA must NOT be directly accessible before authentication.
-  if (saUnlocked) return;
-  saGateOpen = true;
-  const gate = document.getElementById('saGatePrompt');
-  if (gate) gate.hidden = false;
-  const input = document.getElementById('saUnlockPassword');
-  if (input) { input.value = ''; input.focus(); }
-}
-
-function closeSaGate() {
-  saGateOpen = false;
-  const gate = document.getElementById('saGatePrompt');
-  if (gate) gate.hidden = true;
-  const input = document.getElementById('saUnlockPassword');
-  if (input) input.value = '';
-  const err = document.getElementById('saUnlockError');
-  if (err) { err.hidden = true; err.textContent = ''; }
-}
-
-function saGateError(message) {
-  const err = document.getElementById('saUnlockError');
-  if (!err) return;
-  err.textContent = message || 'Unable to verify the AI access password.';
-  err.hidden = false;
-}
-
-function renderSaLocked() {
-  saUnlocked = false;
-  saAdminName = '';
-  const workspace = document.getElementById('saWorkspace');
-  if (workspace) workspace.hidden = true;
-  const welcome = document.getElementById('saWelcome');
-  if (welcome) { welcome.hidden = true; welcome.textContent = ''; }
-  const lockBtn = document.getElementById('saLockBtn');
-  if (lockBtn) lockBtn.hidden = true;
-  const briefing = document.getElementById('btnGenerateBriefing');
-  if (briefing) briefing.hidden = true;
-  if (saGateOpen) {
-    const gate = document.getElementById('saGatePrompt');
-    if (gate) gate.hidden = false;
-  }
-}
-
-function renderSaUnlocked(name) {
-  saUnlocked = true;
-  saAdminName = name || '';
-  closeSaGate();
-  // "Welcome, <verified administrator name>" — the name was resolved
-  // server-side from the credential; never accepted from the browser.
-  const welcome = document.getElementById('saWelcome');
-  if (welcome) {
-    welcome.textContent = 'Welcome, ' + (name || 'Administrator');
-    welcome.hidden = false;
-  }
-  const workspace = document.getElementById('saWorkspace');
-  if (workspace) workspace.hidden = false;
-  const lockBtn = document.getElementById('saLockBtn');
-  if (lockBtn) lockBtn.hidden = false;
-  const briefing = document.getElementById('btnGenerateBriefing');
-  if (briefing) briefing.hidden = false;
-}
-
-async function refreshSaSession() {
-  // Ask the server whether SA is unlocked. A client-side flag is never trusted.
-  try {
-    const r = await fetchAssistant('/api/sa/session', { credentials: 'same-origin' }, 15000);
-    if (!r.ok) { renderSaLocked(); return; }
-    const d = await r.json();
-    if (d.unlocked && d.admin) renderSaUnlocked(d.admin.full_name || '');
-    else renderSaLocked();
-  } catch (_) {
-    renderSaLocked();
-  }
-}
-
-async function handleSaUnlock(event) {
-  event.preventDefault();
-  const input = document.getElementById('saUnlockPassword');
-  const btn = document.getElementById('saUnlockBtn');
-  const password = input ? input.value : '';
-  if (!password) return;
-  if (btn) btn.disabled = true;
-  try {
-    // Only the credential is sent. No name, no username, no isAdmin flag —
-    // the verified administrator identity is resolved on the server.
-    const r = await fetchAssistant('/api/sa/unlock', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: password })
-    }, 20000);
-    const d = await r.json().catch(() => ({}));
-    if (input) input.value = '';
-    if (!r.ok) {
-      if (r.status === 429) saGateError(d.detail || 'Too many attempts. Try again later.');
-      else saGateError(d.detail || 'Invalid AI access password.');
-      return;
-    }
-    renderSaUnlocked((d.admin && d.admin.full_name) || '');
-  } catch (_) {
-    saGateError('The server is unreachable. Try again shortly.');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function handleSaLock() {
-  try {
-    await fetchAssistant('/api/sa/lock', { method: 'POST', credentials: 'same-origin' }, 15000);
-  } catch (_) {}
-  saGateOpen = false;
-  renderSaLocked();
-}
 
 // ---------------------------------------------------------------------
 // SA chat with the safe request lifecycle (at-most-once logical requests)
@@ -383,15 +271,9 @@ async function handleSaResponse(response, requestId) {
   try { data = await response.json(); } catch (_) {}
   if (!response.ok) {
     if (response.status === 401) {
-      // Authorization errors are permanent: NO Try Again. Require re-auth.
-      if ((data.detail || '').toLowerCase().includes('verification') || (data.detail || '').toLowerCase().includes('ai access')) {
-        renderSaLocked();
-        saGateOpen = true;
-        openSaGate();
-        appendAssistantMessage("SA session expired. Enter the AI access password again.", "error-bubble");
-      } else {
-        appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
-      }
+      // Authorization errors are permanent: NO Try Again. The assistant uses
+      // normal administrator authentication, so re-authenticating is the fix.
+      appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
       return;
     }
     if (response.status === 429 || response.status >= 500 || response.status === 408) {
@@ -442,8 +324,8 @@ async function pollSaRequest(requestId, card) {
       try {
         const r = await fetchAssistant("/api/admin/assistant/requests/" + encodeURIComponent(requestId), { credentials: 'same-origin' }, 15000);
         if (r.status === 401) {
-          renderSaLocked();
-          appendAssistantMessage("SA session expired. Enter the AI access password again.", "error-bubble");
+          // Authorization errors are permanent: stop polling. Re-authenticate.
+          appendAssistantMessage("Error: authorization failed while following this request.", "error-bubble");
           return;
         }
         if (r.ok) env = await r.json();
@@ -535,10 +417,8 @@ async function tryAgainSaRequest(requestId, card) {
       let data = {};
       try { data = await r.json(); } catch (_) {}
       if (r.status === 401) {
-        renderSaLocked();
-        saGateOpen = true;
-        openSaGate();
-        appendAssistantMessage("SA session expired. Enter the AI access password again.", "error-bubble");
+        // Authorization errors are permanent: NO Try Again.
+        appendAssistantMessage("Error: " + (data.detail || "Unable to process request."), "error-bubble");
         return;
       }
       if (r.status === 404 || r.status === 400 || r.status === 422) {
@@ -644,8 +524,8 @@ async function triggerSystemBriefing() {
   }
 }
 
-// The server decides whether SA is unlocked — never a client-side flag.
-setTimeout(refreshSaSession, 250);
+// No gate bootstrap: the workspace is usable for the authenticated
+// administrator, and the server authorizes every request on its own.
 
 // =====================================================================
 // AI TASK INBOX — role-to-role communication layer
@@ -879,12 +759,59 @@ function renderAiApprovals(proposals) {
   });
 }
 
+// FINAL APPROVAL. The administrator re-enters their OWN account password; the
+// server verifies it against the authenticated account before anything
+// executes. The value lives only in this input for the duration of the
+// request: it is never written to localStorage/sessionStorage, never sent
+// anywhere except this one request body, and cleared when the modal closes.
+function askApprovalPassword() {
+  return new Promise(resolve => {
+    const modal = document.getElementById("approvalPasswordModal");
+    const form = document.getElementById("approvalPasswordForm");
+    const input = document.getElementById("approvalPasswordInput");
+    const cancel = document.getElementById("approvalPasswordCancel");
+    if (!modal || !form || !input) { resolve(null); return; }
+    input.value = "";
+    modal.classList.remove("hidden");
+    input.focus();
+    function cleanup(value) {
+      modal.classList.add("hidden");
+      input.value = "";   // never keep the password around
+      form.removeEventListener("submit", onSubmit);
+      cancel?.removeEventListener("click", onCancel);
+      resolve(value);
+    }
+    function onSubmit(event) {
+      event.preventDefault();
+      const value = input.value;
+      if (!value) return;
+      cleanup(value);
+    }
+    function onCancel() { cleanup(null); }
+    form.addEventListener("submit", onSubmit);
+    cancel?.addEventListener("click", onCancel);
+  });
+}
+
+function cancelApprovalPassword() {
+  document.getElementById("approvalPasswordCancel")?.click();
+}
+
 async function decideAiProposal(id, decision, primary, secondary) {
-  const note = window.prompt((decision === "approve" ? "Approval note (optional):" : "Reason for rejection (optional):"), "") ?? "";
+  const approving = decision === "approve";
+  const note = window.prompt((approving ? "Approval note (optional):" : "Reason for rejection (optional):"), "") ?? "";
+  let password = "";
+  if (approving) {
+    // Cancelling the password prompt sends nothing and executes nothing.
+    password = await askApprovalPassword();
+    if (!password) return;
+  }
   primary.disabled = true; if (secondary) secondary.disabled = true;
   try {
+    // Approval carries the password; rejection is non-consequential and does not.
+    const body = approving ? { note: note, password: password } : { note: note };
     const r = await fetch("/api/admin/ai-approval/proposals/" + encodeURIComponent(id) + "/" + decision, {
-      method:"POST", credentials:"same-origin", headers:taskAuthHeaders(), body:JSON.stringify({note})
+      method:"POST", credentials:"same-origin", headers:taskAuthHeaders(), body:JSON.stringify(body)
     });
     const data=await r.json();
     if(!r.ok) throw new Error(data.detail || "Proposal decision failed.");
