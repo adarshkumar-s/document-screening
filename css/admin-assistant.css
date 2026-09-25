@@ -210,3 +210,89 @@
 .sa-selected-identity small{display:block;color:#64748b;font-size:10px;margin-top:2px}
 .sa-back-link{align-self:flex-start;border:0;background:transparent;color:#1d4ed8;padding:0;cursor:pointer;font-size:11px;font-weight:700}
 .sa-back-link:hover{text-decoration:underline}
+
+/* --- Admin AI SA gate / timeout card (feature branch additions) --- */
+
+/* =====================================================================
+   ADMIN AI 🔒 — SA gateway (security lock) and safe retry lifecycle
+   ===================================================================== */
+.sa-entry-btn {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  padding: 2px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sa-entry-btn:hover {
+  background: rgba(11, 47, 85, 0.08);
+}
+
+.sa-gate {
+  padding: 14px 8px 6px;
+}
+.sa-gate form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sa-gate-label {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--gov-navy, #0b2f55);
+}
+.sa-gate-error {
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sa-welcome {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--gov-navy, #0b2f55);
+  background: #e8f0fb;
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.sa-timeout-card {
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 8px 0;
+}
+.sa-timeout-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #9a3412;
+}
+.sa-timeout-detail {
+  font-size: 12px;
+  color: #7c2d12;
+  margin-top: 4px;
+}
+.sa-timeout-query {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #57534e;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px dashed #fdba74;
+  border-radius: 8px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+}
+.sa-timeout-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.sa-retry-btn,
+.sa-dismiss-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+}

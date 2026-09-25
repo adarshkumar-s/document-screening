@@ -152,6 +152,126 @@ POST                /api/admin/data-management/restore            (admin only)
 
 All existing `/api/auth`, `/api/documents`, OCR, validation, task, administrator, AI-governance, comparison, and audit routes remain owned by `server.py` and continue to be available through `main:app`.
 
+## SA / Admin AI and the Verification Officer AI
+
+The Admin panel's AI entry point is now `Admin AI 🔒` — the gateway to **SA**,
+the privileged administrator assistant. The normal (non-SA) assistant lives in
+the Verification Officer interface as a small AI icon next to the AI Task icon.
+
+### Admin AI 🔒 (SA)
+
+- SA is NOT accessible before authentication. Clicking `Admin AI 🔒` prompts
+  `Enter AI access password`. After server-side verification the assistant
+  greets `Welcome, <verified administrator name>` and SA is available.
+- The password is verified **server-side** and resolves to an already
+  configured administrator identity (`valid credential → administrator
+  identity → SA session`). The browser cannot submit a name, `isAdmin`,
+  `unlocked=true`, hidden form fields, or JS variables and become anyone.
+- **Credential ownership is enforced**: an SA credential belongs to exactly
+  one administrator and can only be created and used by that administrator.
+  Administrator A can neither create nor use a credential of administrator B
+  (the endpoint always binds to the calling administrator; unlock only ever
+  considers the caller's own credentials).
+- Credentials are stored argon2id-hashed (never plaintext, never logged,
+  never returned) and can be seeded with `SA_ACCESS_PASSWORD` or
+  rotated via `POST /api/sa/credentials` (Administrator only, self).
+  **Rotation is real**: it invalidates and scrubs the previous credential and
+  revokes every existing SA session for/by that identity — the new password
+  must be used to re-authenticate.
+- SA authorization is a **short-lived server-side session** bound to the
+  logged-in administrator (user id + session version) and the verified
+  identity. It expires (`SA_SESSION_TTL_SECONDS`, default 15 minutes), is
+  revoked on logout / password change / role change, and requires
+  re-authentication after expiry. The httpOnly cookie only carries an opaque
+  token; the database stores its SHA-256 hash.
+- All existing SA security controls are preserved: RBAC, tool allowlists,
+  approval gates (proposals execute only after explicit Administrator
+  approval in the AI Approval Center), mutation safety, audit logging, actor
+  isolation (one administrator can never touch another's requests), and
+  prompt-injection protections. The model can never grant itself tools and
+  model output is never authorization.
+
+### SA timeout / Try again (no duplicate mutations)
+
+SA requests run through a safe task lifecycle (`assistant_tasks.py`):
+
+- Every logical request carries a client-generated `request_id`; the original
+  request is preserved server-side automatically.
+- On timeout or a recoverable provider failure the UI shows
+  `The assistant timed out.` with a real `Try again` button (and a
+  Cancel/Dismiss path). Try again re-attaches to the SAME logical request -
+  nothing has to be re-typed.
+- **A timeout followed by Try Again can NEVER execute the same logical
+  operation twice**: completed requests replay their stored result; running
+  requests are re-attached (never started twice); and any re-executed runner
+  is idempotent through proposal idempotency keys, so one logical request can
+  create at most one proposal and an approved proposal executes exactly once
+  (a retried approval replays the stored outcome).
+- Running work is owned by a **worker lease with a real heartbeat**: a live
+  worker can never be reclaimed, however long it runs. Only a provably dead
+  lease (missed heartbeats past the lease timeout — the owning process is
+  gone) may be re-claimed, and every execution owns a `run_id` so a zombie
+  worker can never overwrite a reclaimed execution's state or result.
+- Proposal approval is a **single-writer execution claim** (`PROPOSED ->
+  EXECUTING` compare-and-set in SQL): of two concurrent approvals exactly one
+  can acquire the claim and run the mutation, the other gets a safe
+  conflict/re-attach response, and completion is ownership-guarded and
+  **fail-closed** (`execution_claim`, exactly-one-row writes on
+  `EXECUTING -> EXECUTED/FAILED`): a missing rowcount is never treated as
+  success, a stale executor can never overwrite an outcome or emit a false
+  audit event, and it receives a safe conflict/re-attach response instead of
+  reporting its stale result. An already `EXECUTED` approval still replays
+  its stored result. The assistant request claims (`_claim` /
+  `_claim_stale_running` / `_mark_finished`) use the same fail-closed
+  exactly-one-row ownership checks.
+- Credential rotation commits **atomically in one transaction** (old
+  credentials deactivated + hashes scrubbed + existing SA sessions revoked +
+  new credential registered together): there is no committed state where the
+  new password works while an old captured SA session is still alive.
+- The SA unlock throttle is **database-backed and shared by every application
+  worker/process** (atomic admission via a counter-row upsert): multiple
+  workers or restarts cannot bypass the failed-attempt limit. Successful
+  authentication clears the state; expired windows reset and old records are
+  cleaned; no secret is ever stored in the throttle.
+- Permanent authorization or validation errors never offer Try Again.
+
+### Verification Officer AI (normal assistant)
+
+- Appears as a small ✨ AI icon next to the AI Task icon in the Verification
+  Officer interface (`js/officer-assistant.js`).
+- It may only explain documents and fields, summarize evidence, analyze the
+  information available to the officer, answer questions, explain land-record
+  terminology, and suggest verification checks.
+- It is an assistant only. Server-side it exposes exactly one read-only
+  endpoint (`POST /api/officer/assistant/query`) with allowlisted read-only
+  lookups: no mutations, no approvals/rejections, no administrative actions,
+  no SA access, no admin tools, no impersonation, no authorization or session
+  changes. Prompt-injection attempts and action requests are refused
+  deterministically, and a Verification Officer calling the API manually or
+  sending malicious prompts still cannot obtain any privileged capability.
+
+New/changed API surface:
+
+```
+POST                /api/sa/unlock                 (admin login + AI access password)
+POST                /api/sa/lock
+GET                 /api/sa/session
+POST                /api/sa/credentials            (admin only; configure/rotate)
+POST                /api/admin/assistant/query     (SA session required; request_id idempotent)
+POST                /api/admin/assistant/briefing  (SA session required; request_id idempotent)
+GET                 /api/admin/assistant/requests/{request_id}
+POST                /api/admin/assistant/requests/{request_id}/retry
+POST                /api/admin/assistant/requests/{request_id}/cancel
+POST                /api/officer/assistant/query   (Verification Officer only; read-only)
+```
+
+Files: `sa_gateway.py` (credential/session security lock),
+`assistant_tasks.py` (idempotent request lifecycle),
+`officer_assistant.py` (read-only normal AI), `js/officer-assistant.js` and the
+SA parts of `js/admin-assistant.js` (UI). Tests live in
+`tests/test_sa_gateway.py`, `tests/test_sa_lifecycle.py`, and
+`tests/test_officer_assistant.py`.
+
 The compatibility property/workflow APIs used by existing governed paths remain available inside the mapping support layer; they are not the replacement map UI or its data source.
 
 ## Data boundary and safety

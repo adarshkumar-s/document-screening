@@ -384,54 +384,81 @@
         <div id="staff-tab-dashboard" class="hidden">
           
           <!-- ========================================== -->
-          <!-- AI ADMIN ASSISTANT COMPONENT               -->
+          <!-- ADMIN AI 🔒 — gateway to SA.               -->
+          <!-- SA is NOT accessible before the AI access  -->
+          <!-- password is verified server-side and the   -->
+          <!-- verified administrator name comes from the -->
+          <!-- server, never from the browser.            -->
           <!-- ========================================== -->
           <div class="admin-assistant-container" id="adminAssistantWidget">
             <div class="assistant-header">
               <div class="assistant-title">
                 <span class="assistant-icon">✨</span>
-                <h3 style="margin:0;font-size:16px;color:var(--gov-navy)">AI Admin Assistant</h3>
+                <h3 style="margin:0;font-size:16px;color:var(--gov-navy)"><button type="button" id="saEntryBtn" class="sa-entry-btn" onclick="openSaGate()">Admin AI 🔒</button></h3>
                 <span class="badge-read-only">Administrator</span>
               </div>
               <div class="assistant-header-actions">
-                <button type="button" class="btn-briefing" id="btnGenerateBriefing" onclick="triggerSystemBriefing()">
+                <span id="saWelcome" class="sa-welcome" hidden></span>
+                <button type="button" class="btn ghost" id="saLockBtn" onclick="handleSaLock()" hidden>🔒 Lock</button>
+                <button type="button" class="btn-briefing" id="btnGenerateBriefing" onclick="triggerSystemBriefing()" hidden>
                   📊 Generate System Briefing
                 </button>
               </div>
             </div>
 
-            <div class="assistant-chat-log" id="assistantChatLog">
-              <div class="assistant-message system-intro">
-                Welcome, Administrator. Ask about pending records, review activity, or click "Generate System Briefing".
+            <!-- Locked state: enter AI access password -->
+            <div id="saGatePrompt" class="sa-gate" hidden>
+              <form id="saUnlockForm" onsubmit="handleSaUnlock(event)">
+                <label for="saUnlockPassword" class="sa-gate-label">Enter AI access password</label>
+                <div class="assistant-input-group">
+                  <input
+                    type="password"
+                    id="saUnlockPassword"
+                    autocomplete="off"
+                    required
+                  />
+                  <button type="submit" id="saUnlockBtn" class="btn saffron">Unlock</button>
+                  <button type="button" id="saUnlockCancel" class="btn ghost" onclick="closeSaGate()">Cancel</button>
+                </div>
+                <div id="saUnlockError" class="sa-gate-error" hidden></div>
+              </form>
+            </div>
+
+            <!-- Unlocked state: the SA assistant workspace -->
+            <div id="saWorkspace" hidden>
+              <div class="assistant-chat-log" id="assistantChatLog">
+                <div class="assistant-message system-intro">
+                  SA is online. Ask about pending records, review activity, or click "Generate System Briefing".
+                </div>
               </div>
-            </div>
 
-            <div class="assistant-loading-indicator" id="assistantLoading" style="display: none;">
-              <div class="spinner"></div>
-              <span>Consulting system records...</span>
-            </div>
-
-            <div class="assistant-suggestions">
-              <span class="suggestions-label">Suggested:</span>
-              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('What\'s happening today?')">What's happening today?</button>
-              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('Show recent activity')">Show recent activity</button>
-              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('Find pending records')">Find pending records</button>
-              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('What needs my attention?')">What needs my attention?</button>
-              <button type="button" class="btn-chip" onclick="submitAssistantQuestion('Show low-confidence records')">Show low-confidence records</button>
-            </div>
-
-            <form id="assistantForm" action="javascript:void(0)">
-              <div class="assistant-input-group">
-                <input
-                  type="text"
-                  id="assistantInput"
-                  placeholder="Ask about records, statistics, or request an action..."
-                  autocomplete="off"
-                  required
-                />
-                <button type="submit" id="assistantSubmitBtn" class="btn saffron">Send</button>
+              <div class="assistant-loading-indicator" id="assistantLoading" style="display: none;">
+                <div class="spinner"></div>
+                <span>Consulting system records...</span>
               </div>
-            </form>
+
+              <div class="assistant-suggestions">
+                <span class="suggestions-label">Suggested:</span>
+                <button type="button" class="btn-chip" onclick="submitAssistantQuestion(\'What\'s happening today?\')">What\'s happening today?</button>
+                <button type="button" class="btn-chip" onclick="submitAssistantQuestion(\'Show recent activity\')">Show recent activity</button>
+                <button type="button" class="btn-chip" onclick="submitAssistantQuestion(\'Find pending records\')">Find pending records</button>
+                <button type="button" class="btn-chip" onclick="submitAssistantQuestion(\'What needs my attention?\')">What needs my attention?</button>
+                <button type="button" class="btn-chip" onclick="submitAssistantQuestion(\'Show low-confidence records\')">Show low-confidence records</button>
+              </div>
+
+              <form id="assistantForm" action="javascript:void(0)">
+                <div class="assistant-input-group">
+                  <input
+                    type="text"
+                    id="assistantInput"
+                    placeholder="Ask about records, statistics, or request an action..."
+                    autocomplete="off"
+                    required
+                  />
+                  <button type="submit" id="assistantSubmitBtn" class="btn saffron">Send</button>
+                </div>
+              </form>
+            </div>
           </div>
           <!-- ========================================== -->
 
@@ -865,6 +892,8 @@
   else bootAdminAssistant();
 })();
 </script>
+<!-- Verification Officer AI (normal assistant: read-only, server-enforced) -->
+<script src="js/officer-assistant.js"></script>
 <!-- Mapping navigation stays outside the canonical document/OCR application bundle. -->
 <script src="portal-ui.js"></script>
 </body>
