@@ -85,6 +85,11 @@ ACTION_REGISTRY = {
     # mutation's completion itself stays a separate, human, safety-gated
     # action. This reuses the single existing approval system.
     "CREATE_MUTATION_APPLICATION",
+    # SA Investigation: SA PROPOSES a recommendation for an uploaded document;
+    # approving it only records the ADMINISTRATOR's decision on the
+    # investigation (sa_investigation.execute_decision). It never touches a
+    # document status, a register or a parcel — those keep their own flows.
+    "SA_INVESTIGATION_DECISION",
 }
 
 class ProposalCreate(BaseModel):
@@ -236,6 +241,9 @@ def _validate_target(p):
         allowed_reasons = {"SALE","GIFT","INHERITANCE","PARTITION","MERGER","COURT_DECREE","OTHER"}
         if str(proposed.get("reason_type") or "SALE").upper() not in allowed_reasons:
             raise HTTPException(400,"Mutation type is not registered.")
+    if action == "SA_INVESTIGATION_DECISION":
+        from sa_investigation import validate_decision_proposal
+        validate_decision_proposal(p)
     if action in {"ASSIGN_AI_TASK","REASSIGN_AI_TASK"}:
         assigned_values=[]
         proposed = p.get("proposed_state") or p.get("after") or {}
@@ -428,6 +436,13 @@ def _execute(proposal, admin):
             result = create_mutation(MutationCreate(**payload), admin)
             mutation = result["mutation"]
             return {"mutations": [mutation["id"]], "mutation_no": mutation["mutation_no"], "status": mutation["status"]}
+
+        if action=="SA_INVESTIGATION_DECISION":
+            # Records the administrator's decision on an SA investigation
+            # (its own compare-and-set on the investigation row). No land
+            # record, document status or register is modified here.
+            from sa_investigation import execute_decision
+            return execute_decision(proposal, admin)
 
         if action=="REQUEST_REPROCESSING":
             for rid in ids:

@@ -303,6 +303,29 @@ SA_MODEL=gemini-3.6-flash
 
 Do not commit the real activation phrase. Production refuses to activate SA unless SA_ACTIVATION_CODE is configured.
 
+## SA Investigation (automatic document investigation)
+
+When an administrator uploads a land document, **SA** now investigates it automatically against the *existing* Land Intelligence registers and prepares an evidence-backed recommendation for the administrator. SA orchestrates and explains the existing systems; it never replaces them. The Land Intelligence, court-case, mutation, registry and parcel views remain authoritative, and SA never calls a mutation or any other land-changing operation directly.
+
+Pipeline (persistent `SA Investigation`, e.g. `INV-2026-000001`):
+
+1. **Extract** — identifiers from the stored fields and OCR text (khasra/survey, parcel, registration number, mutation number, court case number, village/tehsil/district, owner/buyer/seller names, area, dates). Every value keeps its source (`DOCUMENT_FIELDS` or `OCR_TEXT_PATTERN`), page and confidence.
+2. **Match** — land record aggregate (`land_record_detail`), parcel register (`mapping._resolve`), mutation/deed register (`_register_index`), litigation register (`list_cases` / `_all_cases`) and screened registry documents. Match classes: `EXACT`, `STRONG`, `POSSIBLE`, `CONFLICTING`, `NO_MATCH`. Strong identifiers (khasra/survey, parcel, registration no., mutation no., case no.) can establish a match; supporting identifiers (village/tehsil/district, names, area, dates) only corroborate. A `POSSIBLE` match is never upgraded to a fact.
+3. **Investigate** — ownership history (`analyze_ownership_history`), mutations and encumbrances, court cases, duplicate registry transactions and the existing deterministic land-risk engine (`compute_land_risk`), whose flags are imported as findings (origin `LAND_RISK_ENGINE`) instead of being re-scored.
+4. **Timeline** — one chronological view built on `land_intel.build_timeline` plus the investigated document, court filings and mutations; ordering anomalies become findings.
+5. **Findings** — `OWNERSHIP_MISMATCH`, `MUTATION_MISMATCH`, `COURT_CASE_OVERLAP`, `AREA_MISMATCH`, `IDENTIFIER_MISMATCH`, `TIMELINE_ANOMALY`, `DUPLICATE_TRANSACTION`, `PARTY_RELATIONSHIP`, `SOURCE_UNAVAILABLE`, … each with severity (`INFO`–`CRITICAL`), confidence, status label (`FOUND` / `NOT FOUND IN SEARCHED SOURCES` / `POSSIBLE MATCH` / `CONFLICT` / `UNKNOWN` / `SOURCE UNAVAILABLE`), evidence references, source records with deep links, pages, "Why am I seeing this?" and "What would resolve this?".
+6. **Scenarios** — A (Approve), B (Reject), C (Further verification), each computed from the structured findings: assumptions, supporting and contradicting evidence, affected records, expected result and uncertainties. No LLM is involved; the engine is deterministic (`sa-investigation/1.0.0`, rules `2026.09.1`).
+7. **Recommendation** — `APPROVE`, `REJECT` or `FURTHER_VERIFICATION` with the decisive rule, critical findings, separate confidences (parcel match, ownership, mutation match, court-case match, overall evidence) and "what would change this".
+8. **Administrator decision** — the recommendation is filed as a proposal (`SA_INVESTIGATION_DECISION`) in the existing AI Approval Center. The administrator reviews the evidence and decides with the existing password confirmation; the server verifies the password, runs the existing `approve_proposal()` CAS (`PROPOSED → EXECUTING → EXECUTED/FAILED`) and records the decision on the investigation. A decision that differs from the SA recommendation requires a note and is audited as an override. Nothing is approved autonomously.
+
+States: `CREATED → EXTRACTING → MATCHING → INVESTIGATING → SCENARIO_ANALYSIS → READY_FOR_REVIEW → APPROVED | REJECTED`, plus `NEEDS_REVIEW` and `FAILED`. Failed or unfinished investigations are never presented as results. Investigations run through the existing assistant task infrastructure (request IDs, run IDs, heartbeat, retry, cancellation, actor isolation); every worker write is guarded by the run token so a stale worker cannot complete a re-claimed investigation. Identical document content (file/OCR fingerprint) is reported as *already investigated* with **Open Existing** / **Run New**.
+
+UI: the **SA Investigations** staff tab lists investigation cards (document, status, finding badges, recommendation, confidence, **View Investigation**) and HIGH/CRITICAL alerts; the detail view follows Document → Extracted Info → Matched Parcel → Ownership → Registry → Mutation → Court Cases → Timeline → Conflicts → Scenarios → SA Recommendation → Administrator Decision, contradictions first, with progress stages while running. Evidence links open the existing views (`[Open Court Case]`, `[Open Mutation]`, `[Open Registry]`, `[Open Jamabandi]`, `[Open Parcel]`, `[Open Source Document]`); `/?investigation=INV-…` deep-links an investigation. The document review page shows an SA Investigation card and the upload editor shows the automatic start.
+
+API (`/api/sa/investigations`, staff RBAC; visibility follows the existing document visibility rules): `GET` list, `POST` create (`document_id`, `force_new`), `GET /alerts`, `GET /{id}`, `GET /{id}/explain` ("Why did SA recommend X?"), `POST /{id}/events` (evidence opened / scenario viewed), `POST /{id}/retry`, `POST /{id}/cancel`, `POST /{id}/decision` (`decision`, `note`, `password`; administrator only).
+
+Configuration: `SA_AUTO_INVESTIGATE` (default `1`; administrator uploads only), `SA_INVESTIGATION_SOURCE_TIMEOUT_SECONDS` (default `20`; an unavailable source marks the investigation *partial* and is reported as `SOURCE UNAVAILABLE`, never invented), `SA_INVESTIGATION_WAIT_SECONDS` / `SA_INVESTIGATION_UPLOAD_WAIT_SECONDS` (how long a request waits for the background run before returning progress). Tables: `land_investigations`, `investigation_findings`, `investigation_events` (created at import/startup, like the other registers). External data sources are not queried; only database records and existing application services are used.
+
 ## Local run
 
 ```bash
@@ -330,4 +353,4 @@ The container runs `main:app`.
 python -m pytest -q
 ```
 
-The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. JavaScript syntax checks use `node --check map.js` and the existing portal scripts.
+The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. `tests/test_sa_investigation.py` covers SA Investigation extraction, matching, court/mutation/ownership findings, timeline, scenarios, isolation, approval CAS/replay/concurrency and audit hygiene. JavaScript syntax checks use `node --check map.js` and the existing portal scripts.

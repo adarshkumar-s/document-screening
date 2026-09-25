@@ -4,6 +4,10 @@ import os
 # it before any test module imports so login tests do not depend on import
 # order (test_ocr_workflow.py used to be the only place this was set).
 os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "Admin@123")
+# SA Investigation auto-start on administrator uploads runs on the background
+# assistant worker; keep the shared suite deterministic and opt in per test
+# (tests/test_sa_investigation.py monkeypatches it back on where needed).
+os.environ.setdefault("SA_AUTO_INVESTIGATE", "0")
 import sys
 from pathlib import Path
 
