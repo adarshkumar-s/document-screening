@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -44,32 +43,16 @@ def test_generated_court_pdf_uses_embedded_text_and_extracts_land_identity():
     assert parsed["fields"]["village"]["value"] == "Shantiban"
 
 
-def test_court_pdf_processing_does_not_require_tesseract_or_gemini_for_text_layer(monkeypatch):
-    sample = Path("samples/demo-land-intel/DEMO-LI-COURT-001-court-order.pdf")
-    assert sample.is_file()
-
-    async def fail_original(*args, **kwargs):
-        raise AssertionError("embedded-text PDFs must bypass the expensive OCR/AI path")
-
-    monkeypatch.setattr(server, "run_ocr_pipeline", fail_original)
-    # Re-install the bridge against the patched function to make the bypass assertion explicit.
-    import ocr_land_bridge
-    monkeypatch.setattr(server, "run_ocr_pipeline", fail_original)
-    # The installed bridge is already the public function used by the app; call its
-    # underlying behavior through the module helper by temporarily restoring it.
-    monkeypatch.undo()
-
-    # The production entrypoint has installed the bridge. Its marker proves the
-    # route is using the fast wrapper rather than the original implementation.
+def test_production_entrypoint_installs_pdf_land_bridge():
     assert getattr(server.run_ocr_pipeline, "_land_bridge", False) is True
 
 
 def test_uploaded_court_pdf_gets_land_context_when_demo_records_are_seeded():
     # This test exercises the actual upload endpoint. The demo seed is intentionally
-    # explicit; don't silently seed production data in application startup.
+    # explicit; production startup must never silently create demo data.
     headers = _make_admin()
     seeded = client.post("/api/admin/demo/seed", json={"scenario": "LI"}, headers=headers)
-    assert seeded.status_code == 200
+    assert seeded.status_code == 200, seeded.text
 
     sample = Path("samples/demo-land-intel/DEMO-LI-COURT-001-court-order.pdf")
     response = client.post(
