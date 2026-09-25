@@ -26,6 +26,8 @@ from server import (
     require_roles,
 )
 from land_intel import _audit, ensure_land_tables
+import land_demo_data
+import land_demo_docs
 
 demo_router = APIRouter(prefix="/api/admin/demo", tags=["Demo Scenarios"])
 
@@ -213,6 +215,25 @@ def seed_all() -> Dict[str, Any]:
     return {"scenarios": sorted(created.keys()), "artifacts": created}
 
 
+def seed_all_datasets() -> Dict[str, Any]:
+    """Original S1-S10 fixtures plus the DEMO-LI Land Intelligence dataset."""
+    base = seed_all()
+    li = land_demo_data.seed_all()
+    merged = dict(base["artifacts"])
+    for scenario, artifact_ids in li["artifacts"].items():
+        merged[f"LI-{scenario}"] = artifact_ids
+    return {
+        "scenarios": base["scenarios"],
+        "artifacts": merged,
+        "land_intel": {
+            "dataset": land_demo_data.DATASET,
+            "parcel_count": li["parcel_count"],
+            "scenarios": len(li["artifacts"]),
+            "artifacts": li["artifacts"],
+        },
+    }
+
+
 class SeedRequest(BaseModel):
     scenario: str = "all"
 
@@ -227,9 +248,16 @@ def seed_scenarios(req: SeedRequest, user: Dict[str, Any] = Depends(require_role
     """Seed deterministic demo scenarios (administrator only, audited)."""
     wanted = (req.scenario or "all").strip().upper()
     known = {item["id"] for item in SCENARIOS}
-    if wanted != "ALL" and wanted not in known:
-        raise HTTPException(status_code=422, detail=f"Unknown scenario '{req.scenario}'. Use 'all' or one of {sorted(known)}.")
-    result = seed_all()  # deterministic dataset: seeding is all-or-nothing and idempotent
+    li_only = wanted == "LI"
+    if wanted not in {"ALL", "LI"} and wanted not in known:
+        raise HTTPException(status_code=422, detail=f"Unknown scenario '{req.scenario}'. Use 'all', 'LI' (Land Intelligence dataset) or one of {sorted(known)}.")
+    if li_only:
+        li = land_demo_data.seed_all()
+        result = {"scenarios": [], "artifacts": dict(li["artifacts"]),
+                  "land_intel": {"dataset": land_demo_data.DATASET, "parcel_count": li["parcel_count"],
+                                 "scenarios": len(li["artifacts"]), "artifacts": li["artifacts"]}}
+    else:
+        result = seed_all_datasets()  # deterministic dataset: seeding is all-or-nothing and idempotent
     _audit(user, "DEMO_DATA_SEEDED", f"Demo scenarios seeded ({wanted}); artifacts: {sum(len(v) for v in result['artifacts'].values())}")
     return {"status": "seeded", "requested": wanted, **result}
 
@@ -255,8 +283,32 @@ def clear_demo_data(user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
             db.execute(f"DELETE FROM land_mutations WHERE id IN ({placeholders})", tuple(demo_mutation_ids))
             removed["mutations"] = len(demo_mutation_ids)
         removed["events"] = removed["mutations"]
+    li_removed = land_demo_data.clear_all()
+    for key, value in li_removed.items():
+        removed[key] = removed.get(key, 0) + value
     _audit(user, "DEMO_DATA_CLEARED", f"Demo data cleared: {removed}")
     return {"status": "cleared", "removed": removed}
+
+
+@demo_router.get("/land-intel/index")
+def land_intel_demo_index(user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
+    """Demo-data index for the DEMO-LI Land Intelligence dataset: scenario ->
+    parcel -> expected result -> documents -> expected alert, plus the sample
+    document inventory and which files are actually present on disk."""
+    import os
+    from server import BASE_DIR
+
+    docs_dir = os.path.join(str(BASE_DIR), "samples", "demo-land-intel")
+    manifest = land_demo_docs.document_manifest()
+    for entry in manifest:
+        entry["file_present"] = os.path.isfile(os.path.join(docs_dir, entry["filename"]))
+    return {
+        "dataset": land_demo_data.DATASET,
+        "seed_endpoint": "POST /api/admin/demo/seed {\"scenario\": \"LI\"}",
+        "clear_endpoint": "DELETE /api/admin/demo/data",
+        "scenarios": land_demo_docs.SCENARIO_INDEX,
+        "documents": manifest,
+    }
 
 
 def _is_demo_metadata(metadata_raw: Any) -> bool:

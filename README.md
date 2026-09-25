@@ -100,12 +100,27 @@ property resolution).
   manifest, writes an automatic safety copy of the current data first, then
   restores, verifies counts, and audits every step. Member sanitisation
   rejects path traversal; RBAC rejects non-admins with 403.
+- **Court-case (litigation) register** — civil cases recorded against a
+  parcel (same survey + village identity) with fictional court, case number,
+  filing date, parties, status (`PENDING / STAYED / DISPOSED / WITHDRAWN`),
+  stage, issue summary, next hearing, an orders log, and an explicit
+  `affects_transfer` stay flag. Reviewer/Admin write; every authenticated user
+  reads; every change is audited. Active cases feed two deterministic risk
+  flags — `ACTIVE_LITIGATION` and `TRANSFER_STAYED` — and surface as an
+  "Active litigation found for this property" alert in the document
+  land-context panel, the land-record detail and verification reports.
 - **Demo scenarios** — ten deterministic, admin-governed fixtures
   (`POST /api/admin/demo/seed`) covering clean records, valid mutations,
   active encumbrances, ownership changes without mutations, conflicts, area
-  jumps, pending/rejected mutations, low-quality OCR and duplicates. All demo
-  artifacts are tagged and removable via `DELETE /api/admin/demo/data`
-  without touching production data.
+  jumps, pending/rejected mutations, low-quality OCR and duplicates, plus the
+  larger synthetic **`DEMO-LI-` Land Intelligence dataset** (19 interconnected
+  parcels across mutation / encumbrance / litigation / risk scenarios with 25
+  generated sample documents in `samples/demo-land-intel/`). Seed it with
+  `{"scenario": "LI"}` (or `"all"`); browse its index at
+  `GET /api/admin/demo/land-intel/index`; read
+  `samples/demo-land-intel/INDEX.md`. All demo artifacts are tagged and
+  removable via `DELETE /api/admin/demo/data` without touching production
+  data.
 
 ### New API surface
 
@@ -113,6 +128,9 @@ property resolution).
 GET/POST            /api/encumbrances
 GET/PUT             /api/encumbrances/{id}
 POST                /api/encumbrances/{id}/release
+GET/POST            /api/court-cases
+GET/PUT             /api/court-cases/{id}          (+ /orders)
+GET                 /api/land-records/{land_id}/court-cases
 GET/POST            /api/mutations
 GET                 /api/mutations/{id}            (+ /events)
 POST                /api/mutations/{id}/review     (verifier/admin)
@@ -189,4 +207,4 @@ The container runs `main:app`.
 python -m pytest -q
 ```
 
-The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. JavaScript syntax checks use `node --check map.js` and the existing portal scripts.
+The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, compatibility helpers, and the `DEMO-LI` synthetic dataset (seeding, idempotence, relationships, risk verdicts, extraction of every sample document, and the upload -> match -> litigation-alert flow) in `tests/test_land_demo.py`. JavaScript syntax checks use `node --check map.js` and the existing portal scripts.
