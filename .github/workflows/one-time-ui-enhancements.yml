@@ -1,0 +1,38 @@
+name: One-time UI enhancements
+
+on:
+  push:
+    branches: [arena/ui-land-records-dashboard]
+
+permissions:
+  contents: write
+
+jobs:
+  enhance:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+      - name: Apply enhancements
+        run: python scripts/one_time_ui_enhancements.py
+      - name: Validate
+        run: |
+          python -m compileall -q .
+          while IFS= read -r -d '' file; do node --check "$file"; done < <(find . -type f -name '*.js' -not -path './.git/*' -print0)
+          git diff --check
+      - name: Commit and remove bootstrap files
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html js/ui-enhancements.js css/ui-enhancements.css
+          git commit -m "Improve land records dashboard and records search"
+          git rm .github/workflows/one-time-ui-enhancements.yml scripts/one_time_ui_enhancements.py
+          git commit -m "Remove one-time UI enhancement bootstrap"
+          git push origin "$BRANCH"
