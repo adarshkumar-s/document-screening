@@ -108,9 +108,29 @@ function openDocumentDeepLink(){
   }, 0);
 }
 function openLandDeepLink(){
-  const landId = new URLSearchParams(window.location.search).get('land_id');
-  if(!landId || !me || !window.LandIntel) return;
+  const params = new URLSearchParams(window.location.search);
+  const landId = params.get('land_id');
+  const parcelId = params.get('parcel');
+  const wantsMap = params.get('map') === '1' || params.get('locate') === '1';
+  if((!landId && !parcelId) || !me) return;
+  // /?map=1&land_id=..., /?locate=1&... and /?parcel=... forward to the
+  // existing map view, which resolves the canonical parcel from the same
+  // backend object. A bare /?land_id=... keeps opening Land Intelligence.
+  if(wantsMap || (parcelId && !landId)){
+    const target = new URLSearchParams();
+    target.set('locate', '1');
+    if(landId) target.set('land_id', landId);
+    if(parcelId) target.set('parcel', parcelId);
+    const survey = params.get('survey_number');
+    if(survey) target.set('survey_number', survey);
+    const village = params.get('village');
+    if(village) target.set('village', village);
+    window.location.href = `/map?${target.toString()}`;
+    return;
+  }
+  if(!window.LandIntel) return;
   if(me.role !== ROLE_VERIFICATION_OFFICER && me.role !== ROLE_ADMIN) return;
+  if(!landId) return;
   // Land Intelligence detail lives in the existing staff portal routing.
   window.setTimeout(()=>{
     window.LandIntel.openLand(landId);
@@ -334,7 +354,9 @@ function renderSimpleTable(docs){
       <td><span class="chip">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
       <td>${getStatusBadge(doc.status)}</td>
       <td style="text-align:right">
-        <button class="btn ghost" onclick="openSimpleDetail('${doc.id}')" style="padding:4px 10px;font-size:12px">View Details</button>
+        <button class="btn ghost" onclick="openSimpleDetail('${escapeHtml(String(doc.id))}')" style="padding:4px 10px;font-size:12px">View Details</button>
+        <button class="btn secondary" data-locate-record="${escapeHtml(String(doc.id))}" onclick="locateRecordOnMap('${escapeHtml(String(doc.id))}')" style="padding:4px 10px;font-size:12px" title="Locate this record's parcel on the map">📍 Locate</button>
+        <div class="locate-status" data-locate-status="${escapeHtml(String(doc.id))}"></div>
       </td>
     `;
     tb.appendChild(tr);
@@ -1334,20 +1356,78 @@ function renderStaffRecords(docs){
   tb.innerHTML = '';
   docs.forEach(doc=>{
     const f = doc.fields || {};
+    const docId = String(doc.id);
     tb.innerHTML += `
       <tr>
-        <td><span class="mono">#${doc.id}</span></td>
+        <td><span class="mono">#${escapeHtml(docId)}</span></td>
         <td><b>${escapeHtml(doc.filename)}</b></td>
         <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
         <td>${getStatusBadge(doc.status)}</td>
         <td><span class="pill ${doc.mean_conf>=75?'valid':'review'}">${doc.mean_conf}%</span></td>
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
         <td style="text-align:right">
-          <button class="btn ghost" onclick="openStaffReview('${doc.id}')" style="padding:4px 8px;font-size:11px">View</button>
+          <button class="btn ghost" onclick="openStaffReview('${escapeHtml(docId)}')" style="padding:4px 8px;font-size:11px">View</button>
+          <button class="btn secondary" data-locate-record="${escapeHtml(docId)}" onclick="locateRecordOnMap('${escapeHtml(docId)}')" style="padding:4px 8px;font-size:11px" title="Locate this record's parcel on the map">📍 Locate</button>
+          <div class="locate-status" data-locate-status="${escapeHtml(docId)}"></div>
         </td>
       </tr>
     `;
   });
+}
+
+// ---------------------------------------------------------------------------
+// LOCATE (All Records -> canonical parcel -> map)
+// ---------------------------------------------------------------------------
+// Locate resolves the record's canonical parcel through the backend resolver
+// (the same object the map page and Land Intelligence use), then opens the
+// existing map view on that exact parcel via its deep link. Missing or
+// unresolved location data is always reported, never swallowed.
+const LOCATE_STATE_LABELS = {
+  VERIFIED: 'Located on map',
+  STORED_POINT: 'Located on map',
+  REFERENCE_GEOMETRY: 'Located on map',
+  GEOCODED: 'Location resolved from address — verify',
+  UNRESOLVED: 'Location unavailable — no verified coordinates',
+};
+
+function locateStatusMessage(parcel){
+  const state = parcel?.location?.state || 'UNRESOLVED';
+  return LOCATE_STATE_LABELS[state] || parcel?.location?.label || 'Location state unavailable';
+}
+
+function setLocateStatus(docId, html){
+  document.querySelectorAll(`[data-locate-status="${docId}"]`).forEach(node=>{
+    node.innerHTML = html || '';
+  });
+}
+
+async function locateRecordOnMap(docId){
+  const button = document.querySelector(`[data-locate-record="${docId}"]`);
+  const original = button ? button.textContent : '';
+  if(button){ button.disabled = true; button.textContent = 'Locating…'; }
+  setLocateStatus(docId, 'Resolving parcel…');
+  try{
+    const parcel = await api('/api/parcels/resolve', {
+      method:'POST',
+      body: JSON.stringify({ document_id: docId, persist: true })
+    });
+    const message = locateStatusMessage(parcel);
+    const mapUrl = parcel.urls?.map || '/map';
+    if(parcel.located){
+      setLocateStatus(docId, `${escapeHtml(message)} — opening map…`);
+      window.location.href = mapUrl;
+      return;
+    }
+    const issue = (parcel.quality?.issues || [])[0] || 'No stored geometry or coordinates were found for this land record.';
+    const hint = parcel.location?.can_geocode
+      ? ' The map view offers an explicit “Resolve from address” step.'
+      : '';
+    setLocateStatus(docId, `<span class="locate-warn">${escapeHtml(message)}.</span> ${escapeHtml(issue)}${escapeHtml(hint)} <a href="${escapeHtml(mapUrl)}">Open map</a>`);
+  }catch(e){
+    setLocateStatus(docId, `<span class="locate-error">Locate failed — ${escapeHtml(e.message || 'request error')}.</span> The record itself is unchanged.`);
+  }finally{
+    if(button){ button.disabled = false; button.textContent = original || '📍 Locate'; }
+  }
 }
 
 async function loadStaffLearn(){

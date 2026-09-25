@@ -46,6 +46,134 @@ SCENARIOS = [
 ]
 
 
+# Spatial information for the EXISTING demo scenarios. Several demo lands get
+# usable reference geometry / coordinates so the Locate workflow can be tested
+# end to end (clean, mutation, encumbered, conflicting/high-risk, point-only
+# and unresolved). These are the same demo parcels — no second dataset is
+# created — and every row is tagged ``DEMO-LI-`` so ``clear_demo_data`` removes
+# it without touching production data.
+#
+# Villages are the scenario villages (Ambedarpur / Barkheda) placed at fixed
+# reference coordinates. The geometry is project-owned demo reference data, so
+# it is labelled non-authoritative by the resolver.
+DEMO_PARCELS: Dict[str, Dict[str, Any]] = {
+    "S1": {  # clean record — reference polygon + stored centroid
+        "survey": "201", "village": "Ambedarpur",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [77.1180, 28.6380], [77.1220, 28.6380], [77.1220, 28.6415], [77.1180, 28.6415], [77.1180, 28.6380],
+        ]]},
+        "centroid": {"latitude": 28.63975, "longitude": 77.1200},
+    },
+    "S2": {  # completed mutation — reference polygon + stored centroid
+        "survey": "45/2", "village": "Barkheda",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [77.0740, 28.6080], [77.0785, 28.6080], [77.0785, 28.6115], [77.0740, 28.6115], [77.0740, 28.6080],
+        ]]},
+        "centroid": {"latitude": 28.60975, "longitude": 77.07625},
+    },
+    "S3": {  # active encumbrance (high risk) — reference polygon + stored centroid
+        "survey": "103", "village": "Ambedarpur",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [77.1160, 28.6418], [77.1205, 28.6418], [77.1205, 28.6450], [77.1160, 28.6450], [77.1160, 28.6418],
+        ]]},
+        "centroid": {"latitude": 28.64340, "longitude": 77.11825},
+    },
+    "S4": {  # ownership change without mutation — point-only location
+        "survey": "204", "village": "Barkheda",
+        "latitude": 28.6075, "longitude": 77.0735,
+    },
+    "S5": {  # conflicting history (high risk) — polygon without centroid/coordinates;
+             # the resolver derives and persists the centroid.
+        "survey": "105", "village": "Ambedarpur",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [77.1130, 28.6370], [77.1170, 28.6370], [77.1170, 28.6400], [77.1130, 28.6400], [77.1130, 28.6370],
+        ]]},
+    },
+    "S6": {  # unexpected area change — reference polygon
+        "survey": "106", "village": "Barkheda",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [77.0790, 28.6075], [77.0840, 28.6075], [77.0840, 28.6110], [77.0790, 28.6110], [77.0790, 28.6075],
+        ]]},
+        "centroid": {"latitude": 28.60925, "longitude": 77.08150},
+    },
+    "S7": {  # pending mutation — point-only location
+        "survey": "207", "village": "Ambedarpur",
+        "latitude": 28.6455, "longitude": 77.1240,
+    },
+    "S8": {  # rejected mutation — reference polygon
+        "survey": "208", "village": "Barkheda",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [77.0850, 28.6065], [77.0895, 28.6065], [77.0895, 28.6100], [77.0850, 28.6100], [77.0850, 28.6065],
+        ]]},
+        "centroid": {"latitude": 28.60825, "longitude": 77.08725},
+    },
+    # S9 (low-quality OCR) intentionally has NO spatial data: it is the demo
+    # case for the explicit "Location unavailable — no verified coordinates"
+    # state and the resolve-from-address fallback.
+    "S10": {  # conflicting duplicate record — reference polygon
+        "survey": "210", "village": "Barkheda",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [77.0900, 28.6130], [77.0940, 28.6130], [77.0940, 28.6165], [77.0900, 28.6165], [77.0900, 28.6130],
+        ]]},
+        "centroid": {"latitude": 28.61475, "longitude": 77.09200},
+    },
+}
+
+DEMO_PARCEL_GEOMETRY_SOURCE = "Demo scenario reference geometry (non-authoritative)"
+DEMO_PARCEL_DATA_SOURCE = "Demo scenario dataset (synthetic reference geometry)"
+
+
+def _demo_parcel(scenario: str, *, documents: List[str]) -> Optional[str]:
+    """Create/move the demo spatial record for one scenario and link its docs."""
+    definition = DEMO_PARCELS.get(scenario)
+    if not definition:
+        return None
+    property_id = f"DEMO-LI-{scenario}"
+    geometry = definition.get("geometry")
+    centroid = definition.get("centroid")
+    latitude = definition.get("latitude")
+    longitude = definition.get("longitude")
+    if centroid and latitude is None and longitude is None:
+        latitude, longitude = centroid["latitude"], centroid["longitude"]
+    location_status = "PARCEL_GEOMETRY" if geometry else "STORED_POINT"
+    now = time.time()
+    with get_db() as db:
+        db.execute(
+            """INSERT OR REPLACE INTO properties
+               (property_id, parcel_id, district, taluka, village, survey_number, gat_number, khasra_number,
+                sub_division, parent_property_id, area, area_unit, geometry, centroid, latitude, longitude,
+                crs, georeferenced, geometry_source, geometry_confidence, data_source, source_confidence,
+                created_at, updated_at, location_status, location_source, location_confidence,
+                location_base_latitude, location_base_longitude, location_base_source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (property_id, property_id, "Demo District", "Sadar", definition["village"], definition["survey"],
+             None, definition["survey"], None, None, None, "ha",
+             json.dumps(geometry) if geometry else None, json.dumps(centroid) if centroid else None,
+             latitude, longitude, "EPSG:4326", 1, DEMO_PARCEL_GEOMETRY_SOURCE, 0.90,
+             DEMO_PARCEL_DATA_SOURCE, 0.90, now, now, location_status, DEMO_PARCEL_GEOMETRY_SOURCE, 0.90,
+             latitude, longitude, DEMO_PARCEL_GEOMETRY_SOURCE),
+        )
+        for document_id in documents:
+            if not document_id or "-MUT-" in document_id or "-ENC-" in document_id:
+                continue  # register artifacts, not screened documents
+            db.execute(
+                "INSERT OR REPLACE INTO property_documents(property_id, document_id, source_type, linked_at) VALUES (?,?,?,?)",
+                (property_id, document_id, "demo_scenario", now),
+            )
+        db.execute(
+            "INSERT OR REPLACE INTO provenance(id, property_id, field_name, value, source, confidence, created_at) VALUES (?,?,?,?,?,?,?)",
+            (f"PROV-{property_id}-DEMO-LOCATION", property_id, "location", location_status,
+             DEMO_PARCEL_DATA_SOURCE, 0.90, now),
+        )
+        db.execute(
+            "INSERT OR REPLACE INTO property_timeline(id, property_id, event_type, description, source, created_at) VALUES (?,?,?,?,?,?)",
+            (f"TL-{property_id}-DEMO-LOCATION", property_id, "DEMO_PARCEL_CREATED",
+             "Demo scenario spatial record created for the Locate workflow; reference-only geometry.",
+             DEMO_PARCEL_DATA_SOURCE, now),
+        )
+    return property_id
+
+
 def _fields(pairs: Dict[str, Any], confidence: float = 0.95) -> Dict[str, Any]:
     return {
         key: {"value": str(value), "confidence": confidence, "validation_status": "VALID", "validation_message": ""}
@@ -210,6 +338,17 @@ def seed_all() -> Dict[str, Any]:
                      tehsil="Sadar", district="Demo District", year="2022", area="3.20 ha", status="APPROVED")
     created["S10"] = ["DEMO-S10-DOC1", "DEMO-S10-DOC2"]
 
+    # -- Spatial records for the Locate workflow ------------------------------
+    # Reference geometry / coordinates live on the same scenario parcels so that
+    # Locate can be exercised for a clean parcel (S1), a mutation parcel (S2),
+    # an encumbered/high-risk parcel (S3), a point-only parcel (S4, S7), a
+    # geometry-without-centroid parcel (S5) and unresolved data (S9).
+    for scenario, definition in DEMO_PARCELS.items():
+        document_ids = [item for item in created.get(scenario, []) if item.startswith("DEMO-S")]
+        property_id = _demo_parcel(scenario, documents=document_ids)
+        if property_id:
+            created.setdefault(scenario, []).append(property_id)
+
     return {"scenarios": sorted(created.keys()), "artifacts": created}
 
 
@@ -238,7 +377,7 @@ def seed_scenarios(req: SeedRequest, user: Dict[str, Any] = Depends(require_role
 def clear_demo_data(user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
     """Remove ONLY demo-tagged artifacts. Production data is untouched."""
     ensure_land_tables()
-    removed = {"documents": 0, "encumbrances": 0, "mutations": 0, "events": 0}
+    removed = {"documents": 0, "encumbrances": 0, "mutations": 0, "events": 0, "properties": 0}
     with get_db() as db:
         demo_doc_ids = [row["id"] for row in db.execute("SELECT id, metadata FROM documents").fetchall()
                         if _is_demo_metadata(row["metadata"])]
@@ -255,6 +394,13 @@ def clear_demo_data(user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
             db.execute(f"DELETE FROM land_mutations WHERE id IN ({placeholders})", tuple(demo_mutation_ids))
             removed["mutations"] = len(demo_mutation_ids)
         removed["events"] = removed["mutations"]
+        demo_property_ids = [row["property_id"] for row in db.execute("SELECT property_id FROM properties WHERE property_id LIKE 'DEMO-LI-%'").fetchall()]
+        removed["properties"] = len(demo_property_ids)
+        for property_id in demo_property_ids:
+            db.execute("DELETE FROM property_documents WHERE property_id = ?", (property_id,))
+            db.execute("DELETE FROM property_timeline WHERE property_id = ?", (property_id,))
+            db.execute("DELETE FROM provenance WHERE property_id = ?", (property_id,))
+            db.execute("DELETE FROM properties WHERE property_id = ?", (property_id,))
     _audit(user, "DEMO_DATA_CLEARED", f"Demo data cleared: {removed}")
     return {"status": "cleared", "removed": removed}
 

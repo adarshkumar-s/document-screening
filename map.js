@@ -30,6 +30,7 @@
     tileSource: 'osmhot',
     currentView: 'sheet',
     mapReady: false,
+    mapPromise: null,
     pinMode: false,
     geocodeRunning: false,
     fitted: false,
@@ -37,6 +38,13 @@
     // Show mode (Phase: map improvement). Default is 'selected record' so the
     // map stays calm; switching to 'all records' shows every filtered record.
     showMode: 'selected',
+    // Canonical parcel locator state (Locate action / ?locate=1 deep link).
+    parcel: null,
+    parcelLayer: null,
+    parcelKey: '',
+    parcelParams: null,
+    parcelPending: '',
+    parcelGeocoded: new Set(),
   };
 
   const TILE_SOURCES = {
@@ -501,6 +509,328 @@
     // panel; navigating to a record never triggers a hidden network storm.
   }
 
+  // ---------------------------------------------------------------------------
+  // CANONICAL PARCEL LOCATOR
+  // ---------------------------------------------------------------------------
+  // The Locate action, the Land Intelligence detail view and this page all
+  // consume the SAME backend object: POST /api/parcels/resolve returns the
+  // canonical parcel (identifiers, optional geometry + bounds + centroid, and a
+  // location block stating how the position was obtained). Nothing here
+  // fabricates a coordinate: reference geometry stays reference geometry,
+  // geocoded addresses are labelled as such, and an unresolvable record says so.
+  const PARCEL_STATE_LABELS = {
+    VERIFIED: 'Located on map',
+    STORED_POINT: 'Located on map',
+    REFERENCE_GEOMETRY: 'Located on map',
+    GEOCODED: 'Location resolved from address — verify',
+    UNRESOLVED: 'Location unavailable — no verified coordinates',
+  };
+  const PARCEL_STATE_CLASSES = {
+    VERIFIED: 'state-verified',
+    STORED_POINT: 'state-verified',
+    REFERENCE_GEOMETRY: 'state-geocoded',
+    GEOCODED: 'state-geocoded',
+    UNRESOLVED: 'state-unresolved',
+  };
+  const PARCEL_ACCENTS = {
+    VERIFIED: '#15803d',
+    STORED_POINT: '#0f766e',
+    REFERENCE_GEOMETRY: '#b45309',
+    GEOCODED: '#b45309',
+    UNRESOLVED: '#b91c1c',
+  };
+
+  function parcelStateLabel(parcel) {
+    const location = parcel?.location || {};
+    return PARCEL_STATE_LABELS[location.state] || location.label || 'Location state unavailable';
+  }
+
+  function parcelCenter(parcel) {
+    const centroid = parcel?.centroid;
+    const stored = coordinatePair(centroid?.latitude, centroid?.longitude);
+    if (stored) return stored;
+    const location = coordinatePair(parcel?.location?.latitude, parcel?.location?.longitude);
+    if (location) return location;
+    const bounds = parcel?.bounds;
+    if (Array.isArray(bounds) && bounds.length === 2) {
+      const sw = coordinatePair(bounds[0]?.[0], bounds[0]?.[1]);
+      const ne = coordinatePair(bounds[1]?.[0], bounds[1]?.[1]);
+      if (sw && ne) return { lat: (sw.lat + ne.lat) / 2, lon: (sw.lon + ne.lon) / 2 };
+    }
+    return null;
+  }
+
+  function parcelLatLngs(parcel) {
+    const rings = propertyRings(parcel?.geometry);
+    return rings.map((ring) => ring
+      .map((point) => [Number(point[0]), Number(point[1])])
+      .filter((pair) => pair.every(Number.isFinite))
+      .map((pair) => [pair[1], pair[0]]))
+      .filter((ring) => ring.length >= 3);
+  }
+
+  function parcelParameters(source = {}) {
+    return {
+      landId: source.landId || '',
+      parcelId: source.parcelId || '',
+      documentId: source.documentId || '',
+      surveyNumber: source.surveyNumber || '',
+      khasraNumber: source.khasraNumber || '',
+      village: source.village || '',
+      tehsil: source.tehsil || '',
+      district: source.district || '',
+    };
+  }
+
+  function parcelKeyOf(params) {
+    return [params.landId, params.parcelId, params.documentId, params.surveyNumber, params.khasraNumber,
+      params.village, params.tehsil, params.district].map(normalise).join('|');
+  }
+
+  function deepLinkParams() {
+    const search = new URLSearchParams(window.location.search);
+    return {
+      locate: search.get('locate') === '1' || !!search.get('land_id') || !!search.get('parcel'),
+      documentId: search.get('document_id') || search.get('open_record') || '',
+      landId: search.get('land_id') || '',
+      parcelId: search.get('parcel') || '',
+      surveyNumber: search.get('survey_number') || '',
+      khasraNumber: search.get('khasra') || '',
+      village: search.get('village') || '',
+      tehsil: search.get('tehsil') || '',
+      district: search.get('district') || '',
+    };
+  }
+
+  function clearParcelLayer() {
+    if (state.parcelLayer && state.map) state.map.removeLayer(state.parcelLayer);
+    state.parcelLayer = null;
+    state.parcel = null;
+    state.parcelKey = '';
+    state.parcelParams = null;
+  }
+
+  function parcelPopupHtml(parcel) {
+    const location = parcel.location || {};
+    const rows = [
+      ['Survey / Khasra', parcel.survey_number || parcel.khasra_number],
+      ['Village', parcel.village],
+      ['Owner', parcel.owner],
+      ['Land ID', parcel.land_id],
+      ['Source', location.source],
+    ].filter(([, value]) => value != null && String(value).trim() !== '');
+    return `<div class="popup-title">${esc(parcel.label || 'Land parcel')}</div>
+      <div class="popup-detail"><strong>${esc(parcelStateLabel(parcel))}</strong>${rows.map(([label, value]) => `<br>${esc(label)}: ${esc(value)}`).join('')}${parcel.reference_only ? '<br><em>Reference geometry only — not an authoritative cadastral boundary.</em>' : ''}</div>
+      <div class="popup-actions">${parcel.urls?.land_intelligence ? '<button type="button" data-parcel-land>Open Land Intelligence</button>' : ''}${parcel.urls?.record ? '<button type="button" data-parcel-record>View record</button>' : ''}</div>`;
+  }
+
+  function drawParcel(parcel, options = {}) {
+    clearParcelLayer();
+    if (!state.mapReady || !state.map || !parcel) return null;
+    const locationState = parcel.location?.state || 'UNRESOLVED';
+    const accent = PARCEL_ACCENTS[locationState] || PARCEL_ACCENTS.UNRESOLVED;
+    const group = window.L.layerGroup();
+    const rings = parcelLatLngs(parcel);
+    let shape = null;
+    if (rings.length) {
+      shape = window.L.polygon(rings, {
+        color: accent,
+        weight: 3,
+        fillColor: accent,
+        fillOpacity: 0.18,
+        className: 'map-parcel-shape',
+        dashArray: locationState === 'REFERENCE_GEOMETRY' ? '7 5' : null,
+      });
+    }
+    const center = parcelCenter(parcel);
+    if (!shape && center) {
+      shape = window.L.circleMarker([center.lat, center.lon], {
+        radius: 13,
+        color: '#ffffff',
+        weight: 3,
+        fillColor: accent,
+        fillOpacity: 0.92,
+        className: 'map-parcel-point',
+      });
+    }
+    if (!shape) return null;
+    shape.bindPopup(parcelPopupHtml(parcel), { maxWidth: 330 });
+    shape.addTo(group);
+    if (rings.length && center) {
+      window.L.circleMarker([center.lat, center.lon], {
+        radius: 5, color: '#ffffff', weight: 2, fillColor: accent, fillOpacity: 0.95, className: 'map-parcel-centroid',
+      }).bindTooltip('Parcel centroid', { direction: 'top' }).addTo(group);
+    }
+    group.addTo(state.map);
+    state.parcelLayer = group;
+    state.parcel = parcel;
+    if (options.fit !== false) {
+      const bounds = shape.getBounds ? shape.getBounds() : null;
+      if (bounds && bounds.isValid()) state.map.fitBounds(bounds.pad(0.35), { maxZoom: 17 });
+      else if (center) state.map.setView([center.lat, center.lon], Math.max(state.map.getZoom(), 16), { animate: true });
+      // The parcel owns the viewport now: late record-fitting must not steal it.
+      state.fitted = true;
+      state.mapUserMoved = false;
+      const regionStatus = $('mapRegionStatus');
+      if (regionStatus) regionStatus.textContent = `Located parcel ${parcel.label || ''}`.trim();
+    }
+    if (options.openPopup !== false) shape.openPopup();
+    return shape;
+  }
+
+  function renderParcelPanel(parcel) {
+    const panel = $('parcelLocatorPanel');
+    if (!panel) return;
+    panel.classList.remove('hidden');
+    const location = parcel.location || {};
+    const stateName = location.state || 'UNRESOLVED';
+    const stateNode = $('parcelLocatorState');
+    stateNode.textContent = parcelStateLabel(parcel);
+    stateNode.dataset.state = stateName;
+    panel.className = `parcel-locator ${PARCEL_STATE_CLASSES[stateName] || 'state-unresolved'}`;
+    $('parcelLocatorTitle').textContent = parcel.label || 'Land record';
+    const cells = [
+      ['SURVEY / KHASRA', parcel.survey_number || parcel.khasra_number],
+      ['VILLAGE', parcel.village],
+      ['OWNER', parcel.owner],
+      ['LAND ID', parcel.land_id],
+      ['SOURCE', location.source],
+      ['COORDINATES', location.latitude != null && location.longitude != null
+        ? `${Number(location.latitude).toFixed(7)}, ${Number(location.longitude).toFixed(7)}` : ''],
+    ].filter(([, value]) => value != null && String(value).trim() !== '');
+    $('parcelLocatorGrid').innerHTML = cells
+      .map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
+    const note = [location.note, parcel.reference_only ? 'Reference geometry — not an authoritative cadastral boundary.' : '']
+      .filter(Boolean).join(' ');
+    $('parcelLocatorNote').textContent = note;
+    const landButton = $('parcelOpenLand');
+    const recordButton = $('parcelOpenRecord');
+    landButton.disabled = !parcel.urls?.land_intelligence;
+    landButton.dataset.href = parcel.urls?.land_intelligence || '';
+    recordButton.disabled = !parcel.urls?.record;
+    recordButton.dataset.href = parcel.urls?.record || '';
+    const resolveButton = $('parcelResolveAddress');
+    const canResolve = stateName === 'UNRESOLVED' && !!location.can_geocode;
+    resolveButton.classList.toggle('hidden', !canResolve);
+    resolveButton.dataset.query = location.geocode_query || '';
+  }
+
+  async function locateParcel(parameters, options = {}) {
+    const params = parcelParameters(parameters);
+    const key = parcelKeyOf(params);
+    if (!key.replace(/\|/g, '')) return null;
+    if (state.parcelPending === key) return null;
+    state.parcelPending = key;
+    try {
+      const parcel = await api('/api/parcels/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          land_id: params.landId,
+          parcel_id: params.parcelId,
+          document_id: params.documentId,
+          survey_number: params.surveyNumber,
+          khasra_number: params.khasraNumber,
+          village: params.village,
+          tehsil: params.tehsil,
+          district: params.district,
+          persist: options.persist !== false,
+        }),
+      });
+      state.parcelPending = '';
+      if (options.recordId) state.selectedId = options.recordId;
+      renderParcelPanel(parcel);
+      if (parcel.located) {
+        // drawParcel() drops the previously selected parcel first, so only one
+        // parcel is ever highlighted at a time.
+        drawParcel(parcel, { fit: options.fit !== false, openPopup: options.openPopup !== false });
+      } else {
+        clearParcelLayer();
+        state.parcel = parcel;
+      }
+      state.parcelKey = key;
+      state.parcelParams = params;
+      // No stored geometry/coordinates: fall back to the project's existing
+      // address geocoder ONCE (explicit, labelled, persisted as approximate).
+      if (!parcel.located && options.autoGeocode !== false
+        && parcel.location?.can_geocode && !state.parcelGeocoded.has(key)) {
+        state.parcelGeocoded.add(key);
+        await resolveParcelAddress({ auto: true, params, query: parcel.location.geocode_query });
+        return parcel;
+      }
+      if (options.notify) {
+        const label = parcelStateLabel(parcel);
+        if (parcel.located) {
+          setNotice(`<strong>${esc(label)}.</strong> ${esc(parcel.label || 'Land record')}${parcel.location?.note ? ` — ${esc(parcel.location.note)}` : ''}`, parcel.location?.state === 'GEOCODED' ? 'warn' : 'info');
+        } else {
+          const issue = (parcel.quality?.issues || [])[0] || 'No stored geometry or coordinates were found for this land record.';
+          setNotice(`<strong>${esc(label)}.</strong> ${esc(issue)}${parcel.location?.can_geocode ? ' Use “Resolve from address” to try the existing village geocoder.' : ''}`, 'warn');
+        }
+      }
+      return parcel;
+    } catch (error) {
+      state.parcelPending = '';
+      setNotice(`<strong>The parcel could not be located.</strong> ${esc(error.message)}`, 'error');
+      return null;
+    }
+  }
+
+  async function syncParcelForRecord(record) {
+    if (!record || !state.mapReady) return;
+    const params = parcelParameters({
+      documentId: record.id,
+      surveyNumber: record.survey || record.khasra || record.plot || '',
+      khasraNumber: record.khasra || '',
+      village: record.village || '',
+      tehsil: record.tehsil || '',
+      district: record.district || '',
+    });
+    const key = parcelKeyOf(params);
+    if (state.parcelKey === key) return;
+    if (state.parcelLayer || state.parcel) clearParcelLayer();
+    // Selecting a record never triggers hidden geocoding; the explicit Locate
+    // action (or the panel button) owns the address fallback.
+    await locateParcel(params, { fit: false, openPopup: false, notify: false, persist: false, autoGeocode: false });
+  }
+
+  async function resolveParcelAddress(options = {}) {
+    const button = $('parcelResolveAddress');
+    const query = options.query || button?.dataset.query || '';
+    const params = options.params || state.parcelParams;
+    if (!query || !params) {
+      if (!options.auto) setNotice('<strong>No address query available.</strong> This record has no village/tehsil/district fields to resolve from.', 'warn');
+      return;
+    }
+    if (button) button.disabled = true;
+    setNotice(`<strong>Resolving from address.</strong> ${options.auto ? 'No stored parcel geometry or coordinates were found, so one' : 'One'} geocoding request is being sent for ${esc(query)}; the result is labelled as resolved-from-address, never as a verified cadastral location.`, 'info');
+    try {
+      const result = await api('/api/map/geocode', { method: 'POST', body: JSON.stringify({ query }) });
+      if (result.lat == null || result.lon == null) {
+        setNotice('<strong>Address lookup did not resolve.</strong> The record stays in the explicit “location unavailable” state rather than showing a fabricated coordinate.', 'warn');
+        return;
+      }
+      await locateParcel(params, { fit: true, openPopup: true, notify: true, persist: true, autoGeocode: false });
+    } catch (error) {
+      setNotice(`<strong>Address lookup failed.</strong> ${esc(error.message)} The record stays in its explicit unresolved state.`, 'warn');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function applyDeepLink() {
+    const params = deepLinkParams();
+    if (!params.locate && !params.landId && !params.parcelId && !params.documentId) return;
+    switchView('map');
+    await initMap();
+    if (params.landId || params.parcelId) {
+      await locateParcel(params, { fit: true, openPopup: true, notify: true, persist: true });
+      return;
+    }
+    if (params.documentId && recordById(params.documentId)) {
+      selectRecord(params.documentId);
+      openHistory(params.documentId);
+    }
+  }
+
   function filteredMapRecords() {
     const query = normalise($('mapSearch')?.value);
     const location = $('mapLocationFilter')?.value || '';
@@ -708,23 +1038,29 @@
 
   async function initMap() {
     if (state.mapReady) { window.setTimeout(() => state.map.invalidateSize(), 50); return; }
-    try {
-      await ensureLeaflet();
-      state.map = window.L.map('map', { zoomControl: true, preferCanvas: true, worldCopyJump: true }).setView([22.5, 80.2], 5);
-      state.markers = window.L.layerGroup().addTo(state.map);
-      state.map.on('click', handleMapClick);
-      state.map.on('dragstart', () => { state.mapUserMoved = true; });
-      state.mapReady = true;
-      state.tileSource = loadTileSource();
-      $('mapTileSource').value = state.tileSource;
-      setTileSource(state.tileSource);
-      $('mapLoadHint').textContent = 'Loading record positions…';
-      renderMarkers();
-      window.setTimeout(() => state.map.invalidateSize(), 100);
-    } catch (_) {
-      $('mapLoadHint').textContent = 'Map library unavailable. Use the Village Sheet or reload the page.';
-      $('mapFallback').classList.remove('hidden');
-    }
+    // Re-entrancy guard: the deep link path and the view switcher can both ask
+    // for the map at once; Leaflet must be initialised exactly once.
+    if (state.mapPromise) { await state.mapPromise; return; }
+    state.mapPromise = (async () => {
+      try {
+        await ensureLeaflet();
+        state.map = window.L.map('map', { zoomControl: true, preferCanvas: true, worldCopyJump: true }).setView([22.5, 80.2], 5);
+        state.markers = window.L.layerGroup().addTo(state.map);
+        state.map.on('click', handleMapClick);
+        state.map.on('dragstart', () => { state.mapUserMoved = true; });
+        state.mapReady = true;
+        state.tileSource = loadTileSource();
+        $('mapTileSource').value = state.tileSource;
+        setTileSource(state.tileSource);
+        $('mapLoadHint').textContent = 'Loading record positions…';
+        renderMarkers();
+        window.setTimeout(() => state.map.invalidateSize(), 100);
+      } catch (_) {
+        $('mapLoadHint').textContent = 'Map library unavailable. Use the Village Sheet or reload the page.';
+        $('mapFallback').classList.remove('hidden');
+      }
+    })();
+    await state.mapPromise;
   }
 
   function markerFor(record, options = {}) {
@@ -911,6 +1247,9 @@
       state.map.setView(marker.getLatLng(), Math.max(state.map.getZoom(), 14), { animate: true });
       marker.openPopup();
     }
+    // Switching records updates the parcel selection: the previous parcel is
+    // deselected and the canonical parcel for this record takes its place.
+    if (state.mapReady) syncParcelForRecord(record);
   }
 
   function clearHistory() {
@@ -1076,14 +1415,8 @@
       if (state.mapReady) { renderMarkers(); fitMap(); }
       // Do not geocode every unresolved village on initial load. Exact pins,
       // cached results, and unresolved records render immediately; geocoding is
-      // only triggered by an explicit record action.
-      const requestedId = new URLSearchParams(window.location.search).get('document_id')
-        || new URLSearchParams(window.location.search).get('open_record');
-      if (requestedId && recordById(requestedId)) {
-        switchView('map');
-        selectRecord(requestedId);
-        openHistory(requestedId);
-      }
+      // only triggered by an explicit record action. Deep links (?locate=1,
+      // ?land_id=, ?parcel=, ?document_id=, ?open_record=) are applied in boot().
       if (!state.records.length) setNotice('<strong>No map records yet.</strong> Upload and screen a land document in the portal; records will appear here without changing the existing OCR or validation workflow.', 'info');
     } catch (error) {
       setNotice(`<strong>Records could not be loaded.</strong> ${esc(error.message)}`, 'error');
@@ -1119,11 +1452,29 @@
       }
     });
     $('useSchematicBtn').addEventListener('click', () => { $('mapTileSource').value = 'schematic'; setTileSource('schematic'); });
+    $('parcelOpenLand')?.addEventListener('click', () => {
+      const href = $('parcelOpenLand').dataset.href;
+      if (href) window.location.href = href;
+    });
+    $('parcelOpenRecord')?.addEventListener('click', () => {
+      const href = $('parcelOpenRecord').dataset.href;
+      if (href) window.location.href = href;
+    });
+    $('parcelResolveAddress')?.addEventListener('click', () => resolveParcelAddress());
+    $('parcelClear')?.addEventListener('click', () => {
+      clearParcelLayer();
+      $('parcelLocatorPanel')?.classList.add('hidden');
+      setNotice('<strong>Parcel selection cleared.</strong> Select a record or use Locate to show a parcel again.', 'info');
+    });
     document.addEventListener('click', (event) => {
       const historyButton = event.target.closest('[data-popup-history]');
       if (historyButton) openHistory(historyButton.dataset.popupHistory);
       const selectButton = event.target.closest('[data-popup-select]');
       if (selectButton) selectRecord(selectButton.dataset.popupSelect);
+      const landButton = event.target.closest('[data-parcel-land]');
+      if (landButton && state.parcel?.urls?.land_intelligence) window.location.href = state.parcel.urls.land_intelligence;
+      const parcelRecordButton = event.target.closest('[data-parcel-record]');
+      if (parcelRecordButton && state.parcel?.urls?.record) window.location.href = state.parcel.urls.record;
     });
   }
 
@@ -1135,6 +1486,9 @@
     $('pinModeLabel').title = roleCanPin() ? 'Click a map location to set an exact pin for the selected record.' : 'Verification Officer or Administrator only';
     if (!roleCanPin()) { $('mapPinMode').disabled = true; $('pinModeLabel').style.opacity = '.52'; }
     await loadRecords();
+    // Deep links arrive from the All Records "Locate" action, the Land
+    // Intelligence detail view ("Open in map") and any shared /map URL.
+    await applyDeepLink();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });

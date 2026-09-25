@@ -21,6 +21,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import math
 import re
 import time
 import uuid
@@ -45,6 +46,7 @@ import mapping
 encumbrance_router = APIRouter(prefix="/api/encumbrances", tags=["Land Encumbrances"])
 mutation_router = APIRouter(prefix="/api/mutations", tags=["Mutations"])
 land_router = APIRouter(prefix="/api/land-records", tags=["Land Records"])
+parcel_router = APIRouter(prefix="/api/parcels", tags=["Land Parcels"])
 report_router = APIRouter(prefix="/api/reports", tags=["Verification Reports"])
 
 STAFF_ROLES = (ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)
@@ -427,6 +429,892 @@ def _audit(user: Dict[str, Any], action: str, detail: str, doc_id: Optional[str]
         log_audit(user.get("full_name") or user.get("email") or "SYSTEM", action, detail, doc_id)
     except Exception as exc:  # pragma: no cover - audit must never break workflow
         print(f"[LAND AUDIT WARNING] {exc}")
+
+
+# ---------------------------------------------------------------------------
+# canonical parcel resolution (land record -> spatial object)
+# ---------------------------------------------------------------------------
+#
+# ONE resolution path is shared by the portal's Locate action, the map page's
+# deep links, and the land-record detail payload so the browser and the server
+# can never disagree about where a record is.
+#
+# Strongest identifier first, exactly as the workflow requires:
+#
+#   1. land_id / parcel_id / property_id      (explicit identifiers)
+#   2. document -> property link              (existing document-land relation)
+#   3. survey/khasra + village                (village scoped, never owner,
+#                                              never survey alone across villages)
+#   4. document exact pin                     (verified coordinates)
+#   5. persisted village/address geocode      (approximate, "verify" labelled)
+#   6. unresolved                             (explicit state, never silent)
+#
+# The response shape (stable contract for map.js / js/app.js / js/land-intel.js)
+# is documented in ``PARCEL_RESPONSE_FIELDS`` and returns both a ``centroid``
+# block and a ``location`` block; the frontend never has to guess whether the
+# backend stored ``lat/lon`` or ``location.latitude/longitude``.
+#
+# Safety semantics: stored reference geometry is labelled non-authoritative
+# unless the database explicitly marks it as authoritative; geocoded positions
+# are always marked approximate; unavailable locations are returned as an
+# explicit UNRESOLVED state instead of a fabricated coordinate.
+
+LOCATION_STATUS_VERIFIED = "VERIFIED_LOCATION"
+LOCATION_STATUS_GEOMETRY = "PARCEL_GEOMETRY"
+LOCATION_STATUS_GEOCODED = "GEOCODED_ADDRESS"
+LOCATION_STATUS_UNRESOLVED = "UNRESOLVED"
+
+LOCATION_STATES = ("VERIFIED", "STORED_POINT", "REFERENCE_GEOMETRY", "GEOCODED", "UNRESOLVED")
+
+# Required user-facing copy (see the mapping brief): the same strings are
+# rendered by the portal and the map page.
+LOCATION_STATE_LABELS = {
+    "VERIFIED": "Located on map",
+    "STORED_POINT": "Located on map",
+    "REFERENCE_GEOMETRY": "Located on map",
+    "GEOCODED": "Location resolved from address — verify",
+    "UNRESOLVED": "Location unavailable — no verified coordinates",
+}
+
+LOCATION_STATE_NOTES = {
+    "VERIFIED": "Exact location recorded and verified by an authorised reviewer.",
+    "STORED_POINT": "Stored point location; no parcel polygon is stored for this record.",
+    "REFERENCE_GEOMETRY": "Reference geometry only; not an authoritative cadastral boundary.",
+    "GEOCODED": "Approximate village/address position — verify before relying on it.",
+    "UNRESOLVED": "No verified coordinates, stored geometry, or resolved address exists for this record.",
+}
+
+PARCEL_MATCH_METHODS = (
+    "parcel_id", "land_id", "document_link", "survey_village",
+    "document", "document_pin", "address_geocode", "ambiguous_survey", "unresolved",
+)
+_MATCH_METHOD_RANK = {name: index for index, name in enumerate(PARCEL_MATCH_METHODS)}
+
+PARCEL_RESPONSE_FIELDS = (
+    "matched", "located", "match_method", "land_id", "land_key", "parcel_id", "property_id",
+    "survey_number", "khasra_number", "khata_number", "village", "tehsil", "district", "state",
+    "owner", "father", "label", "geometry", "bounds", "centroid", "geometry_source",
+    "geometry_confidence", "geometry_authoritative", "reference_only", "location", "documents",
+    "focus_document_id", "candidates", "quality", "urls", "disclaimer",
+)
+
+PARCEL_DISCLAIMER = (
+    "Stored/reference geometry is project-owned reference data, not an authoritative cadastral "
+    "boundary. Geocoded positions are approximate. Only VERIFIED locations are reviewer-set points."
+)
+
+try:  # optional but already a declared dependency (see requirements.txt)
+    from shapely.geometry import shape as _shapely_shape
+except Exception:  # pragma: no cover - plotting/geometry maths must never break the API
+    _shapely_shape = None
+
+
+def _finite_number(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
+
+
+def coordinate_pair(latitude: Any, longitude: Any) -> Optional[Tuple[float, float]]:
+    """Return a validated ``(latitude, longitude)`` pair, or ``None``.
+
+    Missing or malformed values deliberately never become ``0, 0`` (which used
+    to send the map to the Gulf of Guinea).
+    """
+    lat = _finite_number(latitude)
+    lon = _finite_number(longitude)
+    if lat is None or lon is None:
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return lat, lon
+
+
+def _geometry_positions(geometry: Any) -> List[Tuple[float, float]]:
+    """Flatten any GeoJSON geometry into valid ``(longitude, latitude)`` pairs."""
+    positions: List[Tuple[float, float]] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, (list, tuple)):
+            if len(node) >= 2 and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in node[:2]):
+                pair = coordinate_pair(node[1], node[0])
+                if pair:
+                    positions.append((pair[1], pair[0]))
+                return
+            for child in node:
+                visit(child)
+
+    if not isinstance(geometry, dict):
+        return positions
+    visit(geometry.get("coordinates"))
+    if str(geometry.get("type") or "") == "GeometryCollection":
+        for member in geometry.get("geometries") or []:
+            positions.extend(_geometry_positions(member))
+    return positions
+
+
+def geometry_bounds(geometry: Any) -> Optional[List[List[float]]]:
+    """Leaflet-ready bounds ``[[south, west], [north, east]]`` (or ``None``)."""
+    positions = _geometry_positions(geometry)
+    if not positions:
+        return None
+    lons = [position[0] for position in positions]
+    lats = [position[1] for position in positions]
+    return [[min(lats), min(lons)], [max(lats), max(lons)]]
+
+
+def geometry_centroid(geometry: Any) -> Optional[Dict[str, float]]:
+    """Centroid of a stored geometry (shapely when available, ring average otherwise)."""
+    if not isinstance(geometry, dict):
+        return None
+    if _shapely_shape is not None:
+        try:
+            shape_object = _shapely_shape(geometry)
+            if not shape_object.is_empty:
+                centroid = shape_object.centroid
+                pair = coordinate_pair(centroid.y, centroid.x)
+                if pair:
+                    return {"latitude": round(pair[0], 7), "longitude": round(pair[1], 7)}
+        except Exception:
+            pass
+    positions = _geometry_positions(geometry)
+    if not positions:
+        return None
+    pair = coordinate_pair(
+        sum(position[1] for position in positions) / len(positions),
+        sum(position[0] for position in positions) / len(positions),
+    )
+    return {"latitude": round(pair[0], 7), "longitude": round(pair[1], 7)} if pair else None
+
+
+def _bounds_center(bounds: Optional[List[List[float]]]) -> Optional[Tuple[float, float]]:
+    if not bounds:
+        return None
+    return coordinate_pair((bounds[0][0] + bounds[1][0]) / 2.0, (bounds[0][1] + bounds[1][1]) / 2.0)
+
+
+def _is_authoritative_source(*sources: Any) -> bool:
+    """True only when the stored source explicitly declares an authoritative boundary.
+
+    Negated labels ("non-authoritative", "not an authoritative boundary",
+    "reference only") never count: project-owned reference geometry must not be
+    promoted to a cadastral boundary.
+    """
+    markers = ("authoritative", "official cadastral", "government cadastral", "survey of india")
+    negations = ("non-authoritative", "non authoritative", "not authoritative", "no authoritative",
+                 "reference only", "reference-only", "synthetic", "demo", "project-owned")
+    for source in sources:
+        text = _text(source).casefold()
+        if not text:
+            continue
+        if any(negation in text for negation in negations):
+            continue
+        if any(marker in text for marker in markers):
+            return True
+    return False
+
+
+def _address_query_variants(village: Any, tehsil: Any, district: Any, state: Any) -> List[str]:
+    """Village-to-state query strings, longest first (matches map.js villageLabel())."""
+    parts = [_text(village), _text(tehsil), _text(district), _text(state)]
+    variants: List[str] = []
+    for stop in range(len(parts), 0, -1):
+        candidate = ", ".join(part for part in parts[:stop] if part)
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def _spatial_index() -> Dict[str, Any]:
+    """Load stored spatial objects and geocodes once per request (no N+1 queries)."""
+    with get_db() as db:
+        property_rows = db.execute("SELECT * FROM properties ORDER BY property_id").fetchall()
+        link_rows = db.execute(
+            "SELECT property_id, document_id, linked_at, source_type FROM property_documents ORDER BY linked_at DESC"
+        ).fetchall()
+        geocode_rows = db.execute("SELECT * FROM geocode_cache").fetchall()
+
+    properties: List[Dict[str, Any]] = [mapping._property_dict(row) for row in property_rows]
+    by_identifier: Dict[str, Dict[str, Any]] = {}
+    by_land: Dict[str, List[Dict[str, Any]]] = {}
+    by_survey: Dict[str, List[Dict[str, Any]]] = {}
+    for item in properties:
+        for identifier in (item.get("property_id"), item.get("parcel_id")):
+            if identifier:
+                by_identifier.setdefault(str(identifier).casefold(), item)
+        survey = _text(item.get("survey_number")) or _text(item.get("gat_number")) or _text(item.get("khasra_number"))
+        village = _text(item.get("village"))
+        if survey or village:
+            _, land_id = land_identity(survey, village)
+            by_land.setdefault(land_id, []).append(item)
+        if survey:
+            by_survey.setdefault(_normalise_land(survey), []).append(item)
+
+    by_document: Dict[str, Dict[str, Any]] = {}
+    for row in link_rows:
+        property_item = by_identifier.get(_text(row["property_id"]).casefold())
+        document_key = _text(row["document_id"])
+        if property_item and document_key and document_key not in by_document:
+            by_document[document_key] = property_item
+
+    geocode_by_key = {
+        _text(row["cache_key"]): row for row in geocode_rows
+        if _text(row["status"]).upper() == "RESOLVED"
+    }
+    return {
+        "properties": properties,
+        "by_identifier": by_identifier,
+        "by_land": by_land,
+        "by_survey": by_survey,
+        "by_document": by_document,
+        "geocode": geocode_by_key,
+    }
+
+
+def _property_centroid(property_item: Dict[str, Any], geometry: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    stored = property_item.get("centroid")
+    if isinstance(stored, dict):
+        pair = coordinate_pair(stored.get("latitude"), stored.get("longitude"))
+        if pair:
+            return {"latitude": round(pair[0], 7), "longitude": round(pair[1], 7)}
+    elif isinstance(stored, (list, tuple)) and len(stored) >= 2:
+        pair = coordinate_pair(stored[1], stored[0])  # GeoJSON order [lon, lat]
+        if pair:
+            return {"latitude": round(pair[0], 7), "longitude": round(pair[1], 7)}
+    return geometry_centroid(geometry)
+
+
+def _property_candidates_for_land(
+    land: Dict[str, Any],
+    index: Dict[str, Any],
+    *,
+    document_ids: Sequence[str] = (),
+) -> Tuple[Optional[Dict[str, Any]], str, List[Dict[str, Any]], bool]:
+    """Return ``(property, method, extra_candidates, ambiguous)`` for a land identity."""
+    survey = _text(land.get("survey")) or _text(land.get("khasra"))
+    khasra = _text(land.get("khasra"))
+    village = _text(land.get("village"))
+
+    # 2. existing document-land relationship (property_documents link)
+    for document_id in document_ids:
+        linked = index["by_document"].get(_text(document_id))
+        if linked:
+            return linked, "document_link", [], False
+
+    # 3. survey/khasra + village (village-scoped: the same survey number in
+    #    another village can never win)
+    for candidate_number in (survey, khasra):
+        if not candidate_number or not village:
+            continue
+        _, land_id = land_identity(candidate_number, village)
+        matches = index["by_land"].get(land_id) or []
+        if matches:
+            ordered = sorted(matches, key=lambda item: (bool(_text(item.get("sub_division"))), _text(item.get("property_id"))))
+            return ordered[0], "survey_village", ordered[1:], len(ordered) > 1
+
+    if survey and not village:
+        loose = index["by_survey"].get(_normalise_land(survey)) or []
+        if len(loose) == 1:
+            return loose[0], "survey_village", [], False
+        if len(loose) > 1:
+            # Never guess: survey numbers are not globally unique.
+            return None, "ambiguous_survey", loose, True
+    return None, "", [], False
+
+
+def _document_pin(records: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Newest visible document pin with valid coordinates (verified location)."""
+    for record in reversed(list(records)):
+        pair = coordinate_pair(record.get("lat"), record.get("lon"))
+        if pair:
+            return {"record": record, "latitude": pair[0], "longitude": pair[1]}
+    return None
+
+
+def _cached_geocode(
+    index: Dict[str, Any], village: Any, tehsil: Any, district: Any, state: Any
+) -> Optional[Dict[str, Any]]:
+    for query in _address_query_variants(village, tehsil, district, state):
+        row = index["geocode"].get(mapping._normalise(query))
+        if not row:
+            continue
+        pair = coordinate_pair(row["latitude"], row["longitude"])
+        if pair:
+            return {
+                "latitude": pair[0], "longitude": pair[1], "query": query,
+                "display_name": row["display_name"], "source": "Nominatim village geocode (persisted cache)",
+            }
+    return None
+
+
+def _parcel_document_reference(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": record.get("id"),
+        "filename": record.get("filename"),
+        "doc_type": record.get("doc_type"),
+        "status": record.get("status"),
+        "owner": record.get("owner"),
+        "father": record.get("father"),
+        "year": record.get("year"),
+        "area": record.get("area"),
+        "survey": record.get("survey"),
+        "khasra": record.get("khasra"),
+        "village": record.get("village"),
+        "district": record.get("district"),
+        "lat": record.get("lat"),
+        "lon": record.get("lon"),
+        "location_status": record.get("location_status"),
+        "location_label": record.get("location_label"),
+        "review_required": record.get("review_required"),
+    }
+
+
+def _candidate_reference(property_item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "property_id": property_item.get("property_id"),
+        "parcel_id": property_item.get("parcel_id"),
+        "village": property_item.get("village"),
+        "tehsil": property_item.get("taluka"),
+        "district": property_item.get("district"),
+        "survey_number": property_item.get("survey_number"),
+        "khasra_number": property_item.get("khasra_number"),
+        "sub_division": property_item.get("sub_division"),
+        "geometry_available": isinstance(property_item.get("geometry"), dict),
+    }
+
+
+def _location_block(state: str, **overrides: Any) -> Dict[str, Any]:
+    block = {
+        "status": LOCATION_STATUS_UNRESOLVED,
+        "state": state,
+        "label": LOCATION_STATE_LABELS.get(state, LOCATION_STATE_LABELS["UNRESOLVED"]),
+        "note": LOCATION_STATE_NOTES.get(state, ""),
+        "latitude": None,
+        "longitude": None,
+        "source": None,
+        "confidence": None,
+        "verified": False,
+        "verified_by": None,
+        "verified_at": None,
+        "resolved_from_address": False,
+        "authoritative": False,
+        "can_geocode": False,
+        "geocode_query": None,
+    }
+    block.update(overrides)
+    return block
+
+
+def _persist_parcel_derivations(
+    user: Dict[str, Any],
+    property_item: Optional[Dict[str, Any]],
+    geometry: Optional[Dict[str, Any]],
+    centroid: Optional[Dict[str, float]],
+) -> Optional[str]:
+    """Store a computed centroid/coordinates when the stored parcel lacks them.
+
+    Only derived, non-verifying metadata is written; geometry and human exact
+    pins are never touched.
+    """
+    if not property_item or not isinstance(geometry, dict) or not centroid:
+        return None
+    if _text(property_item.get("location_status")).upper() == "EXACT_PIN":
+        return None
+    stored_centroid = property_item.get("centroid")
+    missing_centroid = not isinstance(stored_centroid, (dict, list, tuple))
+    missing_coordinates = coordinate_pair(property_item.get("latitude"), property_item.get("longitude")) is None
+    if not missing_centroid and not missing_coordinates:
+        return None
+    property_id = _text(property_item.get("property_id"))
+    if not property_id:
+        return None
+    now = _now()
+    status = _text(property_item.get("location_status")).upper()
+    new_status = LOCATION_STATUS_GEOMETRY if status in ("", LOCATION_STATUS_UNRESOLVED) else property_item.get("location_status")
+    source = property_item.get("location_source") or property_item.get("geometry_source") or "Stored parcel geometry"
+    confidence = property_item.get("location_confidence")
+    if confidence is None:
+        confidence = property_item.get("geometry_confidence")
+    detail = (
+        f"Parcel {property_item.get('parcel_id') or property_id} centroid computed from stored geometry "
+        f"({centroid['latitude']}, {centroid['longitude']}); reference geometry, not an authoritative boundary."
+    )
+    with get_db() as db:
+        db.execute(
+            """UPDATE properties SET centroid=?, latitude=?, longitude=?, location_status=?, location_source=?,
+               location_confidence=?, location_updated_at=?, updated_at=? WHERE property_id=?""",
+            (_json(centroid), centroid["latitude"], centroid["longitude"], new_status, source,
+             confidence, now, now, property_id),
+        )
+        db.execute(
+            "INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",
+            (uuid.uuid4().hex, property_id, "PARCEL_CENTROID_COMPUTED", detail, "Canonical parcel resolution", now),
+        )
+    _audit(user, "PARCEL_LOCATED", detail, property_id)
+    return detail
+
+
+def _persist_geocode_location(
+    user: Dict[str, Any],
+    property_item: Optional[Dict[str, Any]],
+    location: Dict[str, Any],
+) -> Optional[str]:
+    """Persist an address-geocode result as *approximate* location metadata.
+
+    Only written for parcels that have no stored geometry, no stored point and
+    no human exact pin, and always under ``GEOCODED_ADDRESS`` so the position
+    can never be mistaken for a verified cadastral location.
+    """
+    if not property_item or location.get("state") not in ("GEOCODED",):
+        return None
+    pair = coordinate_pair(location.get("latitude"), location.get("longitude"))
+    if not pair:
+        return None
+    property_id = _text(property_item.get("property_id"))
+    if not property_id:
+        return None
+    stored_status = _text(property_item.get("location_status")).upper()
+    if stored_status in ("EXACT_PIN", LOCATION_STATUS_GEOCODED):
+        return None
+    if isinstance(property_item.get("geometry"), dict):
+        return None
+    stored_location = property_item.get("location") or {}
+    if coordinate_pair(stored_location.get("latitude"), stored_location.get("longitude")):
+        return None
+    now = _now()
+    source = location.get("source") or "Persisted address geocode (approximate)"
+    query = location.get("geocode_query") or ""
+    detail = (
+        f"Address geocode stored for parcel {property_item.get('parcel_id') or property_id} "
+        f"({pair[0]}, {pair[1]}) from query '{query}'. Approximate — not a verified cadastral location."
+    )
+    with get_db() as db:
+        db.execute(
+            """UPDATE properties SET latitude=?, longitude=?, location_status=?, location_source=?,
+               location_confidence=?, location_updated_at=?, updated_at=? WHERE property_id=?""",
+            (pair[0], pair[1], LOCATION_STATUS_GEOCODED, source,
+             property_item.get("location_confidence") or property_item.get("source_confidence"), now, now, property_id),
+        )
+        db.execute(
+            "INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",
+            (uuid.uuid4().hex, property_id, "ADDRESS_GEOCODE_STORED", detail, "Canonical parcel resolution", now),
+        )
+    _audit(user, "PARCEL_ADDRESS_RESOLVED", detail, property_id)
+    return detail
+
+
+def _spatial_state(
+    *,
+    property_item: Optional[Dict[str, Any]],
+    land_records: Sequence[Dict[str, Any]],
+    fallback_record: Optional[Dict[str, Any]],
+    index: Dict[str, Any],
+    village: str,
+    tehsil: str,
+    district: str,
+    state_name: str,
+) -> Dict[str, Any]:
+    """Geometry + location block for a land record (one shared implementation).
+
+    Order: stored parcel (verified pin / polygon centroid / stored point) →
+    document exact pin → persisted address geocode → explicit UNRESOLVED.
+    """
+    geometry: Optional[Dict[str, Any]] = None
+    centroid: Optional[Dict[str, float]] = None
+    bounds: Optional[List[List[float]]] = None
+    location = _location_block("UNRESOLVED")
+    match_method = "unresolved"
+
+    if property_item is not None:
+        geometry = property_item.get("geometry") if isinstance(property_item.get("geometry"), dict) else None
+        centroid = _property_centroid(property_item, geometry)
+        bounds = geometry_bounds(geometry)
+        stored_location = property_item.get("location") or {}
+        pair = coordinate_pair(stored_location.get("latitude"), stored_location.get("longitude"))
+        source = stored_location.get("source") or property_item.get("geometry_source")
+        confidence = stored_location.get("confidence")
+        if confidence is None:
+            confidence = property_item.get("geometry_confidence")
+        if _text(stored_location.get("status")).upper() == "EXACT_PIN" and pair:
+            location = _location_block(
+                "VERIFIED", status=LOCATION_STATUS_VERIFIED, latitude=pair[0], longitude=pair[1],
+                source=source or "Authorised reviewer pin", confidence=confidence,
+                verified=True, verified_by=stored_location.get("verified_by"),
+                verified_at=stored_location.get("verified_at"),
+            )
+        elif geometry:
+            center = centroid
+            if center is None:
+                bounds_center = _bounds_center(bounds)
+                center = {"latitude": bounds_center[0], "longitude": bounds_center[1]} if bounds_center else None
+            location = _location_block(
+                "REFERENCE_GEOMETRY", status=LOCATION_STATUS_GEOMETRY,
+                latitude=center["latitude"] if center else None,
+                longitude=center["longitude"] if center else None,
+                source=source or property_item.get("geometry_source") or "Stored parcel geometry",
+                confidence=confidence,
+                authoritative=_is_authoritative_source(property_item.get("geometry_source"), property_item.get("data_source")),
+            )
+        elif pair and _text(stored_location.get("status")).upper() == LOCATION_STATUS_GEOCODED:
+            # A previously persisted address geocode: useful, but it stays labelled
+            # as approximate and never becomes a verified/stored parcel point.
+            location = _location_block(
+                "GEOCODED", status=LOCATION_STATUS_GEOCODED, latitude=pair[0], longitude=pair[1],
+                source=source or "Persisted address geocode",
+                confidence=confidence, resolved_from_address=True,
+            )
+            match_method = "address_geocode"
+            centroid = {"latitude": round(pair[0], 7), "longitude": round(pair[1], 7)}
+        elif pair:
+            location = _location_block(
+                "STORED_POINT", status=LOCATION_STATUS_VERIFIED, latitude=pair[0], longitude=pair[1],
+                source=source or property_item.get("geometry_source") or "Stored parcel location",
+                confidence=confidence,
+            )
+            # Point-only parcels: the stored point IS the parcel position, so the
+            # canonical centroid mirrors it (no geometry/bounds are invented).
+            centroid = {"latitude": round(pair[0], 7), "longitude": round(pair[1], 7)}
+
+    if location["state"] == "UNRESOLVED":
+        pin = _document_pin(land_records) or (_document_pin([fallback_record]) if fallback_record else None)
+        if pin:
+            record = pin["record"]
+            location = _location_block(
+                "VERIFIED", status=LOCATION_STATUS_VERIFIED,
+                latitude=pin["latitude"], longitude=pin["longitude"],
+                source=record.get("location_source") or "Authorised reviewer pin (document)",
+                confidence=record.get("location_confidence"),
+                verified=True,
+                verified_by=record.get("location_verified_by"),
+                verified_at=record.get("location_verified_at"),
+            )
+            match_method = "document_pin"
+        else:
+            geocoded = _cached_geocode(index, village, tehsil, district, state_name)
+            geocode_query = next(iter(_address_query_variants(village, tehsil, district, state_name)), None)
+            if geocoded:
+                location = _location_block(
+                    "GEOCODED", status=LOCATION_STATUS_GEOCODED,
+                    latitude=geocoded["latitude"], longitude=geocoded["longitude"],
+                    source=geocoded["source"], resolved_from_address=True,
+                    geocode_query=geocoded["query"],
+                )
+                match_method = "address_geocode"
+            else:
+                location = _location_block(
+                    "UNRESOLVED", status=LOCATION_STATUS_UNRESOLVED,
+                    can_geocode=bool(geocode_query), geocode_query=geocode_query,
+                )
+    return {"geometry": geometry, "centroid": centroid, "bounds": bounds, "location": location, "match_method": match_method}
+
+
+def _land_spatial_summary(land: Dict[str, Any], index: Dict[str, Any]) -> Dict[str, Any]:
+    """Lightweight spatial state for list rows (no writes, one shared index)."""
+    records = list(land.get("records") or [])
+    property_item, _method, _extra, ambiguous = _property_candidates_for_land(
+        {"survey": land.get("survey"), "khasra": land.get("khasra"), "village": land.get("village")},
+        index, document_ids=[record.get("id") for record in records],
+    )
+    spatial = _spatial_state(
+        property_item=property_item, land_records=records, fallback_record=None, index=index,
+        village=_text(land.get("village")), tehsil=_text(land.get("tehsil")), district=_text(land.get("district")),
+        state_name=_text(land.get("state")),
+    )
+    location = spatial["location"]
+    return {
+        "location_state": location["state"],
+        "location_status": location["status"],
+        "location_label": location["label"],
+        "location_note": location["note"],
+        "latitude": location["latitude"],
+        "longitude": location["longitude"],
+        "parcel_id": (_text(property_item.get("parcel_id")) or None) if property_item else None,
+        "property_id": (_text(property_item.get("property_id")) or None) if property_item else None,
+        "has_geometry": bool(isinstance(spatial["geometry"], dict)),
+        "geometry_authoritative": _is_authoritative_source(
+            property_item.get("geometry_source"), property_item.get("data_source"),
+        ) if property_item else False,
+        "ambiguous": bool(ambiguous),
+        "located": location["state"] != "UNRESOLVED",
+    }
+
+
+def resolve_land_parcel(
+    user: Dict[str, Any],
+    *,
+    land_id: str = "",
+    parcel_id: str = "",
+    property_id: str = "",
+    document_id: str = "",
+    survey_number: str = "",
+    khasra_number: str = "",
+    village: str = "",
+    tehsil: str = "",
+    district: str = "",
+    persist: bool = False,
+    land: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve ONE land record to its canonical spatial object.
+
+    See the module section header for the matching order and the stable
+    response contract. ``land`` is an optional fast path used by the
+    land-record detail endpoint (already-grouped land shell).
+    """
+    ensure_land_tables()
+    wanted_land = _text(land_id)
+    wanted_parcel = _text(parcel_id) or _text(property_id)
+    wanted_document = _text(document_id)
+    survey = _text(survey_number)
+    khasra = _text(khasra_number)
+    village = _text(village)
+    tehsil = _text(tehsil)
+    district = _text(district)
+
+    records: List[Dict[str, Any]] = []
+    if wanted_document or land is None:
+        records = mapping._map_visible_records(user)
+    by_document = {str(record.get("id")): record for record in records}
+    document_record = by_document.get(wanted_document) if wanted_document else None
+
+    if land is None:
+        lands = _group_land_records(records)
+        for registered_id, registered in register_lands().items():
+            lands.setdefault(registered_id, registered)
+    else:
+        lands = {land["land_id"]: land}
+
+    issues: List[str] = []
+    candidate_rows: List[Dict[str, Any]] = []
+    ambiguous = False
+    match_method = "unresolved"
+    property_item: Optional[Dict[str, Any]] = None
+
+    if wanted_document and not document_record:
+        issues.append("The requested document is not visible to this session's role.")
+
+    index = _spatial_index()
+
+    # 1. explicit identifiers (parcel/property id) ---------------------------
+    if wanted_parcel:
+        property_item = index["by_identifier"].get(wanted_parcel.casefold())
+        if property_item:
+            match_method = "parcel_id"
+        else:
+            issues.append(f"No stored parcel matches identifier '{wanted_parcel}'.")
+
+    # 1b. land_id: either the grouped land identity or an explicit parcel id --
+    if land is None and wanted_land:
+        land = lands.get(wanted_land)
+        if land is not None:
+            if match_method in ("unresolved",):
+                match_method = "land_id"
+        else:
+            property_item = property_item or index["by_identifier"].get(wanted_land.casefold())
+            if property_item and match_method == "unresolved":
+                match_method = "land_id"
+            elif property_item is None:
+                issues.append("No land record matches this land_id for the current role.")
+
+    # 1c. explicit identity fields supplied by the caller --------------------
+    if land is None and (survey or khasra or village):
+        identity_survey = survey or khasra
+        _, identity_land_id = land_identity(identity_survey, village or district or tehsil)
+        land = lands.get(identity_land_id)
+        if land is not None and match_method == "unresolved":
+            match_method = "land_id"
+
+    # 1d. document -> land ---------------------------------------------------
+    if land is None and document_record is not None:
+        identity_survey = _land_survey(document_record)
+        identity_village = _land_village(document_record)
+        if identity_survey or identity_village:
+            _, identity_land_id = land_identity(identity_survey, identity_village)
+            land = lands.get(identity_land_id)
+        if match_method == "unresolved":
+            match_method = "document"
+
+    if land is None and property_item is not None:
+        # A pure spatial parcel without screened documents still builds a shell.
+        land = {
+            "land_id": None, "land_key": None, "survey": _text(property_item.get("survey_number")),
+            "khasra": _text(property_item.get("khasra_number")), "village": _text(property_item.get("village")),
+            "tehsil": _text(property_item.get("taluka")), "district": _text(property_item.get("district")),
+            "state": "", "records": [], "record_count": 0, "current_owner": "", "father": "", "area": "",
+            "latest_year": None, "latest_record_id": "", "approved_count": 0, "reference_record_id": "",
+            "label": "",
+        }
+
+    if land is not None:
+        survey = survey or _text(land.get("survey")) or _text(land.get("khasra"))
+        khasra = khasra or _text(land.get("khasra"))
+        village = village or _text(land.get("village"))
+        tehsil = tehsil or _text(land.get("tehsil"))
+        district = district or _text(land.get("district"))
+    land_records = list((land or {}).get("records") or [])
+    land_document_ids = [str(record.get("id")) for record in land_records]
+    if wanted_document:
+        land_document_ids = [wanted_document] + [value for value in land_document_ids if value != wanted_document]
+
+    # 2/3. property selection (document link, then survey + village) ---------
+    if property_item is None:
+        land_identity_shell = {
+            "survey": survey, "khasra": khasra, "village": village,
+        }
+        property_item, method, extra, ambiguous = _property_candidates_for_land(
+            land_identity_shell, index, document_ids=land_document_ids,
+        )
+        if ambiguous and method == "ambiguous_survey":
+            candidate_rows = [_candidate_reference(item) for item in extra]
+            issues.append(
+                "Multiple stored parcels share this survey number across villages; "
+                "select the village to locate the exact parcel."
+            )
+            property_item = None
+            if match_method == "unresolved":
+                match_method = "ambiguous_survey"
+        else:
+            candidate_rows = [_candidate_reference(item) for item in extra]
+            if property_item is not None and _MATCH_METHOD_RANK.get(method, 99) < _MATCH_METHOD_RANK.get(match_method, 99):
+                match_method = method
+
+    if property_item is not None and match_method == "unresolved":
+        match_method = "survey_village"
+
+    # 4/5/6. geometry, stored point, document pin, geocode, unresolved --------
+    spatial = _spatial_state(
+        property_item=property_item, land_records=land_records, fallback_record=document_record,
+        index=index, village=village, tehsil=tehsil, district=district, state_name=_text((land or {}).get("state")),
+    )
+    geometry = spatial["geometry"]
+    centroid = spatial["centroid"]
+    bounds = spatial["bounds"]
+    location = spatial["location"]
+    spatial_method = spatial["match_method"]
+    if spatial_method in ("document_pin", "address_geocode") and match_method in ("unresolved", "document", "ambiguous_survey"):
+        # Report where the position actually came from; identifier matches keep their method.
+        match_method = spatial_method
+    if location["state"] == "UNRESOLVED":
+        issues.append(LOCATION_STATE_LABELS["UNRESOLVED"] + ".")
+
+    documents_out = [_parcel_document_reference(record) for record in land_records]
+    if not documents_out and document_record is not None:
+        documents_out = [_parcel_document_reference(document_record)]
+    documented_ids = [reference.get("id") for reference in documents_out]
+    focus_document_id = wanted_document if wanted_document in documented_ids else None
+    if focus_document_id is None:
+        focus_document_id = _text((land or {}).get("reference_record_id")) or (documented_ids[-1] if documented_ids else (wanted_document or None))
+
+    owner = _text((land or {}).get("current_owner")) or _text((land or {}).get("owner"))
+    if not owner and documents_out:
+        owner = _text(documents_out[-1].get("owner"))
+    resolved_land_id = _text((land or {}).get("land_id")) or None
+
+    if persist:
+        _persist_parcel_derivations(user, property_item, geometry, centroid)
+        persisted_geocode = _persist_geocode_location(user, property_item, location)
+        if persisted_geocode and location["state"] == "GEOCODED":
+            # Reflect what is now stored on the parcel without changing the label.
+            location = dict(location)
+            location["persisted"] = True
+
+    survey_out = survey or khasra or None
+    label = " · ".join(part for part in (survey_out, village) if part) or (resolved_land_id or "Land record")
+    authoritative = _is_authoritative_source(
+        property_item.get("geometry_source"), property_item.get("data_source"),
+    ) if property_item else False
+    urls = {
+        "map": _parcel_map_url(resolved_land_id, property_item, focus_document_id),
+        "land_intelligence": f"/?land_id={resolved_land_id}" if resolved_land_id else None,
+        "record": f"/?open_document={focus_document_id}" if focus_document_id else None,
+    }
+    return {
+        "matched": bool(land or property_item or document_record),
+        "located": location["state"] != "UNRESOLVED",
+        "match_method": match_method if match_method else "unresolved",
+        "land_id": resolved_land_id,
+        "land_key": _text((land or {}).get("land_key")) or None,
+        "parcel_id": (_text(property_item.get("parcel_id")) or None) if property_item else None,
+        "property_id": (_text(property_item.get("property_id")) or None) if property_item else None,
+        "survey_number": survey_out,
+        "khasra_number": khasra or None,
+        "khata_number": next((_text(record.get("khata")) for record in land_records if _text(record.get("khata"))), None),
+        "village": village or None,
+        "tehsil": tehsil or None,
+        "district": district or None,
+        "state": _text((land or {}).get("state")) or None,
+        "owner": owner or None,
+        "father": _text((land or {}).get("father")) or None,
+        "label": label,
+        "geometry": geometry,
+        "bounds": bounds,
+        "centroid": centroid,
+        "geometry_source": (_text(property_item.get("geometry_source")) or None) if property_item else None,
+        "geometry_confidence": property_item.get("geometry_confidence") if property_item else None,
+        "geometry_authoritative": authoritative,
+        "reference_only": not authoritative if property_item else True,
+        "location": location,
+        "documents": documents_out,
+        "focus_document_id": focus_document_id,
+        "candidates": candidate_rows,
+        "quality": {
+            "ambiguous": bool(ambiguous),
+            "survey_scope": "village-scoped",
+            "records": len(documents_out),
+            "issues": issues,
+        },
+        "urls": urls,
+        "disclaimer": PARCEL_DISCLAIMER,
+    }
+
+
+def _parcel_map_url(land_id: Optional[str], property_item: Optional[Dict[str, Any]], document_id: Optional[str]) -> str:
+    query = ["locate=1"]
+    if land_id:
+        query.append(f"land_id={land_id}")
+    if property_item and _text(property_item.get("parcel_id")):
+        query.append(f"parcel={property_item['parcel_id']}")
+    if document_id:
+        query.append(f"document_id={document_id}")
+    return "/map?" + "&".join(query)
+
+
+class ParcelResolveRequest(BaseModel):
+    """Locate a land record on the map by ANY of its identifiers."""
+
+    land_id: str = ""
+    parcel_id: str = ""
+    property_id: str = ""
+    document_id: str = ""
+    survey_number: str = ""
+    khasra_number: str = ""
+    village: str = ""
+    tehsil: str = ""
+    district: str = ""
+    persist: bool = True
+
+
+@parcel_router.post("/resolve")
+def resolve_parcel_endpoint(req: ParcelResolveRequest, user: Dict[str, Any] = Depends(get_current_user)):
+    """Canonical record -> parcel resolution used by Locate and the map page.
+
+    Returns the stable parcel payload (``PARCEL_RESPONSE_FIELDS``) and persists
+    derived, non-verifying location metadata (a centroid computed from stored
+    geometry) so later requests no longer have to recompute it.
+    """
+    return resolve_land_parcel(
+        user,
+        land_id=req.land_id, parcel_id=req.parcel_id, property_id=req.property_id,
+        document_id=req.document_id, survey_number=req.survey_number, khasra_number=req.khasra_number,
+        village=req.village, tehsil=req.tehsil, district=req.district, persist=req.persist,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1263,9 +2151,10 @@ def _register_states(land: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _land_summary(land: Dict[str, Any]) -> Dict[str, Any]:
+def _land_summary(land: Dict[str, Any], *, spatial_index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     state = _register_states(land)
     latest = (land.get("records") or [{}])[-1]
+    spatial = _land_spatial_summary(land, spatial_index if spatial_index is not None else _spatial_index())
     return {
         "land_id": land["land_id"],
         "survey": land.get("survey"),
@@ -1287,6 +2176,19 @@ def _land_summary(land: Dict[str, Any]) -> Dict[str, Any]:
         "pending_mutation_count": len(state["pending_mutations"]),
         "latest_status": _text(latest.get("status")),
         "encumbrance_banner": _encumbrance_banner(state),
+        # Canonical spatial state (used by the Locate action / map column).
+        "location_state": spatial["location_state"],
+        "location_status": spatial["location_status"],
+        "location_label": spatial["location_label"],
+        "location_note": spatial["location_note"],
+        "latitude": spatial["latitude"],
+        "longitude": spatial["longitude"],
+        "parcel_id": spatial["parcel_id"],
+        "property_id": spatial["property_id"],
+        "has_geometry": spatial["has_geometry"],
+        "geometry_authoritative": spatial["geometry_authoritative"],
+        "spatial_ambiguous": spatial["ambiguous"],
+        "located": spatial["located"],
     }
 
 
@@ -1320,7 +2222,8 @@ def list_land_records(
 ):
     """Paginated land-record index grouped from the visible screened records."""
     lands = _land_records_index(user)
-    items = [_land_summary(land) for land in lands.values()]
+    spatial_index = _spatial_index()
+    items = [_land_summary(land, spatial_index=spatial_index) for land in lands.values()]
     needle = _text(q).casefold()
     if needle:
         items = [item for item in items if needle in " ".join(str(item.get(key) or "") for key in (
@@ -1346,12 +2249,13 @@ def risk_review(
 ):
     """Risk review workspace: computed verdicts for land records (paginated)."""
     lands = _land_records_index(user)
+    spatial_index = _spatial_index()
     results = []
     for land in lands.values():
         if not (land.get("records") or land.get("survey")):
             continue
         risk = compute_land_risk(land)
-        summary = _land_summary(land)
+        summary = _land_summary(land, spatial_index=spatial_index)
         summary["risk"] = risk
         results.append(summary)
     wanted = _text(verdict).upper()
@@ -1372,6 +2276,7 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
     state = _register_states(land)
     documents = [_document_reference(record) for record in land.get("records") or []]
     ownership = _ownership_history(land, state["mutations"])
+    parcel = resolve_land_parcel(user, land_id=land["land_id"], persist=False, land=land)
     detail = {
         "land_id": land["land_id"],
         "property": {
@@ -1396,9 +2301,17 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
         "encumbrances": state["encumbrances"],
         "encumbrance_banner": state["encumbrance_banner"],
         "risk": risk,
+        # Canonical spatial object for this land record (see
+        # ``PARCEL_RESPONSE_FIELDS``). The map page, the Locate action and this
+        # detail view all consume the same shape.
+        "parcel": parcel,
         "map": {
             "focus_record_id": land.get("reference_record_id"),
-            "url": f"/map?open_record={land.get('reference_record_id')}" if land.get("reference_record_id") else "/map",
+            "land_id": land["land_id"],
+            "url": parcel["urls"]["map"],
+            "parcel_id": parcel.get("parcel_id"),
+            "location_state": parcel["location"]["state"],
+            "location_label": parcel["location"]["label"],
             "note": "Map geometry is a project-owned, non-authoritative reference.",
         },
     }
@@ -1407,6 +2320,15 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
     else:
         detail["audit"] = {"restricted": True, "reason": "The full audit trail is available to administrators."}
     return detail
+
+
+@land_router.get("/{land_id}/parcel")
+def land_record_parcel(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    """Read-only canonical spatial object for one land record (deep-link safe)."""
+    land = _get_land(user, land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land record not found.")
+    return resolve_land_parcel(user, land_id=land_id, persist=False, land=land)
 
 
 def _document_reference(record: Dict[str, Any]) -> Dict[str, Any]:

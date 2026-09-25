@@ -105,7 +105,69 @@ property resolution).
   active encumbrances, ownership changes without mutations, conflicts, area
   jumps, pending/rejected mutations, low-quality OCR and duplicates. All demo
   artifacts are tagged and removable via `DELETE /api/admin/demo/data`
-  without touching production data.
+  without touching production data. Several demo parcels carry reference
+  geometry or stored coordinates (clean, mutation, encumbered, conflicting,
+  point-only cases) so the Locate workflow can be exercised on real demo data;
+  one demo record intentionally has no spatial data and demonstrates the
+  explicit “location unavailable” state.
+- **Locate workflow (All Records → parcel → map)** — every record row in
+  *All Records* (and in the viewer catalog and the Land Intelligence records
+  list) has a **Locate** action. It resolves the record through the canonical
+  parcel resolver and opens the existing map view on that exact parcel
+  (`/map?locate=1&land_id=…&parcel=…&document_id=…`): polygons are drawn and
+  fitted, point-only parcels are centred with a marker, the selected parcel is
+  highlighted with a popup (survey/khasra, village, owner, land ID) and the
+  panel offers **Open Land Intelligence** and **View record**. Selecting
+  another record deselects and redraws the previous parcel. Records with no
+  stored geometry or coordinates fall back **once** to the existing village
+  geocoder (`POST /api/map/geocode`, cached and throttled), which is stored on
+  the parcel as `GEOCODED_ADDRESS` and always shown as *“Location resolved from
+  address — verify”*; if that fails, the record stays in the explicit
+  *“Location unavailable — no verified coordinates”* state. Location data is
+  never silently invented or upgraded to a verified/cadastral location.
+
+### Canonical parcel response (stable shape)
+
+`POST /api/parcels/resolve` and `GET /api/land-records/{land_id}/parcel` return
+one canonical spatial object per land record. The map page, the Locate action,
+the land-record detail view and the Land Intelligence list all consume this
+single shape:
+
+```jsonc
+{
+  "matched": true, "located": true, "match_method": "survey_village",
+  "land_id": "LR-…", "parcel_id": "…", "property_id": "…",
+  "survey_number": "103", "khasra_number": "103",
+  "village": "…", "tehsil": "…", "district": "…", "owner": "…",
+  "geometry": { "type": "Polygon", "coordinates": [] },   // null when only a point exists
+  "bounds": [[28.64, 77.11], [28.64, 77.12]],              // Leaflet [[south, west], [north, east]]
+  "centroid": { "latitude": 28.6434, "longitude": 77.11825 },
+  "location": {
+    "status": "PARCEL_GEOMETRY",          // VERIFIED_LOCATION | PARCEL_GEOMETRY | GEOCODED_ADDRESS | UNRESOLVED
+    "state": "REFERENCE_GEOMETRY",        // VERIFIED | STORED_POINT | REFERENCE_GEOMETRY | GEOCODED | UNRESOLVED
+    "label": "Located on map",            // or "Location resolved from address — verify"
+                                          // or "Location unavailable — no verified coordinates"
+    "note": "…", "latitude": 28.6434, "longitude": 77.11825,
+    "source": "…", "confidence": 0.9, "verified": false, "verified_by": null,
+    "resolved_from_address": false, "authoritative": false,
+    "can_geocode": false, "geocode_query": null
+  },
+  "geometry_authoritative": false, "reference_only": true,
+  "documents": [], "focus_document_id": "…", "candidates": [],
+  "quality": { "ambiguous": false, "survey_scope": "village-scoped", "records": 1, "issues": [] },
+  "urls": { "map": "/map?locate=1&…", "land_intelligence": "/?land_id=…", "record": "/?open_document=…" },
+  "disclaimer": "…"
+}
+```
+
+Matching order (strongest identifier first, owner names are **never** used):
+`parcel_id`/`property_id` → `land_id` → linked document (`property_documents`)
+→ survey/khasra **plus village** (village-scoped; a survey number alone that
+matches several villages returns `ambiguous_survey` with candidates instead of
+guessing) → document/village identity → the reviewer's exact document pin →
+persisted address geocode → explicit `UNRESOLVED`. Approximate, geocoded and
+reference geometry is never presented as an authoritative cadastral boundary;
+`authoritative` is only ever true when the stored source says so.
 
 ### New API surface
 
@@ -118,9 +180,11 @@ GET                 /api/mutations/{id}            (+ /events)
 POST                /api/mutations/{id}/review     (verifier/admin)
 POST                /api/mutations/{id}/complete   (admin only; safety gate)
 GET                 /api/land-records              (paginated, role-scoped)
-GET                 /api/land-records/{land_id}    (detail; risk via /risk)
+GET                 /api/land-records/{land_id}    (detail; includes `parcel` + `map`)
+GET                 /api/land-records/{land_id}/parcel   (canonical spatial object)
 GET                 /api/land-records/risk-review  (verifier/admin)
 GET                 /api/land-records/{land_id}/encumbrances | /mutations
+POST                /api/parcels/resolve           (canonical parcel for Locate)
 POST                /api/reports/land-verification
 GET                 /api/reports/land-verification/{ref}(.qr.png)
 GET/POST/DELETE     /api/admin/demo/scenarios | /seed | /data   (admin only)

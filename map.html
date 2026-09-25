@@ -156,6 +156,21 @@
           </aside>
           <div class="map-stage">
             <div id="map" aria-label="Land record map"></div>
+            <section id="parcelLocatorPanel" class="parcel-locator hidden" aria-live="polite" aria-label="Located parcel">
+              <div class="parcel-locator-head">
+                <span class="section-kicker">LOCATED PARCEL</span>
+                <span id="parcelLocatorState" class="parcel-locator-state">—</span>
+              </div>
+              <strong id="parcelLocatorTitle">No parcel located yet</strong>
+              <div id="parcelLocatorGrid" class="parcel-locator-grid"></div>
+              <p id="parcelLocatorNote" class="parcel-locator-note"></p>
+              <div class="parcel-locator-actions">
+                <button id="parcelOpenLand" class="btn secondary" type="button" disabled>Open Land Intelligence</button>
+                <button id="parcelOpenRecord" class="btn ghost" type="button" disabled>View record</button>
+                <button id="parcelResolveAddress" class="btn ghost hidden" type="button">Resolve from address</button>
+                <button id="parcelClear" class="btn ghost" type="button">Clear</button>
+              </div>
+            </section>
             <div id="mapLoadHint" class="map-overlay">Loading map library…</div>
             <div id="mapSchematicNote" class="schematic-note hidden">▦ Schematic mode — record markers remain at their stored latitude and longitude. Works offline.</div>
             <div id="mapFallback" class="map-fallback hidden" role="alert">

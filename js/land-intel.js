@@ -233,6 +233,23 @@
     renderRecords();
   }
 
+  // Locate target for a land row: the map page resolves the same canonical
+  // parcel object from these identifiers (?locate=1&land_id=…&parcel=…).
+  function landMapUrl(land) {
+    const params = new URLSearchParams();
+    params.set('locate', '1');
+    if (land.land_id) params.set('land_id', land.land_id);
+    if (land.parcel_id) params.set('parcel', land.parcel_id);
+    return `/map?${params.toString()}`;
+  }
+
+  function locationChip(land) {
+    const state = land.location_state || 'UNRESOLVED';
+    const label = land.location_label || 'Location state unavailable';
+    const tone = state === 'UNRESOLVED' ? 'li-review' : (state === 'GEOCODED' ? 'li-geocode' : 'li-clear');
+    return `<span class="li-chip ${tone}" title="${esc(land.location_note || label)}">${esc(label)}</span>`;
+  }
+
   function renderRecords() {
     const root = $('liRecordsPane');
     if (!root) return;
@@ -245,7 +262,9 @@
         <td>${dash(land.area)}</td>
         <td>${encChip(land.encumbrance_status)}</td>
         <td>${land.pending_mutation_count ? `<span class="li-chip li-review">${land.pending_mutation_count} pending</span>` : '<span class="li-chip li-clear">—</span>'}</td>
-        <td style="text-align:right">
+        <td>${locationChip(land)}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn ghost" style="padding:4px 10px;font-size:12px" data-land-map="${esc(landMapUrl(land))}" title="${esc(land.location_label || 'Locate on map')}">📍 Locate</button>
           <button class="btn saffron" style="padding:4px 10px;font-size:12px" data-land-open="${esc(land.land_id)}">Open</button>
         </td>
       </tr>`).join('');
@@ -256,8 +275,8 @@
       </div>
       <div style="overflow-x:auto">
       <table class="gov-table">
-        <thead><tr><th>Land ID</th><th>${esc(t('surveyKhasra'))}</th><th>${esc(t('village'))}</th><th>${esc(t('currentOwner'))}</th><th>${esc(t('area'))}</th><th>${esc(t('encumbrance'))}</th><th>Mutations</th><th></th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="8" class="li-empty">${esc(t('noData'))}</td></tr>`}</tbody>
+        <thead><tr><th>Land ID</th><th>${esc(t('surveyKhasra'))}</th><th>${esc(t('village'))}</th><th>${esc(t('currentOwner'))}</th><th>${esc(t('area'))}</th><th>${esc(t('encumbrance'))}</th><th>Mutations</th><th>Location</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="9" class="li-empty">${esc(t('noData'))}</td></tr>`}</tbody>
       </table></div>`;
     const search = $('liLandSearch');
     if (search) {
@@ -268,6 +287,11 @@
     }
     root.querySelectorAll('[data-land-open]').forEach((btn) => {
       btn.addEventListener('click', () => openLandDetail(btn.dataset.landOpen));
+    });
+    root.querySelectorAll('[data-land-map]').forEach((btn) => {
+      // Land Intelligence -> map: the map page re-resolves the canonical parcel
+      // and reports unresolved locations explicitly instead of failing silently.
+      btn.addEventListener('click', () => { if (btn.dataset.landMap) window.location.href = btn.dataset.landMap; });
     });
   }
 

@@ -6,6 +6,7 @@ from land_intel import (
     encumbrance_router,
     land_router,
     mutation_router,
+    parcel_router,
     report_router,
 )
 from demo_scenarios import demo_router
@@ -17,6 +18,7 @@ app.include_router(document_history_router)
 app.include_router(ai_approval_router)
 app.include_router(encumbrance_router)
 app.include_router(mutation_router)
+app.include_router(parcel_router)
 app.include_router(land_router)
 app.include_router(report_router)
 app.include_router(demo_router)

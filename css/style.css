@@ -496,6 +496,12 @@ table.gov-table tbody tr:hover { background: #f1f5f9; }
 
 .mono { font-family: monospace; }
 .chip { display: inline-block; background: #e0f2fe; color: #0369a1; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 700; }
+/* Locate action feedback on record rows (All Records + viewer catalog). */
+.locate-status { max-width: 260px; margin: 5px 0 0 auto; color: var(--muted); font-size: 11px; line-height: 1.45; text-align: right; }
+.locate-status:empty { display: none; }
+.locate-status a { color: var(--gov-navy); font-weight: 700; }
+.locate-status .locate-warn { color: #92400e; font-weight: 700; }
+.locate-status .locate-error { color: #991b1b; font-weight: 700; }
 .errorbox { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
 .successbox { background: #f0fdf4; border: 1px solid #86efac; color: #166534; border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
 .issue-box { padding: 10px 14px; border-radius: 6px; margin-bottom: 10px; font-size: 12px; border-left: 4px solid; }
@@ -788,6 +794,7 @@ body.administration-open { overflow: hidden; }
 .li-ok { background: var(--gov-green-light); color: var(--gov-green); border: 1px solid #86efac; }
 .li-review { background: var(--gov-gold-light); color: var(--gov-gold); border: 1px solid #fde68a; }
 .li-high { background: var(--err-light); color: var(--err); border: 1px solid #fca5a5; }
+.li-geocode { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
 .li-muted { background: #f1f5f9; color: var(--muted); border: 1px solid var(--gov-border-light); }
 
 .li-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }

@@ -151,6 +151,27 @@ label select:focus, label input:focus { border-color: #3182b7; box-shadow: 0 0 0
 .popup-detail { margin-top: 5px; color: #475569; font-size: 11px; line-height: 1.5; }
 .popup-actions { display: flex; gap: 5px; margin-top: 9px; }
 .popup-actions button { border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 7px; color: #1e4c73; background: #f8fafc; cursor: pointer; font-size: 10px; font-weight: 800; }
+/* Canonical parcel locator (Locate action / ?locate=1 deep link). */
+.parcel-locator { position: absolute; z-index: 905; top: 10px; left: 10px; width: min(320px, calc(100% - 20px)); padding: 11px 13px 12px; border: 1px solid var(--line); border-left: 4px solid #b45309; border-radius: 8px; box-shadow: 0 4px 16px rgba(15, 43, 72, .16); background: rgba(255, 255, 255, .97); }
+.parcel-locator.state-verified { border-left-color: #15803d; }
+.parcel-locator.state-geocoded { border-left-color: #b45309; }
+.parcel-locator.state-unresolved { border-left-color: #b91c1c; }
+.parcel-locator-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.parcel-locator-state { padding: 2px 7px; border: 1px solid #cbd5e1; border-radius: 999px; color: #334155; background: #f8fafc; font-size: 10px; font-weight: 800; }
+.parcel-locator strong { display: block; margin-top: 5px; font-size: 13px; }
+.parcel-locator-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 10px; margin-top: 8px; }
+.parcel-locator-grid div { min-width: 0; }
+.parcel-locator-grid span { display: block; color: var(--muted); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+.parcel-locator-grid strong { margin-top: 1px; overflow: hidden; font-size: 11px; text-overflow: ellipsis; }
+.parcel-locator-note { margin: 8px 0 0; color: #705019; font-size: 10px; line-height: 1.5; }
+.parcel-locator-state[data-state="UNRESOLVED"] { color: #991b1b; border-color: #fca5a5; background: #fef2f2; }
+.parcel-locator-state[data-state="GEOCODED"] { color: #7b4a0b; border-color: #efd48d; background: #fffaf0; }
+.parcel-locator-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 9px; }
+.parcel-locator-actions .btn { padding: 4px 8px; font-size: 10px; }
+.map-parcel-shape { stroke-linejoin: round; }
+@media (max-width: 720px) {
+  .parcel-locator-grid { grid-template-columns: 1fr; }
+}
 .history-panel { padding: 20px 24px 23px; }
 .history-head { justify-content: space-between; }
 .icon-btn { width: 30px; height: 30px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--muted); background: #fff; font-size: 20px; line-height: 1; }
