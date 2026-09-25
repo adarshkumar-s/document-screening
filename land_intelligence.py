@@ -1,33 +1,24 @@
 """Resilient OCR + parcel intelligence extensions.
 
 This module builds on the existing deterministic land-intelligence layer instead
-of replacing it. It adds:
-- bounded OCR rescue using image variants and corroboration;
-- field-level confidence/corroboration diagnostics;
-- script-aware owner comparison without silently merging identities;
-- parcel-level evidence aggregation across documents, encumbrances, mutations,
-  and litigation;
-- evidence-linked review signals suitable for the operator UI.
-
-All findings are review signals, never legal conclusions. Existing RBAC and the
-AI approval/CAS path remain authoritative.
+of replacing it. It adds bounded OCR rescue, field-level confidence and
+corroboration, script-aware owner comparison, and evidence-linked parcel review
+signals. Findings are review signals, never legal conclusions.
 """
 from __future__ import annotations
 
 import difflib
-import io
-import os
+import json
 import re
-import time
 import unicodedata
 from collections import Counter
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 import server
-from server import ROLE_ADMIN, ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, get_db, require_roles
+from server import ROLE_ADMIN, ROLE_VERIFICATION_OFFICER, get_db, require_roles
 
 router = APIRouter(prefix="/api/land-intelligence", tags=["Land Intelligence"])
 REVIEW_ROLES = (ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)
@@ -36,39 +27,31 @@ MAX_RESCUE_PASSES = 3
 
 
 def _value(field: Any) -> str:
-    if isinstance(field, dict):
-        return str(field.get("value") or "").strip()
-    return str(field or "").strip()
+    return str(field.get("value") or "").strip() if isinstance(field, dict) else str(field or "").strip()
 
 
 def _conf(field: Any) -> float:
-    if isinstance(field, dict):
-        try:
-            return max(0.0, min(1.0, float(field.get("confidence") or 0.0)))
-        except (TypeError, ValueError):
-            return 0.0
-    return 0.0
+    if not isinstance(field, dict):
+        return 0.0
+    try:
+        return max(0.0, min(1.0, float(field.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
-    digit_map = str.maketrans("०१२३४५६७८९٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "012345678901234567890123456789")
-    text = text.translate(digit_map).casefold()
-    return re.sub(r"\s+", " ", text).strip()
+    text = text.translate(str.maketrans("०१२३४५६७८९٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "012345678901234567890123456789"))
+    return re.sub(r"\s+", " ", text.casefold()).strip()
 
 
 def _owner_key(value: Any) -> str:
-    """Conservative script-aware key; transliteration is intentionally limited."""
-    text = _norm(value)
-    if not text:
-        return ""
-    # Reuse the existing land_intel transliteration/matching when available.
     try:
         from land_intel import _owner_key as canonical_owner_key
         return canonical_owner_key(value)
     except Exception:
-        return text
+        return _norm(value)
 
 
 def owner_match(a: Any, b: Any) -> Dict[str, Any]:
@@ -78,13 +61,8 @@ def owner_match(a: Any, b: Any) -> Dict[str, Any]:
     if ka == kb:
         return {"match": True, "confidence": 1.0, "method": "NORMALIZED_OR_TRANSLITERATED_EXACT", "requires_review": False}
     ratio = difflib.SequenceMatcher(None, ka, kb).ratio()
-    return {
-        "match": ratio >= 0.82,
-        "confidence": round(ratio, 3),
-        "method": "FUZZY_SCRIPT_AWARE",
-        "requires_review": ratio >= 0.82,
-        "warning": "Possible same person; do not merge identities automatically." if ratio >= 0.82 else None,
-    }
+    return {"match": ratio >= 0.82, "confidence": round(ratio, 3), "method": "FUZZY_SCRIPT_AWARE", "requires_review": ratio >= 0.82,
+            "warning": "Possible same person; do not merge identities automatically." if ratio >= 0.82 else None}
 
 
 def assess_ocr(ocr: Dict[str, Any], fields: Dict[str, Any]) -> Dict[str, Any]:
@@ -109,15 +87,9 @@ def assess_ocr(ocr: Dict[str, Any], fields: Dict[str, Any]) -> Dict[str, Any]:
         diagnosis.append("Missing key fields: " + ", ".join(missing) + ".")
     garbage = words >= 5 and 0 < mean_conf < 0.35
     status = "GOOD" if key_filled >= 3 and mean_conf >= 0.60 and not garbage else ("UNREADABLE" if garbage or key_filled == 0 or words < 5 else "UNCERTAIN")
-    return {
-        "status": status,
-        "words": words,
-        "mean_confidence": round(mean_conf, 3),
-        "fields_filled": filled,
-        "key_fields_filled": key_filled,
-        "missing_key_fields": missing,
-        "diagnosis": diagnosis or ["OCR quality is sufficient for structured review."],
-    }
+    return {"status": status, "words": words, "mean_confidence": round(mean_conf, 3), "fields_filled": filled,
+            "key_fields_filled": key_filled, "missing_key_fields": missing,
+            "diagnosis": diagnosis or ["OCR quality is sufficient for structured review."]}
 
 
 def corroborate_field_passes(pass_fields: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -138,48 +110,34 @@ def corroborate_field_passes(pass_fields: Sequence[Dict[str, Any]]) -> Dict[str,
         confidence = max(item[2] for item in candidates if item[0] == winner_norm)
         if count >= 2:
             confidence = min(1.0, confidence + 0.08)
-        result[key] = {
-            "value": winner[1],
-            "confidence": round(confidence, 3),
-            "corroboration": count,
-            "passes": len(candidates),
-            "independent_agreement": count >= 2,
-        }
+        result[key] = {"value": winner[1], "confidence": round(confidence, 3), "corroboration": count,
+                       "passes": len(candidates), "independent_agreement": count >= 2}
     return result
 
 
 def enhanced_image_variants(image: Any) -> List[Tuple[str, Any]]:
     try:
         from PIL import ImageEnhance, ImageOps
-    except Exception:
-        return []
-    variants: List[Tuple[str, Any]] = []
-    try:
         base = image.convert("RGB")
-        variants.append(("grayscale_autocontrast", ImageOps.autocontrast(base.convert("L"), cutoff=1)))
+        out: List[Tuple[str, Any]] = [("grayscale_autocontrast", ImageOps.autocontrast(base.convert("L"), cutoff=1))]
         if max(base.size) >= 40:
             big = base.resize((base.width * 2, base.height * 2))
-            sharp = ImageEnhance.Sharpness(ImageOps.autocontrast(big.convert("L"), cutoff=1)).enhance(2.0)
-            variants.append(("upscale_2x_sharpen", sharp))
+            out.append(("upscale_2x_sharpen", ImageEnhance.Sharpness(ImageOps.autocontrast(big.convert("L"), cutoff=1)).enhance(2.0)))
+        return out
     except Exception:
         return []
-    return variants
 
 
 def _merge_result(original: Dict[str, Any], candidates: Sequence[Dict[str, Any]], labels: Sequence[str]) -> Dict[str, Any]:
-    fields = [original.get("fields") or *candidates]
-    merged = corroborate_field_passes(fields)
+    field_passes = [original.get("fields") or {}] + [(candidate.get("fields") or {}) for candidate in candidates]
+    merged = corroborate_field_passes(field_passes)
     base = dict(original)
     base["fields"] = merged
     quality = assess_ocr(original, merged)
     meta = dict(base.get("pipeline_meta") or {})
-    meta["rescue"] = {
-        "attempted": len(candidates),
-        "passes": list(labels),
-        "before": assess_ocr(original, original.get("fields") or {}),
-        "after": quality,
-        "corroboration": {k: v.get("corroboration", 0) for k, v in merged.items()},
-    }
+    meta["rescue"] = {"attempted": len(candidates), "passes": list(labels),
+                       "before": assess_ocr(original, original.get("fields") or {}), "after": quality,
+                       "corroboration": {k: v.get("corroboration", 0) for k, v in merged.items()}}
     base["pipeline_meta"] = meta
     support = dict(base.get("ai_decision_support") or {})
     support["ocr_rescue"] = meta["rescue"]
@@ -188,9 +146,6 @@ def _merge_result(original: Dict[str, Any], candidates: Sequence[Dict[str, Any]]
     return base
 
 
-# Install a bounded wrapper around the existing pipeline. The wrapper is only
-# used by main:app (Docker's production entrypoint); direct server imports keep
-# the canonical function unchanged for tests that explicitly exercise it.
 _original_pipeline = getattr(server, "run_ai_assisted_pipeline", None)
 
 
@@ -205,22 +160,15 @@ async def resilient_run_ai_assisted_pipeline(image: Any, requested_lang: str = "
     labels: List[str] = []
     for label, variant in enhanced_image_variants(image)[:MAX_RESCUE_PASSES]:
         try:
-            result = await _original_pipeline(variant, requested_lang)
+            candidates.append(await _original_pipeline(variant, requested_lang))
+            labels.append(label)
         except Exception:
             continue
-        candidates.append(result)
-        labels.append(label)
     if not candidates:
         return first
     merged = _merge_result(first, candidates, labels)
-    # Preserve the strongest full OCR payload instead of replacing it with a
-    # field-only synthetic result. Pick the pass with the most key fields, then
-    # confidence, while the merged fields remain the final structured values.
     ranked = [first, *candidates]
-    best = max(ranked, key=lambda item: (
-        sum(1 for key in KEY_FIELDS if _value((item.get("fields") or {}).get(key))),
-        float(item.get("mean_conf") or 0),
-    ))
+    best = max(ranked, key=lambda item: (sum(1 for key in KEY_FIELDS if _value((item.get("fields") or {}).get(key))), float(item.get("mean_conf") or 0)))
     merged["ocr_text"] = best.get("ocr_text", merged.get("ocr_text", ""))
     merged["cleaned_ocr_text"] = best.get("cleaned_ocr_text", merged.get("cleaned_ocr_text", ""))
     merged["mean_conf"] = int(round(assess_ocr(best, merged["fields"])["mean_confidence"] * 100))
@@ -252,13 +200,11 @@ def _document_rows_for_land(survey: str, village: str) -> List[Dict[str, Any]]:
         rows = db.execute("SELECT id, filename, status, fields, created_at FROM documents ORDER BY created_at ASC LIMIT 10000").fetchall()
     out = []
     for row in rows:
-        import json
         fields = json.loads(row["fields"] or "{}")
         row_survey = _norm(_value(fields.get("survey_number")) or _value(fields.get("gat_number")) or _value(fields.get("khasra_number")))
         row_village = _norm(_value(fields.get("village")))
-        if row_survey != survey_n or (village_n and row_village and row_village != village_n):
-            continue
-        out.append({"id": row["id"], "filename": row["filename"], "status": row["status"], "fields": fields, "created_at": row["created_at"]})
+        if row_survey == survey_n and (not village_n or not row_village or row_village == village_n):
+            out.append({"id": row["id"], "filename": row["filename"], "status": row["status"], "fields": fields, "created_at": row["created_at"]})
     return out
 
 
@@ -266,38 +212,25 @@ def parcel_intelligence(survey: str, village: str = "") -> Dict[str, Any]:
     if not survey.strip():
         raise HTTPException(400, "survey is required")
     documents = _document_rows_for_land(survey, village)
-    evidence: List[Dict[str, Any]] = []
+    evidence: List[Dict[str, Any]] = [{"type": "DOCUMENT", "id": doc["id"], "label": doc["filename"], "status": doc["status"]} for doc in documents]
     flags: List[Dict[str, Any]] = []
-    owners = []
-    areas = []
+    owners: List[Tuple[str, str]] = []
+    areas: List[Tuple[float, str]] = []
     for doc in documents:
         fields = doc["fields"]
         owner = _value(fields.get("owner_name"))
-        if owner:
-            owners.append((owner, doc["id"]))
-        area = _value(fields.get("area"))
-        if area:
-            try:
-                numeric = float(re.search(r"\d+(?:\.\d+)?", area.replace(",", "")).group())
-                areas.append((numeric, doc["id"]))
-            except Exception:
-                pass
-        evidence.append({"type": "DOCUMENT", "id": doc["id"], "label": doc["filename"], "status": doc["status"]})
+        if owner: owners.append((owner, doc["id"]))
+        raw_area = _value(fields.get("area"))
+        match = re.search(r"\d+(?:\.\d+)?", raw_area.replace(",", ""))
+        if match: areas.append((float(match.group()), doc["id"]))
 
     try:
-        from land_intel import list_encumbrances, calculate_land_risk
+        from land_intel import list_encumbrances
         encumbrances = list_encumbrances(survey, village)
-        # calculate_land_risk has changed shape across historical versions;
-        # use it when its public callable is available and fall back safely.
-        try:
-            risk = calculate_land_risk({"survey": survey, "village": village, "documents": documents, "encumbrances": encumbrances})
-        except Exception:
-            risk = None
     except Exception:
-        encumbrances, risk = [], None
-
+        encumbrances = []
     try:
-        from court_cases import active_cases, list_cases, litigation_verdict_for
+        from court_cases import list_cases, litigation_verdict_for
         cases = list_cases(survey, village)
         litigation = litigation_verdict_for(cases)
     except Exception:
@@ -311,49 +244,24 @@ def parcel_intelligence(survey: str, village: str = "") -> Dict[str, Any]:
     for enc in encumbrances:
         if str(enc.get("status") or "").upper() == "ACTIVE":
             item = {"type": "ENCUMBRANCE", "id": enc.get("id"), "label": enc.get("lender") or "Active encumbrance", "severity": "HIGH"}
-            flags.append({"code": "ACTIVE_ENCUMBRANCE", "severity": "HIGH", "title": "Active encumbrance", "reason": "An active encumbrance is registered for this parcel.", "evidence": [item]})
             evidence.append(item)
+            flags.append({"code": "ACTIVE_ENCUMBRANCE", "severity": "HIGH", "title": "Active encumbrance", "reason": "An active encumbrance is registered for this parcel.", "evidence": [item]})
     for case in cases:
         item = {"type": "COURT_CASE", "id": case.get("id"), "label": case.get("case_number"), "severity": "HIGH" if str(case.get("status")).upper() == "ACTIVE" else "INFO"}
         evidence.append(item)
         if item["severity"] == "HIGH":
             flags.append({"code": "ACTIVE_LITIGATION", "severity": "HIGH", "title": "Active litigation", "reason": "An active registered case is linked to this survey/village.", "evidence": [item]})
-
-    if len(owners) >= 2:
-        latest_owner, latest_doc = owners[-1]
-        for owner, doc_id in owners[:-1]:
-            match = owner_match(owner, latest_owner)
-            if not match["match"]:
-                flags.append({"code": "OWNER_CHANGE", "severity": "MEDIUM", "title": "Recorded owner change", "reason": "Chronological records contain different owner names; verify the supporting mutation/transfer evidence.", "evidence": [{"type": "DOCUMENT", "id": doc_id}, {"type": "DOCUMENT", "id": latest_doc}]})
-                break
-
+    if len(owners) >= 2 and not owner_match(owners[0][0], owners[-1][0])["match"]:
+        flags.append({"code": "OWNER_CHANGE", "severity": "MEDIUM", "title": "Recorded owner change", "reason": "Chronological records contain different owner names; verify mutation/transfer evidence.", "evidence": [{"type": "DOCUMENT", "id": owners[0][1]}, {"type": "DOCUMENT", "id": owners[-1][1]}]})
     if len(areas) >= 2 and areas[0][0] > 0:
         ratio = abs(areas[-1][0] - areas[0][0]) / areas[0][0]
         if ratio >= 0.15:
             flags.append({"code": "AREA_CHANGE", "severity": "MEDIUM", "title": "Material area change", "reason": f"Recorded area changed by {ratio:.0%}; check partition, merger, correction, or measurement evidence.", "evidence": [{"type": "DOCUMENT", "id": areas[0][1]}, {"type": "DOCUMENT", "id": areas[-1][1]}]})
-
-    if litigation == "ACTIVE_LITIGATION":
-        verdict = "HIGH_RISK"
-    elif any(flag["severity"] == "HIGH" for flag in flags):
-        verdict = "HIGH_RISK"
-    elif flags:
-        verdict = "REVIEW"
-    else:
-        verdict = "CLEAR"
-
-    return {
-        "land": {"survey": survey, "village": village},
-        "verdict": verdict,
-        "documents": len(documents),
-        "encumbrances": encumbrances,
-        "mutations": mutations,
-        "litigation": {"verdict": litigation, "cases": cases},
-        "flags": flags,
-        "evidence": evidence,
-        "risk_engine": risk,
-        "owners": [{"name": owner, "document_id": doc_id} for owner, doc_id in owners],
-        "disclaimer": "Review signals are evidence summaries only and do not establish legal title, fraud, or final legal risk.",
-    }
+    verdict = "HIGH_RISK" if litigation == "ACTIVE_LITIGATION" or any(f["severity"] == "HIGH" for f in flags) else ("REVIEW" if flags else "CLEAR")
+    return {"land": {"survey": survey, "village": village}, "verdict": verdict, "documents": len(documents), "encumbrances": encumbrances,
+            "mutations": mutations, "litigation": {"verdict": litigation, "cases": cases}, "flags": flags, "evidence": evidence,
+            "owners": [{"name": owner, "document_id": doc_id} for owner, doc_id in owners],
+            "disclaimer": "Review signals are evidence summaries only and do not establish legal title, fraud, or final legal risk."}
 
 
 @router.post("/ocr/diagnose")
