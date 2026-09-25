@@ -47,8 +47,17 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
+      # gitleaks-action scans the pull request's commit range
+      # (`<first PR commit>^..<last PR commit>`), so those objects must exist in
+      # the checkout. The actions/checkout default is fetch-depth: 1, which
+      # leaves only the head commit: `git log <first>^..<head>` then fails with
+      # "unknown revision", gitleaks exits 1 (NOT 2, which would mean leaks
+      # found) and the action fails with an unexpected exit code while having
+      # scanned ~0 bytes. Fetch the full history so the real scan actually runs.
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
