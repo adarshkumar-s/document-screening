@@ -176,20 +176,22 @@ def test_li_encumbrance_relationships_work(li_demo):
 def test_li_court_case_relationships_work(li_demo):
     client, headers = li_demo
     listing = client.get("/api/court-cases", headers=headers).json()
-    by_no = {case["case_no"]: case for case in listing["court_cases"]}
+    by_no = {case["case_number"]: case for case in listing["court_cases"]}
     assert "DEMO-CS-2025-0142" in by_no
     case = by_no["DEMO-CS-2025-0142"]
     assert case["petitioner"] == "Adarsh" and case["respondent"] == "Shivangi"
-    assert case["status"] == "PENDING" and "(fictional demo court)" in case["court_name"]
+    assert case["parties"] == "Adarsh v. Shivangi"
+    assert case["status"] == "ACTIVE" and "(fictional demo court)" in case["court_name"]
+    assert case["filed_date"] == "2025-03-11"
     assert case["next_hearing_date"] == "2026-10-19"
 
     fetched = client.get("/api/court-cases/DEMO-CS-2025-0142", headers=headers).json()["court_case"]
     assert len(fetched["orders"]) == 3
     assert any(order["order_type"] == "COMMISSION" for order in fetched["orders"])
 
-    sub = client.get(f"/api/land-records/{_lid('131', SHANTIBAN)}/court-cases", headers=headers).json()
-    assert sub["litigation_status"] == "ACTIVE"
-    assert {c["case_no"] for c in sub["court_cases"]} == {"DEMO-CS-2025-0142"}
+    sub = client.get(f"/api/land-records/{_lid('131', SHANTIBAN)}/litigation", headers=headers).json()
+    assert sub["active_count"] == 1 and sub["verdict"] == "ACTIVE_LITIGATION"
+    assert {c["case_number"] for c in sub["court_cases"]} == {"DEMO-CS-2025-0142"}
     # the related-mutation link resolves
     linked = client.get("/api/court-cases/DEMO-CIVIL-2024-0087", headers=headers).json()["court_case"]
     assert linked["related_mutation_id"] == "DEMO-LI-COURT-003-M1"
@@ -201,23 +203,26 @@ def test_li_court_case_api_permissions(make_user_client):
     verifier, verifier_headers, _ = make_user_client("VERIFICATION_OFFICER", prefix="licv")
     viewer, viewer_headers, _ = make_user_client("VIEWER", prefix="licvw")
     officer, officer_headers, _ = make_user_client("DATA_OFFICER", prefix="licdo")
-    # everyone authenticated may read
-    assert viewer.get("/api/court-cases", headers=viewer_headers).status_code == 200
-    # only reviewer/admin may write
-    assert officer.post("/api/court-cases", headers=officer_headers, json={
-        "survey_number": "199", "village": SHANTIBAN, "case_no": "DEMO-TEST-CASE-RBAC",
-        "court_name": "Demo", "petitioner": "A", "respondent": "B"}).status_code == 403
-    created = verifier.post("/api/court-cases", headers=verifier_headers, json={
-        "survey_number": "199", "village": SHANTIBAN, "case_no": "DEMO-TEST-CASE-RBAC",
-        "court_name": "Demo court (fictional)", "petitioner": "Alpha", "respondent": "Beta",
-        "filing_date": "2026-01-04", "status": "PENDING", "issue_summary": "RBAC probe case."})
-    assert created.status_code == 200, created.text
-    order = verifier.post("/api/court-cases/DEMO-TEST-CASE-RBAC/orders", headers=verifier_headers,
-                          json={"order_date": "2026-02-01", "order_type": "HEARING", "summary": "First RBAC hearing."})
-    assert order.status_code == 200
-    with server.get_db() as db:
-        db.execute("DELETE FROM land_case_orders WHERE case_id IN (SELECT id FROM land_court_cases WHERE case_no=?)", ("DEMO-TEST-CASE-RBAC",))
-        db.execute("DELETE FROM land_court_cases WHERE case_no=?", ("DEMO-TEST-CASE-RBAC",))
+    # every authenticated user may read a parcel-scoped register...
+    assert viewer.get("/api/court-cases", params={"survey": "199", "village": SHANTIBAN},
+                      headers=viewer_headers).status_code == 200
+    # ...but a global register search needs a staff/reviewer role
+    assert viewer.get("/api/court-cases", headers=viewer_headers).status_code == 400
+    # viewers never write; staff (incl. data officers) register cases
+    payload = {"survey_number": "199", "village": SHANTIBAN, "case_number": "DEMO-TEST-CASE-RBAC",
+               "court_name": "Demo court (fictional)", "petitioner": "Alpha", "respondent": "Beta",
+               "filed_date": "2026-01-04", "status": "ACTIVE", "issue_summary": "RBAC probe case."}
+    assert viewer.post("/api/court-cases", headers=viewer_headers, json=payload).status_code == 403
+    try:
+        created = verifier.post("/api/court-cases", headers=verifier_headers, json=payload)
+        assert created.status_code == 200, created.text
+        order = verifier.post("/api/court-cases/DEMO-TEST-CASE-RBAC/orders", headers=verifier_headers,
+                              json={"order_date": "2026-02-01", "order_type": "HEARING", "summary": "First RBAC hearing."})
+        assert order.status_code == 200
+    finally:
+        with server.get_db() as db:
+            db.execute("DELETE FROM land_case_orders WHERE case_id IN (SELECT id FROM land_court_cases WHERE case_number=?)", ("DEMO-TEST-CASE-RBAC",))
+            db.execute("DELETE FROM land_court_cases WHERE case_number=?", ("DEMO-TEST-CASE-RBAC",))
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +285,7 @@ def test_li_document_specs_agree_with_seeded_database(li_demo):
     client, headers = li_demo
     with server.get_db() as db:
         mutation_nos = {row["mutation_no"] for row in db.execute("SELECT mutation_no FROM land_mutations").fetchall()}
-        case_nos = {row["case_no"] for row in db.execute("SELECT case_no FROM land_court_cases").fetchall()}
+        case_nos = {row["case_number"] for row in db.execute("SELECT case_number FROM land_court_cases").fetchall()}
         enc_refs = {row["reference_no"] for row in db.execute("SELECT reference_no FROM land_encumbrances").fetchall()}
     for spec in DOCUMENT_SPECS:
         # every document's parcel identity resolves to a seeded scenario
@@ -352,13 +357,18 @@ def test_li_upload_of_court_filing_resolves_parcel_and_raises_litigation_alert(l
     banner = context["litigation_banner"]
     assert banner["tone"] == "danger"
     assert banner["text"] == "Active litigation found for this property"
-    assert banner["case_no"] == "DEMO-CS-2025-0142"
+    assert banner["case_number"] == "DEMO-CS-2025-0142"
     assert banner["court"] and "(fictional demo court)" in banner["court"]
     assert banner["next_hearing_date"] == "2026-10-19"
     assert context["risk_verdict"] == "HIGH_RISK"
     assert any(flag["code"] == "ACTIVE_LITIGATION" for flag in context["risk_flags"])
-    assert any(case["case_no"] == "DEMO-CS-2025-0142" for case in context["court_cases"])
-    assert "Active litigation found" in context.get("recommendation", "")
+    # the alert carries the clickable case ref (the UI opens the land record /
+    # court case from exactly this payload)
+    case_ref = client.get(f"/api/court-cases/{banner['court_case_id']}", headers=headers)
+    assert case_ref.status_code == 200
+    assert case_ref.json()["court_case"]["case_number"] == "DEMO-CS-2025-0142"
+    assert case_ref.json()["court_case"]["parties"] == "Adarsh v. Shivangi"
+    assert "court case" in context.get("recommendation", "").casefold()
 
 
 def test_li_upload_matches_encumbered_and_conflict_parcels(li_demo, monkeypatch):
@@ -407,9 +417,9 @@ def test_li_disposed_case_does_not_raise_active_litigation(li_demo):
     client, headers = li_demo
     context = client.get("/api/documents/DEMO-LI-COURT-004-DOC1", headers=headers).json()["land_context"]
     assert context["matched"] is True
-    assert context["litigation_status"] == "DISPOSED"
+    assert context["litigation_status"] == "CLOSED"
     assert context["litigation_banner"]["tone"] == "ok"
-    assert "disposed" in context["litigation_banner"]["text"].casefold()
+    assert "closed" in context["litigation_banner"]["text"].casefold()
     assert context["risk_verdict"] == "CLEAR"
     assert not any(flag["code"] == "ACTIVE_LITIGATION" for flag in context["risk_flags"])
 
@@ -449,7 +459,7 @@ def test_li_report_includes_court_cases(li_demo):
                          json={"land_id": land_id}).json()
     assert report["report"]["risk_status"] == "HIGH_RISK"
     assert report["report"]["litigation_status"] == "ACTIVE"
-    assert any(case["case_no"] == "DEMO-CS-2025-0142" for case in report["report"]["court_cases"])
+    assert any(case["case_number"] == "DEMO-CS-2025-0142" for case in report["report"]["court_cases"])
     html = client.get(report["html_url"], headers=headers)
     assert html.status_code == 200 and "DEMO-CS-2025-0142" in html.text
 

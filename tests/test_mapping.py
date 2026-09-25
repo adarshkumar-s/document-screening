@@ -75,7 +75,7 @@ def test_map_assets_are_explicit_and_portal_navigation_is_visible():
     assert "set exact pin" in js.text.lower()
     assert css.headers["content-type"].split(";", 1)[0] == "text/css"
     assert js.headers["content-type"].split(";", 1)[0] == "application/javascript"
-    assert client.get("/land-intelligence").status_code == 404
+    assert client.get("/land-intelligence").status_code == 200
     assert client.get("/api/demo-land/health").status_code == 404
 
 

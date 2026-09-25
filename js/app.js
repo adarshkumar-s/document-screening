@@ -108,18 +108,35 @@ function openDocumentDeepLink(){
   }, 0);
 }
 function openLandDeepLink(){
-  const landId = new URLSearchParams(window.location.search).get('land_id');
+  const params = new URLSearchParams(window.location.search);
+  const landId = params.get('land_id');
   if(!landId || !me || !window.LandIntel) return;
   if(me.role !== ROLE_VERIFICATION_OFFICER && me.role !== ROLE_ADMIN) return;
   // Land Intelligence detail lives in the existing staff portal routing.
+  // SA Investigation evidence links may add ?mutation= / ?encumbrance= to open the
+  // specific register entry inside the same workspace.
+  const mutationId = params.get('mutation');
   window.setTimeout(()=>{
-    window.LandIntel.openLand(landId);
+    if(mutationId && typeof window.LandIntel.openMutation === 'function') window.LandIntel.openMutation(mutationId);
+    else window.LandIntel.openLand(landId);
     const clean = new URL(window.location.href);
-    clean.searchParams.delete('land_id');
+    ['land_id','mutation','encumbrance'].forEach(k=>clean.searchParams.delete(k));
     window.history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : ''));
   }, 0);
 }
-function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); openDocumentDeepLink(); openLandDeepLink(); }
+function openInvestigationDeepLink(){
+  // /?investigation=INV-2026-000001 (from SA alerts, audit rows and AI-approval proposals).
+  const investigationId = new URLSearchParams(window.location.search).get('investigation');
+  if(!investigationId || !me || !window.SAInvestigation) return;
+  if(me.role !== ROLE_VERIFICATION_OFFICER && me.role !== ROLE_ADMIN) return;
+  window.setTimeout(()=>{
+    window.SAInvestigation.openInvestigation(investigationId);
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('investigation');
+    window.history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : ''));
+  }, 0);
+}
+function showApp(){ $('#authView').classList.add('hidden'); $('#appShell').classList.remove('hidden'); routePortal(); openDocumentDeepLink(); openLandDeepLink(); openInvestigationDeepLink(); }
 
 function doLogout(quiet){
   if(!quiet && !window.confirm('Are you sure you want to log out?')) return;
@@ -574,7 +591,8 @@ function setupStaffPortal(role){
       ['consistency', '🔍 Consistency Check'],
       ['compare', '⚖️ Comparison'],
       ['records', '🗂️ All Records'],
-      ['landintel', '🗺 Land Intelligence']
+      ['landintel', '🗺 Land Intelligence'],
+      ['investigations', '🕵️ SA Investigations']
     ];
   } else if(isAdmin){
     tabs = [
@@ -585,6 +603,7 @@ function setupStaffPortal(role){
       ['records', '🗂️ All Records'],
       ['compare', '⚖️ Comparison'],
       ['landintel', '🗺 Land Intelligence'],
+      ['investigations', '🕵️ SA Investigations'],
       ['audit', '🔐 Audit Trail']
     ];
   }
@@ -732,10 +751,11 @@ function switchStaffTab(tabName){
     t.classList.toggle('active', t.dataset.stab === tabName);
   });
 
-  ['dashboard','upload','queue','review','compare','consistency','records','audit','landintel'].forEach(p=>{
+  ['dashboard','upload','queue','review','compare','consistency','records','audit','landintel','investigations'].forEach(p=>{
     const elPane = $('#staff-tab-' + p);
     if(elPane) elPane.classList.toggle('hidden', p !== tabName);
   });
+  if(tabName !== 'investigations' && window.SAInvestigation) window.SAInvestigation.stopPolling();
 
   $('#staffBreadcrumb').textContent = tabName.toUpperCase();
 
@@ -745,6 +765,7 @@ function switchStaffTab(tabName){
   if(tabName === 'records') loadStaffRecords();
   if(tabName === 'audit') loadStaffAudit();
   if(tabName === 'landintel' && window.LandIntel) window.LandIntel.renderWorkspace();
+  if(tabName === 'investigations' && window.SAInvestigation) window.SAInvestigation.renderWorkspace();
 }
 
 async function loadStaffDashboard(){
@@ -889,6 +910,9 @@ function populateStaffEditor(doc){
     grid.innerHTML += renderFieldInputCard(k, f[k], 'staffield', false);
   });
 
+  // SA investigation reference returned by /api/process (administrator uploads):
+  // "started" or "already investigated" with Open Existing / Run New.
+  if(window.SAInvestigation && doc.sa_investigation) window.SAInvestigation.uploadBanner($('#staffUploadEditor'), doc.sa_investigation, doc.id);
   $('#staffUploadEditor').classList.remove('hidden');
   $('#staffUploadEditor').scrollIntoView({behavior:'smooth'});
 }
@@ -1046,6 +1070,8 @@ async function openStaffReview(id){
     // Land Intelligence panel (encumbrance check + deterministic risk) is
     // appended to the existing review card without touching its layout.
     if(window.LandIntel && d.land_context) window.LandIntel.attachDocumentLandContext(box, d);
+    // SA Investigation card (status, findings, recommendation, View Investigation).
+    if(window.SAInvestigation) window.SAInvestigation.attachDocumentCard(box, d);
     switchStaffTab('review');
   }catch(e){ alert(e.message); }
 }

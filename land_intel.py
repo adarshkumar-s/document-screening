@@ -46,7 +46,6 @@ encumbrance_router = APIRouter(prefix="/api/encumbrances", tags=["Land Encumbran
 mutation_router = APIRouter(prefix="/api/mutations", tags=["Mutations"])
 land_router = APIRouter(prefix="/api/land-records", tags=["Land Records"])
 report_router = APIRouter(prefix="/api/reports", tags=["Verification Reports"])
-court_router = APIRouter(prefix="/api/court-cases", tags=["Land Court Cases"])
 
 STAFF_ROLES = (ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)
 REVIEWER_ROLES = (ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)
@@ -55,9 +54,6 @@ ENCUMBRANCE_STATUSES = ("ACTIVE", "RELEASED", "UNKNOWN")
 MUTATION_STATUSES = ("RECEIVED", "UNDER_REVIEW", "VERIFIED", "COMPLETED", "REJECTED")
 RISK_VERDICTS = ("CLEAR", "REVIEW", "HIGH_RISK")
 TRANSFER_MUTATION_TYPES = ("SALE", "GIFT", "INHERITANCE", "PARTITION", "MERGER", "COURT_DECREE", "OTHER")
-CASE_STATUSES = ("PENDING", "STAYED", "DISPOSED", "WITHDRAWN")
-ACTIVE_CASE_STATUSES = ("PENDING", "STAYED")
-CASE_ORDER_TYPES = ("HEARING", "ORDER", "INJUNCTION", "COMMISSION", "DECREE", "DISPOSAL", "WITHDRAWAL", "ADJOURNMENT", "OTHER")
 
 AREA_JUMP_RATIO = 0.15
 CHAIN_GAP_YEARS = 10
@@ -261,50 +257,6 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_land_reports_land ON land_reports(land_id)",
-    """
-    CREATE TABLE IF NOT EXISTS land_court_cases (
-        id TEXT PRIMARY KEY,
-        case_no TEXT UNIQUE NOT NULL,
-        property_id TEXT,
-        survey_number TEXT DEFAULT '',
-        khasra_number TEXT DEFAULT '',
-        village TEXT DEFAULT '',
-        tehsil TEXT DEFAULT '',
-        district TEXT DEFAULT '',
-        court_name TEXT DEFAULT '',
-        case_type TEXT DEFAULT 'CIVIL',
-        title TEXT DEFAULT '',
-        petitioner TEXT DEFAULT '',
-        respondent TEXT DEFAULT '',
-        filing_date TEXT DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'PENDING',
-        stage TEXT DEFAULT '',
-        issue_summary TEXT DEFAULT '',
-        next_hearing_date TEXT,
-        affects_transfer INTEGER NOT NULL DEFAULT 0,
-        related_mutation_id TEXT,
-        related_encumbrance_id TEXT,
-        evidence_doc_id TEXT,
-        notes TEXT DEFAULT '',
-        created_by TEXT DEFAULT '',
-        created_at REAL NOT NULL DEFAULT 0,
-        updated_at REAL NOT NULL DEFAULT 0
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_land_court_cases_land ON land_court_cases(survey_number, village)",
-    "CREATE INDEX IF NOT EXISTS idx_land_court_cases_status ON land_court_cases(status)",
-    """
-    CREATE TABLE IF NOT EXISTS land_case_orders (
-        id TEXT PRIMARY KEY,
-        case_id TEXT NOT NULL,
-        order_date TEXT DEFAULT '',
-        order_type TEXT DEFAULT 'ORDER',
-        summary TEXT DEFAULT '',
-        created_by TEXT DEFAULT '',
-        created_at REAL NOT NULL DEFAULT 0
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_land_case_orders_case ON land_case_orders(case_id)",
 )
 
 _schema_ready = False
@@ -321,6 +273,12 @@ def ensure_land_tables() -> None:
             except Exception as exc:  # pragma: no cover - defensive for partial PG setups
                 print(f"[LAND SCHEMA WARNING] {exc}")
     _schema_ready = True
+
+
+# Run the migration NOW, at import/startup: CREATE TABLE / CREATE INDEX can
+# block on a large database, so DDL belongs to process start, never to the
+# first request. Later calls (including inside request paths) are no-ops.
+ensure_land_tables()
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +348,6 @@ def register_lands() -> Dict[str, Dict[str, Any]]:
     with get_db() as db:
         rows = db.execute("SELECT survey_number, khasra_number, village, tehsil, district FROM land_encumbrances").fetchall()
         rows += db.execute("SELECT survey_number, khasra_number, village, tehsil, district FROM land_mutations").fetchall()
-        rows += db.execute("SELECT survey_number, khasra_number, village, tehsil, district FROM land_court_cases").fetchall()
     for row in rows:
         survey = _text(row["survey_number"]) or _text(row["khasra_number"])
         village = _text(row["village"])
@@ -438,73 +395,54 @@ def _land_of_document_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return _group_land_records([record])[land_id]
 
 
-def _land_register_rows(land: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Encumbrance + mutation rows that apply to this land (survey-level
-    register entries match any village on the survey, mirroring land_records)."""
-    survey = _text(land.get("survey"))
-    village = _text(land.get("village"))
+def _register_entry_matches(row: Any, survey_n: str, village_n: str) -> bool:
+    """Register-entry/parcel matching: the survey number must match and a
+    village only narrows the result when the entry recorded one."""
+    row_survey = _normalise_land(row["survey_number"] or row["khasra_number"])
+    if not row_survey or row_survey != survey_n:
+        return False
+    row_village = _normalise_land(row["village"])
+    if row_village and village_n and row_village != village_n:
+        return False
+    return True
+
+
+def _register_index() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Both registers in ONE pair of queries, already projected.
+
+    Endpoints that touch many parcels (records index, risk review) fetch the
+    registers once and let :func:`_land_register_rows` filter per parcel, so
+    query count stays constant instead of growing with the portfolio.
+    """
+    ensure_land_tables()
     with get_db() as db:
         enc_rows = db.execute("SELECT * FROM land_encumbrances ORDER BY COALESCE(start_date,'') DESC, created_at DESC").fetchall()
         mut_rows = db.execute("SELECT * FROM land_mutations ORDER BY created_at DESC").fetchall()
+    return [_encumbrance_dict(row) for row in enc_rows], [_mutation_dict(row) for row in mut_rows]
 
-    def enc_matches(row: Any) -> bool:
-        row_survey = _normalise_land(row["survey_number"] or row["khasra_number"])
-        row_village = _normalise_land(row["village"])
-        land_survey = _normalise_land(survey)
-        land_village = _normalise_land(village)
-        survey_match = bool(row_survey) and row_survey == land_survey
-        if not survey_match:
-            return False
-        if row_village and land_village and row_village != land_village:
-            return False
-        return True
 
-    def mut_matches(row: Any) -> bool:
-        return enc_matches(row)
+def _land_register_rows(land: Dict[str, Any], registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None
+                        ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Encumbrance + mutation rows that apply to this land (survey-level
+    register entries match any village on the survey, mirroring land_records).
 
-    encumbrances = [_encumbrance_dict(row) for row in enc_rows if enc_matches(row)]
-    mutations = [_mutation_dict(row) for row in mut_rows if mut_matches(row)]
+    ``registers`` may carry the pre-fetched full registers from
+    :func:`_register_index`; filtering then happens purely in memory and the
+    result is identical to the query-per-parcel path.
+    """
+    survey_n = _normalise_land(land.get("survey"))
+    village_n = _normalise_land(land.get("village"))
+    if registers is None:
+        with get_db() as db:
+            enc_rows = db.execute("SELECT * FROM land_encumbrances ORDER BY COALESCE(start_date,'') DESC, created_at DESC").fetchall()
+            mut_rows = db.execute("SELECT * FROM land_mutations ORDER BY created_at DESC").fetchall()
+        encumbrances = [_encumbrance_dict(row) for row in enc_rows if _register_entry_matches(row, survey_n, village_n)]
+        mutations = [_mutation_dict(row) for row in mut_rows if _register_entry_matches(row, survey_n, village_n)]
+        return encumbrances, mutations
+    all_encumbrances, all_mutations = registers
+    encumbrances = [row for row in all_encumbrances if _register_entry_matches(row, survey_n, village_n)]
+    mutations = [row for row in all_mutations if _register_entry_matches(row, survey_n, village_n)]
     return encumbrances, mutations
-
-
-def court_cases_for_land(land: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Court-case rows that apply to this land. Survey-level register entries
-    match by the same survey+village identity as the other registers. Kept as a
-    separate loader so the existing ``_land_register_rows`` contract (and every
-    test/helper that relies on it) stays unchanged."""
-    survey = _normalise_land(land.get("survey"))
-    village = _normalise_land(land.get("village"))
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT * FROM land_court_cases ORDER BY COALESCE(filing_date,'') DESC, created_at DESC"
-        ).fetchall()
-        orders = db.execute("SELECT * FROM land_case_orders ORDER BY COALESCE(order_date,'') ASC, created_at ASC").fetchall()
-    orders_by_case: Dict[str, List[Dict[str, Any]]] = {}
-    for order in orders:
-        orders_by_case.setdefault(_text(order["case_id"]), []).append(_case_order_dict(order))
-
-    def case_matches(row: Any) -> bool:
-        row_survey = _normalise_land(row["survey_number"] or row["khasra_number"])
-        row_village = _normalise_land(row["village"])
-        survey_match = bool(row_survey) and row_survey == survey
-        if not survey_match:
-            return False
-        if row_village and village and row_village != village:
-            return False
-        return True
-
-    cases = []
-    for row in rows:
-        if not case_matches(row):
-            continue
-        case = _case_dict(row)
-        case["orders"] = orders_by_case.get(_text(case.get("id")), [])
-        cases.append(case)
-    return cases
-
-
-def active_court_cases_for_land(land: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return [case for case in court_cases_for_land(land) if _text(case.get("status")).upper() in ACTIVE_CASE_STATUSES]
 
 
 # ---------------------------------------------------------------------------
@@ -1029,220 +967,6 @@ def mutation_event_log(mutation_id: str, user: Dict[str, Any] = Depends(require_
 
 
 # ---------------------------------------------------------------------------
-# court cases / litigation register
-# ---------------------------------------------------------------------------
-
-class CourtCaseCreate(BaseModel):
-    survey_number: str = ""
-    khasra_number: str = ""
-    village: str = ""
-    tehsil: str = ""
-    district: str = ""
-    case_no: str = ""
-    court_name: str = ""
-    case_type: str = "CIVIL"
-    title: str = ""
-    petitioner: str = ""
-    respondent: str = ""
-    filing_date: str = ""
-    status: str = "PENDING"
-    stage: str = ""
-    issue_summary: str = ""
-    next_hearing_date: Optional[str] = None
-    affects_transfer: bool = False
-    related_mutation_id: Optional[str] = None
-    related_encumbrance_id: Optional[str] = None
-    evidence_doc_id: Optional[str] = None
-    notes: str = ""
-    property_id: Optional[str] = None
-
-
-class CourtCaseUpdate(BaseModel):
-    court_name: Optional[str] = None
-    case_type: Optional[str] = None
-    title: Optional[str] = None
-    status: Optional[str] = None
-    stage: Optional[str] = None
-    issue_summary: Optional[str] = None
-    next_hearing_date: Optional[str] = None
-    affects_transfer: Optional[bool] = None
-    evidence_doc_id: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class CaseOrderCreate(BaseModel):
-    order_date: str = ""
-    order_type: str = "ORDER"
-    summary: str
-
-
-def _case_dict(row: Any) -> Dict[str, Any]:
-    data = dict(row)
-    data["is_active"] = _text(data.get("status")).upper() in ACTIVE_CASE_STATUSES
-    data["affects_transfer"] = bool(data.get("affects_transfer"))
-    survey = _text(data.get("survey_number")) or _text(data.get("khasra_number"))
-    data["land_id"] = land_identity(survey, _text(data.get("village")))[1]
-    data.setdefault("orders", [])
-    return data
-
-
-def _case_order_dict(row: Any) -> Dict[str, Any]:
-    return dict(row)
-
-
-def _get_case(db: Any, case_id: str) -> Optional[Dict[str, Any]]:
-    row = db.execute("SELECT * FROM land_court_cases WHERE id=? OR case_no=?", (_text(case_id), _text(case_id))).fetchone()
-    return _case_dict(row) if row else None
-
-
-@court_router.get("")
-def list_court_cases(
-    status: str = Query(""),
-    q: str = Query(""),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    user: Dict[str, Any] = Depends(get_current_user),
-):
-    """Litigation register. Every authenticated user can read; writes are
-    Verification Officer/Administrator and audited (mirrors encumbrances)."""
-    ensure_land_tables()
-    with get_db() as db:
-        rows = db.execute("SELECT * FROM land_court_cases ORDER BY created_at DESC").fetchall()
-    items = [_case_dict(row) for row in rows]
-    needle = _text(q).casefold()
-    if needle:
-        items = [item for item in items if needle in " ".join(str(item.get(key) or "") for key in (
-            "case_no", "court_name", "title", "petitioner", "respondent",
-            "survey_number", "khasra_number", "village", "district", "status", "issue_summary")).casefold()]
-    wanted = _text(status).upper()
-    if wanted:
-        items = [item for item in items if _text(item.get("status")).upper() == wanted]
-    total = len(items)
-    return {"court_cases": items[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
-
-
-@court_router.get("/{case_id}")
-def get_court_case(case_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    ensure_land_tables()
-    with get_db() as db:
-        item = _get_case(db, case_id)
-        if item:
-            orders = db.execute("SELECT * FROM land_case_orders WHERE case_id=? ORDER BY COALESCE(order_date,'') ASC, created_at ASC",
-                                (_text(item.get("id")),)).fetchall()
-            item["orders"] = [_case_order_dict(order) for order in orders]
-    if not item:
-        raise HTTPException(status_code=404, detail="Court case not found.")
-    return {"court_case": item}
-
-
-@court_router.post("")
-def create_court_case(req: CourtCaseCreate, user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES))):
-    ensure_land_tables()
-    survey = _text(req.survey_number) or _text(req.khasra_number)
-    if not survey and not _text(req.village):
-        raise HTTPException(status_code=422, detail="A survey/khasra number or village is required to identify the land.")
-    status_value = _text(req.status).upper() or "PENDING"
-    if status_value not in CASE_STATUSES:
-        raise HTTPException(status_code=422, detail=f"Invalid case status. Use one of {CASE_STATUSES}.")
-    if req.evidence_doc_id:
-        _assert_evidence_document(req.evidence_doc_id, user)
-    case_id = uuid.uuid4().hex[:12]
-    case_no = _text(req.case_no) or f"CC-{time.strftime('%Y')}-{case_id.upper()[:6]}"
-    now = _now()
-    with get_db() as db:
-        existing = db.execute("SELECT id FROM land_court_cases WHERE case_no=?", (case_no,)).fetchone()
-        if existing:
-            raise HTTPException(status_code=409, detail=f"Court case number {case_no} is already registered.")
-        db.execute(
-            """INSERT INTO land_court_cases
-               (id, case_no, property_id, survey_number, khasra_number, village, tehsil, district, court_name,
-                case_type, title, petitioner, respondent, filing_date, status, stage, issue_summary,
-                next_hearing_date, affects_transfer, related_mutation_id, related_encumbrance_id,
-                evidence_doc_id, notes, created_by, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (case_id, case_no, _text(req.property_id) or None, survey, _text(req.khasra_number),
-             _text(req.village), _text(req.tehsil), _text(req.district), _text(req.court_name),
-             _text(req.case_type) or "CIVIL", _text(req.title), _text(req.petitioner), _text(req.respondent),
-             _text(req.filing_date), status_value, _text(req.stage), _text(req.issue_summary),
-             _text(req.next_hearing_date) or None, 1 if req.affects_transfer else 0,
-             _text(req.related_mutation_id) or None, _text(req.related_encumbrance_id) or None,
-             _text(req.evidence_doc_id) or None, _text(req.notes), user.get("email") or "", now, now),
-        )
-    _audit(user, "COURT_CASE_CREATED",
-           f"Court case {case_no} ({status_value}) recorded for survey {survey}, {_text(req.village)} — {_text(req.title) or _text(req.issue_summary)[:80]}",
-           req.evidence_doc_id)
-    with get_db() as db:
-        item = _get_case(db, case_id)
-    item["orders"] = []
-    return {"court_case": item}
-
-
-@court_router.put("/{case_id}")
-def update_court_case(case_id: str, req: CourtCaseUpdate, user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES))):
-    ensure_land_tables()
-    with get_db() as db:
-        item = _get_case(db, case_id)
-        if not item:
-            raise HTTPException(status_code=404, detail="Court case not found.")
-        updates: Dict[str, Any] = {}
-        for field in ("court_name", "case_type", "title", "stage", "issue_summary", "notes"):
-            value = getattr(req, field)
-            if value is not None:
-                updates[field] = _text(value)
-        if req.status is not None:
-            status_value = _text(req.status).upper()
-            if status_value not in CASE_STATUSES:
-                raise HTTPException(status_code=422, detail=f"Invalid case status. Use one of {CASE_STATUSES}.")
-            updates["status"] = status_value
-        if req.next_hearing_date is not None:
-            updates["next_hearing_date"] = _text(req.next_hearing_date) or None
-        if req.affects_transfer is not None:
-            updates["affects_transfer"] = 1 if req.affects_transfer else 0
-        if req.evidence_doc_id is not None:
-            if _text(req.evidence_doc_id):
-                _assert_evidence_document(req.evidence_doc_id, user)
-            updates["evidence_doc_id"] = _text(req.evidence_doc_id) or None
-        if updates:
-            updates["updated_at"] = _now()
-            assignments = ", ".join(f"{key}=?" for key in updates)
-            db.execute(f"UPDATE land_court_cases SET {assignments} WHERE id=?", (*updates.values(), item["id"]))
-    _audit(user, "COURT_CASE_UPDATED",
-           f"Court case {_text(item.get('case_no'))} updated: {', '.join(sorted(updates.keys()))} (survey {_text(item.get('survey_number'))}, {_text(item.get('village'))})")
-    with get_db() as db:
-        fresh = _get_case(db, item["id"])
-        fresh["orders"] = [ _case_order_dict(order) for order in db.execute(
-            "SELECT * FROM land_case_orders WHERE case_id=? ORDER BY COALESCE(order_date,'') ASC, created_at ASC",
-            (item["id"],)).fetchall()]
-    return {"court_case": fresh}
-
-
-@court_router.post("/{case_id}/orders")
-def add_case_order(case_id: str, req: CaseOrderCreate, user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES))):
-    ensure_land_tables()
-    order_type = _text(req.order_type).upper() or "ORDER"
-    if order_type not in CASE_ORDER_TYPES:
-        raise HTTPException(status_code=422, detail=f"Invalid order type. Use one of {CASE_ORDER_TYPES}.")
-    summary = _text(req.summary)
-    if not summary:
-        raise HTTPException(status_code=422, detail="An order summary is required.")
-    with get_db() as db:
-        item = _get_case(db, case_id)
-        if not item:
-            raise HTTPException(status_code=404, detail="Court case not found.")
-        order_id = uuid.uuid4().hex[:12]
-        now = _now()
-        db.execute(
-            "INSERT INTO land_case_orders (id, case_id, order_date, order_type, summary, created_by, created_at) VALUES (?,?,?,?,?,?,?)",
-            (order_id, item["id"], _text(req.order_date), order_type, summary, user.get("email") or "", now),
-        )
-        orders = db.execute("SELECT * FROM land_case_orders WHERE case_id=? ORDER BY COALESCE(order_date,'') ASC, created_at ASC",
-                            (item["id"],)).fetchall()
-    _audit(user, "COURT_CASE_ORDER_ADDED",
-           f"Order ({order_type}, {_text(req.order_date) or 'undated'}) added to court case {_text(item.get('case_no'))}: {summary[:120]}")
-    return {"court_case": {**item, "orders": [_case_order_dict(order) for order in orders]}}
-
-
-# ---------------------------------------------------------------------------
 # deterministic land risk engine
 # ---------------------------------------------------------------------------
 
@@ -1270,14 +994,76 @@ def _enc_evidence(item: Dict[str, Any]) -> Dict[str, Any]:
             "label": f"{item.get('lender')} ref {item.get('reference_no') or '—'} ({_text(item.get('status'))})"}
 
 
+def _case_reference(case: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact, UI/report-ready projection of a registered court case."""
+    return {
+        "id": case.get("id"),
+        "case_number": _text(case.get("case_number")),
+        "case_type": _text(case.get("case_type")),
+        "court_name": _text(case.get("court_name")),
+        "filed_date": _text(case.get("filed_date")),
+        "closed_date": _text(case.get("closed_date")),
+        "status": _text(case.get("status")).upper(),
+        "parties": _text(case.get("parties")),
+        "relief_sought": _text(case.get("relief_sought")),
+        "decision_summary": _text(case.get("decision_summary")),
+        "evidence_doc_ids": case.get("evidence_doc_ids") or [],
+        # additive structured-party / hearing / stay details (DEMO-LI)
+        "petitioner": _text(case.get("petitioner")),
+        "respondent": _text(case.get("respondent")),
+        "title": _text(case.get("title")),
+        "stage": _text(case.get("stage")),
+        "next_hearing_date": _text(case.get("next_hearing_date")),
+        "affects_transfer": bool(case.get("affects_transfer")),
+        "related_mutation_id": case.get("related_mutation_id") or None,
+    }
+
+
+def _case_evidence(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {"type": "court_case", "ref": item.get("id"), "label": _text(item.get("case_number"))}
+
+
 def _mut_evidence(item: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "mutation", "ref": item.get("id"),
             "label": f"{item.get('mutation_no')} ({_text(item.get('status'))})"}
 
 
-def _case_evidence(item: Dict[str, Any]) -> Dict[str, Any]:
-    return {"type": "court_case", "ref": item.get("id"),
-            "label": f"{item.get('case_no')} — {_text(item.get('title')) or _text(item.get('case_type'))} ({_text(item.get('status'))})"}
+# ---------------------------------------------------------------------------
+# litigation register bridge (additive: the register lives in court_cases.py)
+# ---------------------------------------------------------------------------
+
+def _litigation_module():
+    """Resolve the litigation register if it is mounted. The land core must
+    keep working when the optional module is absent, so this never raises."""
+    try:
+        import court_cases
+        return court_cases
+    except Exception:  # pragma: no cover - module missing / import failure
+        return None
+
+
+def _court_case_index() -> Dict[Any, List[Dict[str, Any]]]:
+    """One query for the whole register, grouped by land identity.
+
+    Used so that per-parcel scoring never fans out into a query per land (N+1).
+    """
+    court = _litigation_module()
+    if court is None:
+        return {}
+    try:
+        return court.cases_by_land()
+    except Exception:
+        return {}
+
+
+def _land_court_cases(land: Dict[str, Any], case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None) -> List[Dict[str, Any]]:
+    court = _litigation_module()
+    if court is None:
+        return []
+    try:
+        return court.cases_for_land(land, None if case_index is None else case_index)
+    except Exception:
+        return []
 
 
 def _risk_records(land: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1302,16 +1088,21 @@ def _risk_records(land: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 
-def compute_land_risk(land: Dict[str, Any]) -> Dict[str, Any]:
+def compute_land_risk(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
+                      registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
     """Deterministic, rule-based land risk assessment.
 
     The engine answers: does local evidence (documents, the encumbrance
-    register and the mutation register) contain conditions a human verifier
-    must review? It is a workflow signal only — never a legal determination.
+    register, the mutation register and the litigation register) contain
+    conditions a human verifier must review? It is a workflow signal only —
+    never a legal determination.
+
+    `case_index` and `registers` let a caller that scores many parcels share
+    ONE grouped query per register instead of querying per parcel; the scored
+    result is identical either way.
     """
     ensure_land_tables()
-    encumbrances, mutations = _land_register_rows(land)
-    court_cases = court_cases_for_land(land)
+    encumbrances, mutations = _land_register_rows(land, registers)
     records = _risk_records(land)
     flags: List[Dict[str, Any]] = []
 
@@ -1519,26 +1310,31 @@ def compute_land_risk(land: Dict[str, Any]) -> Dict[str, Any]:
                 "relying on this passbook entry.",
                 [_doc_evidence(latest)])
 
-    # ---- 11. active litigation --------------------------------------------
-    for case in court_cases:
-        if not (_text(case.get("status")).upper() in ACTIVE_CASE_STATUSES):
-            continue
-        parties = " v. ".join(part for part in (_text(case.get("petitioner")), _text(case.get("respondent"))) if part)
-        add("ACTIVE_LITIGATION", "HIGH",
-            f"Active litigation on this land ({_text(case.get('case_no'))})",
-            f"{_text(case.get('case_type')) or 'Civil'} case {_text(case.get('case_no'))}"
-            + (f" ({parties})" if parties else "")
-            + f" filed {_text(case.get('filing_date')) or 'on an unrecorded date'} before {_text(case.get('court_name')) or 'the court'} is {_text(case.get('status')).lower()}"
-            + (f" at stage: {_text(case.get('stage'))}." if _text(case.get('stage')) else ".")
-            + (" " + _text(case.get("issue_summary"))).strip()
-            + (f" Next hearing: {_text(case.get('next_hearing_date'))}." if _text(case.get("next_hearing_date")) else ""),
-            [_case_evidence(case)])
-        if case.get("affects_transfer"):
-            add("TRANSFER_STAYED", "HIGH",
-                "Court stay/injunction recorded against transfer",
-                f"Case {_text(case.get('case_no'))} carries an interim order affecting transfer of this land. "
-                "Any sale, gift, lease or mutation completion must be deferred until the court order is vacated or the case is decided.",
-                [_case_evidence(case)])
+    # ---- 11. litigation register -------------------------------------------
+    # Signals come from the register's own rule set (court_cases.litigation_flags)
+    # so an active suit, a transfer inside a pending-suit window and closed-case
+    # transparency are scored consistently wherever risk is shown.
+    cases = _land_court_cases(land, case_index)
+    litigation = {"case_count": len(cases), "active_count": 0, "closed_count": 0,
+                  "verdict": "CLEAR", "status": "NONE", "highest_severity": "NONE",
+                  "cases": [], "disclaimer": ""}
+    court = _litigation_module()
+    if court is not None and cases:
+        for signal in court.litigation_flags(_text(land.get("survey")), _text(land.get("village")), mutations, cases=cases):
+            add(signal["code"], signal["severity"], signal["title"], signal["detail"], signal.get("evidence"))
+        active_cases = [case for case in cases if _text(case.get("status")).upper() == "ACTIVE"]
+        closed_cases = [case for case in cases if _text(case.get("status")).upper() in {"DECIDED", "SETTLED", "WITHDRAWN"}]
+        litigation = {
+            "case_count": len(cases),
+            "active_count": len(active_cases),
+            "closed_count": len(closed_cases),
+            "verdict": court.litigation_verdict_for(cases),
+            "status": "ACTIVE" if active_cases else "CLOSED",
+            "highest_severity": "HIGH" if active_cases else "INFO",
+            "cases": [_case_reference(case) for case in cases],
+            "disclaimer": "Litigation status reflects only cases registered in this system; it is not a "
+                          "court-certified encumbrance/title search.",
+        }
 
     severity_order = {"HIGH": 0, "REVIEW": 1, "INFO": 2}
     flags.sort(key=lambda flag: (severity_order.get(flag["severity"], 3), flag["code"]))
@@ -1563,14 +1359,16 @@ def compute_land_risk(land: Dict[str, Any]) -> Dict[str, Any]:
             "info": sum(1 for flag in flags if flag["severity"] == "INFO"),
         },
         "flags": flags,
+        "why": [flag["title"] for flag in flags if flag["severity"] in {"HIGH", "REVIEW"}] or ["No review signals recorded"],
+        "litigation": litigation,
         "evidence_documents": evidence_documents,
         "inputs": {
             "records": len(records),
             "encumbrances": len(encumbrances),
             "active_encumbrances": len(active_encumbrances),
             "mutations": len(mutations),
-            "court_cases": len(court_cases),
-            "active_court_cases": sum(1 for case in court_cases if _text(case.get("status")).upper() in ACTIVE_CASE_STATUSES),
+            "court_cases": litigation["case_count"],
+            "active_court_cases": litigation["active_count"],
         },
         "legal_authority": False,
         "disclaimer": "Deterministic review signals computed from local records. This is a workflow risk indicator, "
@@ -1582,54 +1380,75 @@ def compute_land_risk(land: Dict[str, Any]) -> Dict[str, Any]:
 # land-record APIs
 # ---------------------------------------------------------------------------
 
-def _register_states(land: Dict[str, Any]) -> Dict[str, Any]:
-    encumbrances, mutations = _land_register_rows(land)
+def _register_states(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
+                     registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
+    encumbrances, mutations = _land_register_rows(land, registers)
     active = [item for item in encumbrances if _text(item.get("status")).upper() == "ACTIVE"]
-    cases = court_cases_for_land(land)
-    active_cases = [case for case in cases if _text(case.get("status")).upper() in ACTIVE_CASE_STATUSES]
+    cases = _land_court_cases(land, case_index)
+    active_cases = [case for case in cases if _text(case.get("status")).upper() == "ACTIVE"]
+    pending_mutation_statuses = {"RECEIVED", "UNDER_REVIEW", "VERIFIED"}
     return {
         "encumbrances": encumbrances,
         "active_encumbrances": active,
         "encumbrance_status": "ACTIVE" if active else ("CLEAR" if encumbrances else "NONE"),
         "mutations": mutations,
-        "pending_mutations": [item for item in mutations if _text(item.get("status")).upper() in {"RECEIVED", "UNDER_REVIEW", "VERIFIED"}],
-        "encumbrance_banner": _encumbrance_banner({"active_encumbrances": active, "encumbrances": encumbrances}),
+        "pending_mutations": [item for item in mutations if _text(item.get("status")).upper() in pending_mutation_statuses],
+        "mutation_status": _mutation_rollup_status(mutations),
         "court_cases": cases,
         "active_court_cases": active_cases,
-        "litigation_status": "ACTIVE" if active_cases else ("DISPOSED" if cases else "NONE"),
+        "litigation_status": "ACTIVE" if active_cases else ("CLOSED" if cases else "NONE"),
+        "encumbrance_banner": _encumbrance_banner({"active_encumbrances": active, "encumbrances": encumbrances}),
         "litigation_banner": _litigation_banner({"active_court_cases": active_cases, "court_cases": cases}),
     }
 
 
+def _mutation_rollup_status(mutations: Sequence[Dict[str, Any]]) -> str:
+    """Single status label for a parcel's mutation history (report/UI helper)."""
+    if not mutations:
+        return "NONE"
+    statuses = {_text(item.get("status")).upper() for item in mutations}
+    for preferred in ("RECEIVED", "UNDER_REVIEW", "VERIFIED", "REJECTED", "COMPLETED"):
+        if preferred in statuses:
+            return preferred
+    return sorted(statuses)[0] or "NONE"
+
+
 def _litigation_banner(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Alert-style projection of the litigation state for one parcel.
+
+    Powers the "Active litigation found for this property" alert in the
+    document land-context panel and the land-record detail header. Additive to
+    the register's own ``litigation`` aggregates; carries no new rules.
+    """
     active = state.get("active_court_cases") or []
+    cases = state.get("court_cases") or []
     if active:
         case = active[0]
         return {
             "tone": "danger",
             "icon": "⚠",
             "text": "Active litigation found for this property",
-            "case_no": case.get("case_no"),
-            "court": case.get("court_name"),
-            "petitioner": case.get("petitioner"),
-            "respondent": case.get("respondent"),
-            "status": case.get("status"),
-            "next_hearing_date": case.get("next_hearing_date"),
+            "case_number": _text(case.get("case_number")),
+            "court": _text(case.get("court_name")),
+            "petitioner": _text(case.get("petitioner")),
+            "respondent": _text(case.get("respondent")),
+            "parties": _text(case.get("parties")),
+            "status": _text(case.get("status")),
+            "next_hearing_date": _text(case.get("next_hearing_date")),
             "affects_transfer": bool(case.get("affects_transfer")),
             "court_case_id": case.get("id"),
             "active_case_count": len(active),
+            "case_count": len(cases),
         }
-    if state.get("court_cases"):
-        return {"tone": "ok", "icon": "⚖", "text": "No active litigation (prior case(s) on record are disposed)",
-                "case_no": None, "court": None, "petitioner": None, "respondent": None, "status": None,
-                "next_hearing_date": None, "affects_transfer": False, "court_case_id": None, "active_case_count": 0}
-    return {"tone": "ok", "icon": "⚖", "text": "No litigation recorded", "case_no": None, "court": None,
-            "petitioner": None, "respondent": None, "status": None, "next_hearing_date": None,
-            "affects_transfer": False, "court_case_id": None, "active_case_count": 0}
+    return {"tone": "ok", "icon": "⚖", "text": "No active litigation" + (" (prior case(s) on record are closed)" if cases else ""),
+            "case_number": None, "court": None, "petitioner": None, "respondent": None, "parties": None,
+            "status": None, "next_hearing_date": None, "affects_transfer": False,
+            "court_case_id": None, "active_case_count": 0, "case_count": len(cases)}
 
 
-def _land_summary(land: Dict[str, Any]) -> Dict[str, Any]:
-    state = _register_states(land)
+def _land_summary(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
+                  registers: Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
+    state = _register_states(land, case_index=case_index, registers=registers)
     latest = (land.get("records") or [{}])[-1]
     return {
         "land_id": land["land_id"],
@@ -1650,11 +1469,12 @@ def _land_summary(land: Dict[str, Any]) -> Dict[str, Any]:
         "encumbrance_status": state["encumbrance_status"],
         "active_encumbrance_count": len(state["active_encumbrances"]),
         "pending_mutation_count": len(state["pending_mutations"]),
+        "mutation_status": state["mutation_status"],
         "litigation_status": state["litigation_status"],
-        "active_case_count": len(state["active_court_cases"]),
+        "active_litigation_count": len(state["active_court_cases"]),
+        "court_case_count": len(state["court_cases"]),
         "latest_status": _text(latest.get("status")),
         "encumbrance_banner": _encumbrance_banner(state),
-        "litigation_banner": state["litigation_banner"],
     }
 
 
@@ -1682,13 +1502,23 @@ def list_land_records(
     village: str = Query(""),
     district: str = Query(""),
     encumbrance: str = Query(""),
+    litigation: str = Query(""),
+    mutation: str = Query(""),
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Paginated land-record index grouped from the visible screened records."""
+    """Paginated land-record index grouped from the visible screened records.
+
+    Filters: free-text ``q`` (owner/survey/village/id), ``village``,
+    ``district``, ``encumbrance`` (ACTIVE|CLEAR|NONE), ``litigation``
+    (ACTIVE|CLOSED|NONE) and ``mutation`` (a register status). The litigation
+    register is read ONCE for the whole page, never once per parcel.
+    """
     lands = _land_records_index(user)
-    items = [_land_summary(land) for land in lands.values()]
+    case_index = _court_case_index()
+    registers = _register_index()
+    items = [_land_summary(land, case_index=case_index, registers=registers) for land in lands.values()]
     needle = _text(q).casefold()
     if needle:
         items = [item for item in items if needle in " ".join(str(item.get(key) or "") for key in (
@@ -1700,6 +1530,12 @@ def list_land_records(
     wanted = _text(encumbrance).upper()
     if wanted:
         items = [item for item in items if item.get("encumbrance_status") == wanted]
+    wanted_litigation = _text(litigation).upper()
+    if wanted_litigation:
+        items = [item for item in items if item.get("litigation_status") == wanted_litigation]
+    wanted_mutation = _text(mutation).upper()
+    if wanted_mutation:
+        items = [item for item in items if item.get("mutation_status") == wanted_mutation]
     items.sort(key=lambda item: (item.get("village") or "", item.get("survey") or ""))
     total = len(items)
     return {"land_records": items[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
@@ -1708,23 +1544,43 @@ def list_land_records(
 @land_router.get("/risk-review")
 def risk_review(
     verdict: str = Query(""),
+    q: str = Query(""),
+    village: str = Query(""),
+    litigation: str = Query(""),
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES)),
 ):
-    """Risk review workspace: computed verdicts for land records (paginated)."""
+    """Risk review workspace: computed verdicts for land records (paginated).
+
+    The litigation register is grouped once and shared by every parcel scored
+    in this request, so widening the review list does not multiply queries.
+    """
     lands = _land_records_index(user)
+    case_index = _court_case_index()
+    registers = _register_index()
     results = []
     for land in lands.values():
         if not (land.get("records") or land.get("survey")):
             continue
-        risk = compute_land_risk(land)
-        summary = _land_summary(land)
+        risk = compute_land_risk(land, case_index=case_index, registers=registers)
+        summary = _land_summary(land, case_index=case_index, registers=registers)
         summary["risk"] = risk
         results.append(summary)
     wanted = _text(verdict).upper()
     if wanted:
         results = [item for item in results if item["risk"]["verdict"] == wanted]
+    needle = _text(q).casefold()
+    if needle:
+        results = [item for item in results if needle in " ".join(str(item.get(key) or "") for key in (
+            "land_id", "survey", "village", "district", "current_owner", "label")).casefold()]
+    if _text(village):
+        results = [item for item in results if _normalise_land(item.get("village")) == _normalise_land(village)]
+    wanted_litigation = _text(litigation).upper()
+    if wanted_litigation:
+        results = [item for item in results
+                   if (item["risk"].get("litigation") or {}).get("verdict")
+                   == {"ACTIVE": "ACTIVE_LITIGATION", "CLOSED": "PRIOR_LITIGATION"}.get(wanted_litigation, wanted_litigation)]
     severity_rank = {"HIGH_RISK": 0, "REVIEW": 1, "CLEAR": 2}
     results.sort(key=lambda item: (severity_rank.get(item["risk"]["verdict"], 3), item.get("village") or "", item.get("survey") or ""))
     total = len(results)
@@ -1736,10 +1592,24 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
     land = _get_land(user, land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land record not found.")
-    risk = compute_land_risk(land)
-    state = _register_states(land)
+    # LAND + DOCUMENTS + MUTATIONS + ENCUMBRANCES + LITIGATION + AUDIT are
+    # loaded once; RISK, TIMELINE and the register summaries are derived from
+    # that already-loaded data without touching the database again.
+    registers = _land_register_rows(land)
+    case_index = _court_case_index()
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
     documents = [_document_reference(record) for record in land.get("records") or []]
     ownership = _ownership_history(land, state["mutations"])
+    litigation = {
+        "cases": [_case_reference(case) for case in state["court_cases"]],
+        "case_count": len(state["court_cases"]),
+        "active_count": len(state["active_court_cases"]),
+        "status": state["litigation_status"],
+        "verdict": (risk.get("litigation") or {}).get("verdict", "CLEAR"),
+        "disclaimer": "Litigation status reflects only cases registered in this system; it is not a "
+                      "court-certified encumbrance/title search.",
+    }
     detail = {
         "land_id": land["land_id"],
         "property": {
@@ -1763,9 +1633,10 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
         "mutations": state["mutations"],
         "encumbrances": state["encumbrances"],
         "encumbrance_banner": state["encumbrance_banner"],
-        "court_cases": state["court_cases"],
-        "litigation_status": state["litigation_status"],
+        "litigation": litigation,
         "litigation_banner": state["litigation_banner"],
+        "timeline": build_timeline(land, state["encumbrances"], state["mutations"],
+                                  state["court_cases"], risk=risk),
         "risk": risk,
         "map": {
             "focus_record_id": land.get("reference_record_id"),
@@ -1839,6 +1710,105 @@ def _ownership_history(land: Dict[str, Any], mutations: Sequence[Dict[str, Any]]
     return events
 
 
+def _record_date(record: Dict[str, Any]) -> str:
+    """Best available real date for a screened document (YYYY-MM-DD)."""
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    for key in ("document_date", "registration_date", "mutation_date"):
+        entry = fields.get(key)
+        value = entry.get("value") if isinstance(entry, dict) else entry
+        value = _text(value)
+        if len(value) >= 8 and value[:4].isdigit():
+            return value[:10]
+    year = _text(record.get("year"))
+    return year if len(year) == 10 else (f"{year}-01-01" if _year_of(year) else "")
+
+
+def build_timeline(land: Dict[str, Any], encumbrances: Sequence[Dict[str, Any]],
+                   mutations: Sequence[Dict[str, Any]], cases: Optional[Sequence[Dict[str, Any]]] = None,
+                   *, risk: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Chronology assembled from the actual registers — never hardcoded text.
+
+    Each entry names the source row so the UI can link straight to the document,
+    mutation, encumbrance or court case that produced it.
+    """
+    events: List[Dict[str, Any]] = []
+
+    def push(kind: str, date: str, title: str, detail: str, status: str, **refs: Any) -> None:
+        events.append({
+            "kind": kind,
+            "date": _text(date),
+            "year": _year_of(date) or _year_of(status),
+            "title": title,
+            "detail": detail,
+            "status": status,
+            "refs": {key: value for key, value in refs.items() if value},
+        })
+
+    for record in land.get("records") or []:
+        date = _record_date(record)
+        owner = _text(record.get("owner")) or "owner not extracted"
+        push("DOCUMENT", date, f"{_text(record.get('doc_type')) or 'Record'} filed in the name of {owner}",
+             f"{date or _text(record.get('year')) or 'undated'} · area {_text(record.get('area')) or '—'} · {record.get('id')}",
+             _text(record.get("status")).upper(), document_id=record.get("id"))
+
+    for mutation in mutations or []:
+        date = _text(mutation.get("deed_date")) or ""
+        label = _text(mutation.get("mutation_no")) or _text(mutation.get("id"))
+        reason = _text(mutation.get("reason_type")).title() or "Transfer"
+        push("MUTATION", date,
+             f"{reason}: {_text(mutation.get('previous_owner')) or '—'} → {_text(mutation.get('new_owner')) or '—'}",
+             f"Mutation {label}" + (f" · deed {mutation.get('deed_no')}" if _text(mutation.get('deed_no')) else ""),
+             _text(mutation.get("status")).upper(), mutation_id=mutation.get("id"))
+
+    for item in encumbrances or []:
+        label = f"{_text(item.get('lender')) or 'Lender'}" + (f" · ref {_text(item.get('reference_no'))}" if _text(item.get('reference_no')) else "")
+        amount = item.get("amount")
+        push("ENCUMBRANCE", _text(item.get("start_date")), f"Encumbrance created — {label}",
+             ("₹" + format(float(amount), ",.0f") + " recorded.") if amount else "Amount not recorded.",
+             _text(item.get("status")).upper(), encumbrance_id=item.get("id"))
+        if _text(item.get("release_date")):
+            push("ENCUMBRANCE", _text(item.get("release_date")), f"Encumbrance released — {label}",
+                 "Release recorded in the register.", "RELEASED", encumbrance_id=item.get("id"))
+
+    for case in cases or []:
+        number = _text(case.get("case_number")) or "Court case"
+        court_name = _text(case.get("court_name"))
+        case_type = _text(case.get("case_type")).upper() or "CIVIL"
+        if _text(case.get("filed_date")):
+            push("COURT_CASE", _text(case.get("filed_date")), f"{case_type.title()} case filed — {number}",
+                 (f"{court_name}." if court_name else "Court not recorded.") + (f" Relief: {_text(case.get('relief_sought'))}" if _text(case.get("relief_sought")) else ""),
+                 "ACTIVE", case_id=case.get("id"))
+        if _text(case.get("closed_date")):
+            push("COURT_CASE", _text(case.get("closed_date")),
+                 f"Case {number} {_text(case.get('status')).title()}",
+                 _text(case.get("decision_summary")) or "Outcome recorded without a summary.",
+                 _text(case.get("status")).upper(), case_id=case.get("id"))
+
+    events.sort(key=lambda event: ((event.get("year") is None), event.get("year") or 0,
+                                   event.get("date") or "", event.get("title") or ""))
+    summary_bits = []
+    if land.get("current_owner"):
+        summary_bits.append(f"current owner {_text(land.get('current_owner'))}")
+    if risk:
+        summary_bits.append(f"risk {risk.get('verdict')}")
+    active_encumbrances = [item for item in (encumbrances or []) if _text(item.get("status")).upper() == "ACTIVE"]
+    if active_encumbrances:
+        summary_bits.append(f"{len(active_encumbrances)} active encumbrance(s)")
+    active_cases = [case for case in (cases or []) if _text(case.get("status")).upper() == "ACTIVE"]
+    if active_cases:
+        summary_bits.append(f"{len(active_cases)} active court case(s)")
+    events.append({
+        "kind": "CURRENT",
+        "date": "",
+        "year": None,
+        "title": "Current status",
+        "detail": "; ".join(summary_bits) if summary_bits else "No live signals recorded.",
+        "status": "CURRENT",
+        "refs": {},
+    })
+    return events
+
+
 def _land_audit_trail(land: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Recent audit entries that reference this land's documents or registers."""
     document_ids = {_text(record.get("id")) for record in land.get("records") or []}
@@ -1893,21 +1863,6 @@ def land_record_mutations(land_id: str, user: Dict[str, Any] = Depends(get_curre
     return {"mutations": mutations}
 
 
-@land_router.get("/{land_id}/court-cases")
-def land_record_court_cases(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    land = _get_land(user, land_id)
-    if not land:
-        raise HTTPException(status_code=404, detail="Land record not found.")
-    cases = court_cases_for_land(land)
-    active = [case for case in cases if _text(case.get("status")).upper() in ACTIVE_CASE_STATUSES]
-    return {
-        "court_cases": cases,
-        "active_court_cases": active,
-        "litigation_status": "ACTIVE" if active else ("DISPOSED" if cases else "NONE"),
-        "litigation_banner": _litigation_banner({"active_court_cases": active, "court_cases": cases}),
-    }
-
-
 # ---------------------------------------------------------------------------
 # document-level integration (used by the existing verification flow)
 # ---------------------------------------------------------------------------
@@ -1925,8 +1880,10 @@ def document_land_context(document: Dict[str, Any], user: Dict[str, Any]) -> Dic
     land = _land_records_index(user).get(land_id)
     if not land:
         return {"matched": False}
-    risk = compute_land_risk(land)
-    state = _register_states(land)
+    registers = _land_register_rows(land)
+    case_index = _court_case_index()
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
     context = {
         "matched": True,
         "land_id": land["land_id"],
@@ -1935,41 +1892,179 @@ def document_land_context(document: Dict[str, Any], user: Dict[str, Any]) -> Dic
         "encumbrance_banner": state["encumbrance_banner"],
         "active_encumbrance_count": len(state["active_encumbrances"]),
         "pending_mutation_count": len(state["pending_mutations"]),
-        "litigation_banner": state["litigation_banner"],
-        "litigation_status": state["litigation_status"],
-        "active_case_count": len(state["active_court_cases"]),
-        "court_cases": [
-            {"id": case.get("id"), "case_no": case.get("case_no"), "court": case.get("court_name"),
-             "title": case.get("title"), "status": case.get("status"),
-             "next_hearing_date": case.get("next_hearing_date"), "affects_transfer": bool(case.get("affects_transfer"))}
-            for case in state["court_cases"]
-        ],
         "risk_verdict": risk["verdict"],
         "risk_flags": [{"code": flag["code"], "severity": flag["severity"], "title": flag["title"]} for flag in risk["flags"]],
+        "litigation_status": state["litigation_status"],
+        "active_court_case_count": len(state["active_court_cases"]),
+        "litigation_banner": state["litigation_banner"],
         "detail_url": f"/?land_id={land['land_id']}",
     }
     if user.get("role") in REVIEWER_ROLES:
         context["active_encumbrances"] = state["active_encumbrances"]
-        is_transfer = _is_transfer_document(document)
-        if state["active_court_cases"]:
+        if state["active_court_cases"] and _is_transfer_document(document):
             context["recommendation"] = (
-                "Active litigation found for this property: " + ", ".join(_text(case.get("case_no")) for case in state["active_court_cases"])
-                + ". Verify case status before any transfer or approval."
-                + (" A court stay/injunction against transfer is on record."
-                   if any(case.get("affects_transfer") for case in state["active_court_cases"]) else "")
-                + (" This document looks like a transfer instrument and must not be approved while the case is live."
-                   if is_transfer else ""))
-        elif state["active_encumbrances"] and is_transfer:
-            context["recommendation"] = "Do not approve a transfer while an active encumbrance exists; verify lender release first."
+                "Do not approve a transfer while court proceedings are pending on this land; verify the case "
+                "status and any stay or injunction first."
+            )
         else:
-            context["recommendation"] = ("Human review required: " + ", ".join(flag["title"] for flag in risk["flags"][:3])
-                                         if risk["verdict"] != "CLEAR" else "No adverse land-level signals from the deterministic checks.")
+            context["recommendation"] = (
+                "Do not approve a transfer while an active encumbrance exists; verify lender release first."
+                if state["active_encumbrances"] and _is_transfer_document(document)
+                else ("Human review required: " + ", ".join(flag["title"] for flag in risk["flags"][:3])
+                      if risk["verdict"] != "CLEAR" else "No adverse land-level signals from the deterministic checks.")
+            )
     return context
 
 
 def _is_transfer_document(document: Dict[str, Any]) -> bool:
     doc_type = _text(document.get("doc_type")).casefold()
     return any(token in doc_type for token in ("transfer", "sale", "mutation", "deed"))
+
+
+# ---------------------------------------------------------------------------
+# full due diligence (aggregates the existing services; adds no new rules)
+# ---------------------------------------------------------------------------
+
+#: (record key, report label) — the fields a reviewer reconciles across copies.
+#: Screened land records are exposed flat by the mapping layer (``owner``,
+#: ``area`` …) with the raw OCR payload in ``fields``; both shapes are read.
+_KEY_DUE_DILIGENCE_FIELDS = (("owner", "Owner name"), ("father", "Father / guardian"),
+                             ("survey", "Survey number"), ("khasra", "Khasra number"),
+                             ("area", "Area"), ("village", "Village"), ("tehsil", "Tehsil"),
+                             ("district", "District"), ("year", "Record year"))
+
+
+def _record_field(record: Dict[str, Any], key: str) -> str:
+    value = _text(record.get(key))
+    if value:
+        return value
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    entry = fields.get(key) or fields.get(f"{key}_number") or fields.get(f"{key}_name")
+    return _text(entry.get("value") if isinstance(entry, dict) else entry)
+
+
+@land_router.post("/{land_id}/due-diligence")
+def run_due_diligence(land_id: str, user: Dict[str, Any] = Depends(require_roles(*STAFF_ROLES))):
+    """Consolidate every deterministic check for one parcel into a readable brief.
+
+    This is an AGGREGATOR: it reuses the risk engine, the encumbrance/mutation
+    registers, the litigation register and the document history instead of
+    re-implementing them, so the brief can never disagree with the screens.
+    """
+    land = _get_land(user, land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land record not found.")
+    registers = _land_register_rows(land)
+    case_index = _court_case_index()
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
+    ownership = _ownership_history(land, state["mutations"])
+    timeline = build_timeline(land, state["encumbrances"], state["mutations"],
+                             state["court_cases"], risk=risk)
+
+    records = land.get("records") or []
+    field_matrix: List[Dict[str, Any]] = []
+    for record in records:
+        flat = {}
+        for key, _label in _KEY_DUE_DILIGENCE_FIELDS:
+            value = _record_field(record, key)
+            if value:
+                flat[key] = value
+        field_matrix.append({
+            "document_id": record.get("id"),
+            "filename": _text(record.get("filename")),
+            "status": _text(record.get("status")).upper(),
+            "year": _text(record.get("year")),
+            "mean_conf": record.get("mean_conf"),
+            "fields": flat,
+        })
+
+    # Field-level differences across the parcel's own documents. Deep pairwise
+    # OCR diffing stays on the existing /api/documents/compare endpoint, which
+    # this brief links to instead of duplicating.
+    differences: List[Dict[str, Any]] = []
+    for key, label in _KEY_DUE_DILIGENCE_FIELDS:
+        values: List[str] = []
+        for entry in field_matrix:
+            value = entry["fields"].get(key) or ""
+            if value and value not in values:
+                values.append(value)
+        if len(values) > 1:
+            differences.append({
+                "field": key,
+                "label": label,
+                "values": values,
+                "documents": [entry["document_id"] for entry in field_matrix if entry["fields"].get(key) in values],
+            })
+    comparison_pair = None
+    if len(records) >= 2:
+        comparison_pair = {"document_a": records[-2].get("id"), "document_b": records[-1].get("id"),
+                           "endpoint": "/api/documents/compare"}
+
+    blockers = [flag for flag in risk["flags"] if flag["severity"] == "HIGH"]
+    review_items = [flag for flag in risk["flags"] if flag["severity"] == "REVIEW"]
+    next_actions: List[str] = []
+    if state["active_court_cases"]:
+        next_actions.append(f"Verify the {len(state['active_court_cases'])} active court case(s) and any stay before recording a transfer.")
+    if state["active_encumbrances"]:
+        next_actions.append(f"Obtain the lender release/NOC for {len(state['active_encumbrances'])} active encumbrance(s).")
+    if state["pending_mutations"]:
+        next_actions.append(f"Complete review of {len(state['pending_mutations'])} pending mutation application(s).")
+    if differences:
+        next_actions.append("Reconcile " + ", ".join(item["label"].lower() for item in differences) + " across the parcel's documents.")
+    if not next_actions:
+        next_actions.append("No outstanding deterministic checks; proceed with routine verification.")
+
+    summary = (
+        f"{_text(land.get('survey'))} · {_text(land.get('village'))}: "
+        f"{risk['verdict'].replace('_', ' ').lower()} "
+        f"({len(blockers)} high, {len(review_items)} review) — "
+        f"{len(records)} document(s), {len(state['mutations'])} mutation(s), "
+        f"{len(state['court_cases'])} court case(s)."
+    )
+    _audit(user, "DUE_DILIGENCE_RUN",
+           f"Full due diligence run for land {land['land_id']} (survey {land.get('survey')}, {land.get('village')}): {summary}")
+    return {
+        "land_id": land["land_id"],
+        "parcel": {"survey": land.get("survey"), "khasra": land.get("khasra"), "village": land.get("village"),
+                   "tehsil": land.get("tehsil"), "district": land.get("district"), "state": land.get("state"),
+                   "area": land.get("area")},
+        "verdict": risk["verdict"],
+        "summary": summary,
+        "why": risk["why"],
+        "checks": {
+            "ownership": {"current_owner": land.get("current_owner"), "father": land.get("father"),
+                          "since_year": land.get("latest_year"), "history": ownership},
+            "mutations": {"count": len(state["mutations"]), "status": state["mutation_status"],
+                          "pending": len(state["pending_mutations"]),
+                          "items": [{k: m.get(k) for k in ("id", "mutation_no", "status", "previous_owner",
+                                                            "new_owner", "reason_type", "deed_no", "deed_date")}
+                                    for m in state["mutations"]]},
+            "encumbrances": {"count": len(state["encumbrances"]), "status": state["encumbrance_status"],
+                             "active": len(state["active_encumbrances"]),
+                             "items": [{k: e.get(k) for k in ("id", "lender", "reference_no", "amount",
+                                                              "start_date", "release_date", "status")}
+                                       for e in state["encumbrances"]]},
+            "litigation": {"status": state["litigation_status"], "case_count": len(state["court_cases"]),
+                           "active_count": len(state["active_court_cases"]),
+                           "cases": [_case_reference(case) for case in state["court_cases"]],
+                           "disclaimer": "Registered cases only; not a court-certified search."},
+            "documents": {"count": len(records), "field_matrix": field_matrix,
+                          "differences": differences, "comparison_pair": comparison_pair},
+            "risk": {"verdict": risk["verdict"], "counts": risk["counts"],
+                     "flags": [{"code": flag["code"], "severity": flag["severity"], "title": flag["title"],
+                                "detail": flag["detail"]} for flag in risk["flags"]]},
+        },
+        "inconsistencies": [{"code": flag["code"], "severity": flag["severity"], "title": flag["title"],
+                             "evidence": flag["evidence"]} for flag in risk["flags"] if flag["severity"] != "INFO"],
+        "timeline": timeline,
+        "next_actions": next_actions,
+        "report": {"land_id": land["land_id"],
+                   "note": "Generate the verification report from this parcel to get a shareable, audited reference."},
+        "generated_at": _now(),
+        "legal_authority": False,
+        "disclaimer": risk["disclaimer"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2018,9 +2113,13 @@ def generate_land_verification_report(req: ReportCreate, user: Dict[str, Any] = 
     document_id = _text(req.document_id) or land.get("reference_record_id") or ""
     if document_id:
         _assert_evidence_document(document_id, user)
-    risk = compute_land_risk(land)
-    state = _register_states(land)
+    registers = _land_register_rows(land)
+    case_index = _court_case_index()
+    risk = compute_land_risk(land, case_index=case_index, registers=registers)
+    state = _register_states(land, case_index=case_index, registers=registers)
     now = _now()
+    active_cases = state["active_court_cases"]
+    highest_litigation_severity = "HIGH" if active_cases else ("INFO" if state["court_cases"] else "NONE")
     with get_db() as db:
         reference = _next_report_reference(db)
         payload = {
@@ -2045,16 +2144,16 @@ def generate_land_verification_report(req: ReportCreate, user: Dict[str, Any] = 
                 {"lender": item.get("lender"), "reference": item.get("reference_no"), "amount": item.get("amount"), "status": item.get("status")}
                 for item in state["active_encumbrances"]
             ],
-            "mutation_status": (max((_text(item.get("status")) for item in state["mutations"]), default="NONE")),
-            "mutations": [{"mutation_no": item.get("mutation_no"), "status": item.get("status")} for item in state["mutations"]],
+            "mutation_status": state["mutation_status"],
             "litigation_status": state["litigation_status"],
-            "court_cases": [
-                {"case_no": case.get("case_no"), "court": case.get("court_name"), "title": case.get("title"),
-                 "petitioner": case.get("petitioner"), "respondent": case.get("respondent"),
-                 "status": case.get("status"), "filing_date": case.get("filing_date"),
-                 "next_hearing_date": case.get("next_hearing_date"), "affects_transfer": bool(case.get("affects_transfer"))}
-                for case in state["court_cases"]
-            ],
+            "active_court_case_count": len(active_cases),
+            "court_case_count": len(state["court_cases"]),
+            "highest_litigation_severity": highest_litigation_severity,
+            "court_cases": [_case_reference(case) for case in state["court_cases"]],
+            "risk_why": risk["why"],
+            "timeline": build_timeline(land, state["encumbrances"], state["mutations"],
+                                       state["court_cases"], risk=risk),
+            "mutations": [{"mutation_no": item.get("mutation_no"), "status": item.get("status")} for item in state["mutations"]],
             "supporting_documents": [_document_reference(record) for record in land.get("records") or []],
             "generated_at": now,
             "reviewer": user.get("email") or user.get("full_name"),
@@ -2113,7 +2212,9 @@ def _render_report_html(payload: Dict[str, Any]):
         ("Risk status", verdict),
         ("Encumbrance status", payload.get("encumbrance_status")),
         ("Mutation status", payload.get("mutation_status")),
-        ("Litigation status", payload.get("litigation_status")),
+        ("Litigation status", "ACTIVE LITIGATION" if payload.get("litigation_status") == "ACTIVE"
+         else ("Registered / closed" if payload.get("court_case_count") else "None registered")),
+        ("Active court cases", payload.get("active_court_case_count", 0)),
         ("Reviewer", payload.get("reviewer")),
         ("Generated (UTC timestamp)", payload.get("generated_at")),
         ("Audit / reference ID", reference),
@@ -2126,11 +2227,21 @@ def _render_report_html(payload: Dict[str, Any]):
         f"<li><span class=\"mono\">{esc(doc.get('id'))}</span> — {esc(doc.get('filename'))} ({esc(doc.get('status'))})</li>"
         for doc in payload.get("supporting_documents") or []
     ) or "<li>No documents linked</li>"
-    court_items = "".join(
-        f"<li><span class=\"mono\">{esc(case.get('case_no'))}</span> — {esc(case.get('title') or case.get('case_type'))} "
-        f"({esc(case.get('status'))}{', next hearing ' + esc(case.get('next_hearing_date')) if case.get('next_hearing_date') else ''})</li>"
+    case_rows = "".join(
+        f"<tr><td class=\"k\">{esc(case.get('case_number'))}</td><td>{esc(case.get('case_type'))} · {esc(case.get('court_name') or 'court not recorded')}</td>"
+        f"<td>{esc(case.get('status'))}{(' — ' + esc(case.get('closed_date'))) if case.get('closed_date') else ''}</td>"
+        f"<td>{esc(case.get('parties') or '—')}</td><td>{esc(case.get('decision_summary') or '—')}</td></tr>"
         for case in payload.get("court_cases") or []
-    ) or "<li>No court case on record</li>"
+    )
+    litigation_section = (
+        f"""<h3 style="color:#1e3a8a;font-size:14px;">Court cases / litigation</h3>
+<table><tr><td class="k">Case number</td><td>Type · Court</td><td>Status</td><td>Parties</td><td>Outcome / relief</td></tr>
+{case_rows}</table>"""
+        if case_rows else
+        '<h3 style="color:#1e3a8a;font-size:14px;">Court cases / litigation</h3>'
+        '<p class="no-cases">No court case has been registered against this parcel in this system. '
+        'This is not a court-certified litigation search.</p>'
+    )
     qr_block = (
         f"<img src=\"{qr}\" width=\"120\" height=\"120\" alt=\"Verification QR\"/>"
         if qr else "<div class=\"qr-fallback\">QR unavailable (qrcode library not installed)</div>"
@@ -2165,8 +2276,7 @@ def _render_report_html(payload: Dict[str, Any]):
 </table>
 <h3 style="color:#1e3a8a;font-size:14px;">Risk signals</h3>
 <ul>{flag_items}</ul>
-<h3 style="color:#1e3a8a;font-size:14px;">Court cases</h3>
-<ul>{court_items}</ul>
+{litigation_section}
 <h3 style="color:#1e3a8a;font-size:14px;">Supporting documents</h3>
 <ul>{documents_items}</ul>
 <div class="disclaimer"><b>Disclaimer.</b> {esc(payload.get('disclaimer'))}</div>

@@ -31,6 +31,14 @@ from typing import Any, Dict, List, Optional
 from server import get_db
 from land_intel import ensure_land_tables
 
+
+def _ensure_court_schema() -> None:
+    """The litigation register's schema is owned by court_cases.py — one
+    definition, shared by the register, the demo dataset and the tests."""
+    from court_cases import ensure_schema
+
+    ensure_schema()
+
 DATASET = "DEMO-LI"
 SEEDER = "demo-seeder@landrec.gov.in"
 
@@ -132,20 +140,30 @@ def _insert_case(case_id: str, scenario: str, *, case_no: str, survey: str, vill
                  court: str, case_type: str, title: str, petitioner: str, respondent: str,
                  filing_date: str, status: str, stage: str, issue: str,
                  next_hearing: Optional[str] = None, affects_transfer: bool = False,
-                 related_mutation: str = "", notes: str = "", orders: Optional[List[Dict[str, str]]] = None) -> None:
+                 related_mutation: str = "", notes: str = "", parties: str = "",
+                 closed_date: str = "", decision: str = "",
+                 orders: Optional[List[Dict[str, str]]] = None) -> None:
+    """Seed one litigation row into the SHARED register schema.
+
+    ``status`` uses the register's own vocabulary: ACTIVE for live matters
+    (an interim stay is expressed via ``affects_transfer``), and DECIDED /
+    WITHDRAWN / SETTLED for closed ones.
+    """
+    _ensure_court_schema()
     created = _ts(filing_date) if filing_date else _ts("2026-01-05")
     with get_db() as db:
         db.execute(
             """INSERT OR REPLACE INTO land_court_cases
-               (id, case_no, property_id, survey_number, khasra_number, village, tehsil, district, court_name,
-                case_type, title, petitioner, respondent, filing_date, status, stage, issue_summary,
-                next_hearing_date, affects_transfer, related_mutation_id, related_encumbrance_id,
-                evidence_doc_id, notes, created_by, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (case_id, case_no, None, survey, survey, village, TEHSIL, DISTRICT, court,
-             case_type, title, petitioner, respondent, filing_date, status, stage, issue,
-             next_hearing, 1 if affects_transfer else 0, related_mutation or None, None,
-             None, notes or f"Synthetic demo litigation ({scenario})", SEEDER, created, created),
+               (id, property_id, survey_number, khasra_number, village, tehsil, district, case_number, case_type,
+                court_name, filed_date, closed_date, next_hearing_date, status, stage, parties, petitioner,
+                respondent, title, issue_summary, relief_sought, decision_summary, affects_transfer,
+                related_mutation_id, related_encumbrance_id, evidence_doc_ids, notes, created_by, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (case_id, None, survey, survey, village, TEHSIL, DISTRICT, case_no, case_type,
+             court, filing_date, closed_date, next_hearing, status, stage,
+             parties or f"{petitioner} v. {respondent}", petitioner, respondent, title, issue,
+             "", decision, 1 if affects_transfer else 0, related_mutation or None, None,
+             "[]", notes or f"Synthetic demo litigation ({scenario})", SEEDER, created, created),
         )
         for index, order in enumerate(orders or [], start=1):
             db.execute(
@@ -208,6 +226,8 @@ def seed_all() -> Dict[str, Any]:
     ensure_land_tables()
     created: Dict[str, List[str]] = {}
     prop_index = 0
+
+    _ensure_court_schema()
 
     def track(scenario: str, *artifact_ids: str) -> None:
         created.setdefault(scenario, [])
@@ -371,7 +391,7 @@ def seed_all() -> Dict[str, Any]:
                  survey="131", village=VILLAGE_SHANTIBAN,
                  court="Civil Judge (Senior Division), Hariharpur (fictional demo court)",
                  case_type="CIVIL", title="Title and boundary suit over survey 131, village Shantiban",
-                 petitioner="Adarsh", respondent="Shivangi", filing_date="2025-03-11", status="PENDING",
+                 petitioner="Adarsh", respondent="Shivangi", filing_date="2025-03-11", status="ACTIVE",
                  stage="Commission evidence",
                  issue="Ordinary civil property dispute: Adarsh claims ownership based on an earlier registered deed of 2018, while Shivangi disputes the claimed boundary and asserts rights under a later registered document of 2021. A civil suit concerning title and boundary rights is currently pending; the court has appointed a survey commissioner to demarcate the disputed boundary.",
                  next_hearing="2026-10-19", affects_transfer=False,
@@ -393,7 +413,7 @@ def seed_all() -> Dict[str, Any]:
                  survey="132", village=VILLAGE_SHANTIBAN,
                  court="Civil Judge (Junior Division), Hariharpur (fictional demo court)",
                  case_type="CIVIL", title="Boundary demarcation dispute — survey 132, village Shantiban",
-                 petitioner="Lakhan", respondent="Raghav", filing_date="2025-06-09", status="PENDING",
+                 petitioner="Lakhan", respondent="Raghav", filing_date="2025-06-09", status="ACTIVE",
                  stage="Framing of issues",
                  issue="Boundary dispute between the owners of adjoining parcels: Lakhan (survey 132) and Raghav (owner of the neighbouring parcel) disagree over the position of a boundary pillar noted in the village map. Suit for demarcation and permanent injunction is pending.",
                  next_hearing="2026-11-05", affects_transfer=False,
@@ -417,7 +437,7 @@ def seed_all() -> Dict[str, Any]:
                  survey="133", village=VILLAGE_SHANTIBAN,
                  court="District Judge Court, Kishandham (fictional demo court)",
                  case_type="CIVIL", title="Inheritance dispute over the ancestral holding of the late Shyam",
-                 petitioner="Girija", respondent="Kiran", filing_date="2024-09-30", status="STAYED",
+                 petitioner="Girija", respondent="Kiran", filing_date="2024-09-30", status="ACTIVE",
                  stage="Interim injunction in force",
                  issue="Inheritance dispute: Girija and Kiran each claim succession to the ancestral holding of the late Shyam (survey 133). The inheritance mutation is on hold pending the suit; an interim order keeps the state of affairs unchanged.",
                  next_hearing="2026-10-08", affects_transfer=True, related_mutation="DEMO-LI-COURT-003-M1",
@@ -436,9 +456,11 @@ def seed_all() -> Dict[str, Any]:
                  survey="134", village=VILLAGE_SHANTIBAN,
                  court="Civil Judge (Junior Division), Hariharpur (fictional demo court)",
                  case_type="CIVIL", title="Possession suit over survey 134 — withdrawn",
-                 petitioner="Sarita", respondent="Bhola", filing_date="2021-02-08", status="DISPOSED",
+                 petitioner="Sarita", respondent="Bhola", filing_date="2021-02-08", status="WITHDRAWN",
                  stage="",
                  issue="Possession suit filed by Sarita regarding a claimed occupation of part of survey 134. The matter was amicably resolved between the parties and the suit was withdrawn with liberty; nothing remains pending.",
+                 closed_date="2022-08-19",
+                 decision="Suit dismissed as withdrawn with liberty; decree drawn accordingly. No pending claim between the parties over this parcel.",
                  next_hearing=None, affects_transfer=False,
                  orders=[
                      {"date": "2022-08-19", "type": "DISPOSAL", "summary": "Suit dismissed as withdrawn with liberty; decree drawn accordingly. No pending claim between the parties over this parcel."},
@@ -455,9 +477,11 @@ def seed_all() -> Dict[str, Any]:
                  survey="33/2", village=VILLAGE_DEVNAPUR,
                  court="District Judge Court, Kishandham (fictional demo court)",
                  case_type="CIVIL", title="Title suit over survey 33/2 — decided",
-                 petitioner="Devaki", respondent="Nandkishor", filing_date="2022-05-16", status="DISPOSED",
+                 petitioner="Devaki", respondent="Nandkishor", filing_date="2022-05-16", status="DECIDED",
                  stage="",
                  issue="Title suit concerning succession to the recorded holding of survey 33/2; the court declared Nandkishor entitled to the holding and directed mutation accordingly.",
+                 closed_date="2023-01-27",
+                 decision="Suit decreed in favour of Nandkishor; title declared, and the revenue authorities directed to record the change.",
                  next_hearing=None, affects_transfer=False, related_mutation="DEMO-LI-COURT-005-M1",
                  orders=[
                      {"date": "2023-01-27", "type": "DECREE", "summary": "Suit decreed in favour of Nandkishor; title declared, and the revenue authorities directed to record the change."},
@@ -538,6 +562,7 @@ def clear_all() -> Dict[str, int]:
             db.execute(f"DELETE FROM land_mutations WHERE id IN ({placeholders})", tuple(mutation_ids))
             removed["events"] = len(mutation_ids)
             removed["mutations"] = len(mutation_ids)
+        _ensure_court_schema()
         removed["case_orders"] = db.execute("DELETE FROM land_case_orders WHERE id LIKE 'DEMO-LI-%'").rowcount or 0
         case_ids = [row["id"] for row in db.execute("SELECT id FROM land_court_cases WHERE id LIKE 'DEMO-LI-%'").fetchall()]
         if case_ids:

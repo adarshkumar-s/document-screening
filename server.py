@@ -1,3 +1,4 @@
+import sys
 import os
 import io
 import time
@@ -61,8 +62,12 @@ except ImportError:
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
+# A configured DATABASE_URL selects PostgreSQL in this deployment; when it is
+# absent the server intentionally runs on the local SQLite file.
+POSTGRES_CONFIGURED = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+
 HAS_PSYCOPG2 = False
-if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
+if POSTGRES_CONFIGURED:
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     try:
@@ -71,6 +76,7 @@ if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql
         HAS_PSYCOPG2 = True
     except ImportError:
         HAS_PSYCOPG2 = False
+        print("[POSTGRES DRIVER WARNING] DATABASE_URL is configured for PostgreSQL but psycopg2 is not installed; using SQLite instead.", file=sys.stderr)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -88,6 +94,23 @@ if IS_PRODUCTION and not JWT_SECRET:
     raise RuntimeError("JWT_SECRET must be configured in production.")
 if not JWT_SECRET:
     JWT_SECRET = secrets.token_urlsafe(48)
+
+# Fail closed on a configured database the server cannot honour. The old code
+# silently served SQLite whenever the configured PostgreSQL could not be used,
+# which in production points every request at a different database than the
+# operator configured. Failing loudly at startup is the safe behaviour;
+# SQLite remains available when PostgreSQL is intentionally not configured.
+if IS_PRODUCTION and DATABASE_URL and not POSTGRES_CONFIGURED:
+    raise RuntimeError(
+        "DATABASE_URL is configured but is not a PostgreSQL URL; refusing to "
+        "silently serve SQLite in production. Fix or unset DATABASE_URL."
+    )
+if IS_PRODUCTION and POSTGRES_CONFIGURED and not HAS_PSYCOPG2:
+    raise RuntimeError(
+        "DATABASE_URL is configured for PostgreSQL but the psycopg2 driver is "
+        "not installed; refusing to fall back to SQLite in production. Install "
+        "the production database driver (psycopg2-binary) and restart."
+    )
 
 
 def parse_allowed_origins(raw: str, *, production: bool) -> List[str]:
@@ -269,9 +292,30 @@ class DBConnection:
                 )
                 self.is_pg = True
             except Exception as e:
+                if IS_PRODUCTION:
+                    # Fail closed: a production request must never be silently
+                    # served from a local SQLite file because the configured
+                    # PostgreSQL is unavailable.
+                    print(f"[POSTGRES CONNECT FAILURE] {e}. Refusing to fall back to SQLite in production.", file=sys.stderr)
+                    raise RuntimeError(
+                        "DATABASE_URL is configured for PostgreSQL but the "
+                        "connection failed ("
+                        + type(e).__name__
+                        + "); refusing to fall back to SQLite in production."
+                    ) from e
                 print(f"[POSTGRES CONNECT WARNING] {e}. Falling back to SQLite.")
                 self.is_pg = False
                 self.conn = None
+
+        if IS_PRODUCTION and DATABASE_URL and not self.is_pg:
+            # Defense in depth: with a configured DATABASE_URL, production must
+            # only ever be served by PostgreSQL. This is normally unreachable
+            # (the startup gates above fail first) but keeps the guarantee at
+            # request level even if module state is mutated at runtime.
+            raise RuntimeError(
+                "Production has DATABASE_URL configured but no PostgreSQL "
+                "connection is available; refusing to serve SQLite."
+            )
 
         if not self.is_pg:
             self.conn = sqlite3.connect(DB_PATH, timeout=10.0, check_same_thread=False)
@@ -471,6 +515,32 @@ def init_db():
                 except Exception:
                     pass
             print(f"[INIT ADMIN ERROR] {e}")
+
+        # ---- startup index migration (never inside a user request) ---------
+        # CREATE INDEX can block for a long time on a large database, so these
+        # run once during init_db. Request paths only read.
+        for index_statement in (
+            "CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)",
+            "CREATE INDEX IF NOT EXISTS idx_documents_uploaded_by ON documents(uploaded_by)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit(action)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_username ON audit(username)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_doc_id ON audit(doc_id)",
+        ):
+            try:
+                db.execute(index_statement)
+            except Exception as exc:
+                print(f"[DB INDEX WARNING] {exc}")
+
+# Super-Assistant tables: created at startup, never inside a request. This
+# runs after init_db's transaction has committed so the second connection
+# cannot hit "database is locked"; on stderr to keep stdout machine-readable.
+try:
+    import sa_agent
+    sa_agent._ensure_tables()
+except Exception as exc:
+    print(f"[SA TABLES WARNING] {exc}", file=sys.stderr)
 
 init_db()
 
@@ -1695,6 +1765,8 @@ def signup(req: SignupReq):
     role = ROLE_DATA_OFFICER
     h = hash_password(req.password)
     with get_db() as db:
+        if db.execute("SELECT 1 FROM users WHERE LOWER(email)=?", (clean_email,)).fetchone():
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
         db.execute("INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)", (uid, req.full_name, clean_email, h, role))
     return {"token": create_jwt_token(uid, role, 0), "user": {"id": uid, "full_name": req.full_name, "email": clean_email, "role": role}}
 
@@ -1704,8 +1776,16 @@ def me(user: dict = Depends(get_current_user)):
 
 @app.post("/api/auth/logout")
 def logout(user: dict = Depends(get_current_user)):
+    # Revoke any SA (Admin AI) authorization state bound to this account so a
+    # logout always closes the security lock server-side, not just client-side.
+    try:
+        import sa_gateway
+        sa_gateway.revoke_sa_sessions_for_user(user.get("id", ""))
+    except Exception:
+        pass
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("lr_session", path="/")
+    response.delete_cookie("sa_session", path="/")
     return response
 
 @app.post("/api/auth/change-password")
@@ -1731,8 +1811,11 @@ def add_user(req: AddUserReq, user: dict = Depends(require_roles(ROLE_ADMIN))):
     uid = uuid.uuid4().hex[:12]
     h = hash_password(req.password)
     role = normalize_role(req.role)
+    clean_email = req.email.lower().strip()
     with get_db() as db:
-        db.execute("INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)", (uid, req.full_name, req.email.lower().strip(), h, role))
+        if db.execute("SELECT 1 FROM users WHERE LOWER(email)=?", (clean_email,)).fetchone():
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
+        db.execute("INSERT INTO users (id, full_name, email, password_hash, role, version, is_active) VALUES (?, ?, ?, ?, ?, 0, 1)", (uid, req.full_name, clean_email, h, role))
     return {"status": "ok"}
 
 @app.put("/api/users/{target_uid}/role")
@@ -1779,10 +1862,54 @@ def delete_user(target_uid: str, user: dict = Depends(require_roles(ROLE_ADMIN))
     return {"status": "ok"}
 
 @app.get("/api/audit")
-def get_audit(user: dict = Depends(require_roles(ROLE_ADMIN))):
+def get_audit(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    q: str = Query(""),
+    action: str = Query(""),
+    username: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    user: dict = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Paginated, filterable audit trail (administrator only).
+
+    The page is computed in SQL — the full table is never returned. Filters:
+    ``action`` (exact), ``username`` (exact), ``q`` (substring over
+    action/username/detail) and ``date_from``/``date_to`` (YYYY-MM-DD, inclusive,
+    UTC). The response keeps the historical ``audit`` key and adds
+    ``total``/``limit``/``offset``.
+    """
+    where, params = [], []
+    if action.strip():
+        where.append("action=?")
+        params.append(action.strip())
+    if username.strip():
+        where.append("username=?")
+        params.append(username.strip())
+    needle = q.strip()
+    if needle:
+        where.append("(action LIKE ? OR username LIKE ? OR detail LIKE ?)")
+        params.extend([f"%{needle}%"] * 3)
+    for parameter, raw in (("date_from", date_from), ("date_to", date_to)):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            base = time.mktime(time.strptime(raw[:10], "%Y-%m-%d"))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"{parameter} must be YYYY-MM-DD")
+        where.append("ts >= ?" if parameter == "date_from" else "ts <= ?")
+        params.append(float(base) if parameter == "date_from" else float(base) + 86399.0)
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
     with get_db() as db:
-        cur = db.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 500")
-        return {"audit": [dict(r) for r in cur.fetchall()]}
+        total = db.execute(f"SELECT COUNT(*) FROM audit{clause}", tuple(params)).fetchone()[0]
+        cur = db.execute(
+            f"SELECT id, ts, username, action, detail, doc_id FROM audit{clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"audit": rows, "total": total, "limit": limit, "offset": offset}
 
 @app.get("/api/corrections")
 def get_corrections(user: dict = Depends(require_roles(ROLE_ADMIN, ROLE_VERIFICATION_OFFICER))):
@@ -1983,7 +2110,7 @@ async def process_upload(
     if parsed.get("escalated"):
         log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
 
-    return {
+    response = {
         "id": doc_id,
         "filename": filename,
         "status": status_value,
@@ -1994,6 +2121,16 @@ async def process_upload(
         "metadata": document_metadata,
         "ownership_reasoning": ownership_reasoning,
     }
+    # SA Investigation auto-start (administrator uploads): a background task on
+    # the shared assistant lifecycle. It never blocks or fails the upload.
+    try:
+        import sa_investigation as _sa_inv
+        investigation_ref = _sa_inv.auto_start_for_upload(doc_id, user)
+        if investigation_ref:
+            response["sa_investigation"] = investigation_ref
+    except Exception as exc:  # pragma: no cover - upload must stay unaffected
+        print(f"[SA INVESTIGATION WARNING] {exc}")
+    return response
 
 
 @app.get("/api/documents/{doc_id}/file")
@@ -2330,24 +2467,44 @@ def get_dashboard(user: dict = Depends(get_current_user)):
             "processing_statistics": {"total": total, "processed_rate": "100%", "active_verifiers": 1}
         }
 
+# LIST projection: everything the queues/tables render, but never the heavy OCR
+# payloads (ocr_text / cleaned_ocr_text / original_fields). The document DETAIL
+# endpoint remains the place that returns the full OCR text.
+_DOCUMENT_LIST_COLUMNS = (
+    "id", "filename", "doc_type", "mean_conf", "verdict", "status", "languages", "pages",
+    "fields", "validation", "detected_language", "metadata", "uploaded_by", "reviewer_comments",
+    "created_at", "updated_at",
+)
+
+
 @app.get("/api/documents")
 def get_documents(
     district: Optional[str] = Query(None),
     village: Optional[str] = Query(None),
     doc_type: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user)
 ):
+    """Paginated document list with a light projection (no OCR payloads).
+
+    RBAC, search and filter behavior are unchanged; the list stops shipping
+    columns no list consumer reads (the review UI loads raw OCR text per
+    document from the detail endpoint). ``total`` reflects the filtered row
+    count so callers can page.
+    """
     role = user.get("role")
+    columns = ", ".join(_DOCUMENT_LIST_COLUMNS)
     with get_db() as db:
         if role == ROLE_VIEWER:
-            query = "SELECT id, filename, doc_type, status, fields, metadata, created_at, updated_at FROM documents WHERE status=?"
+            query = f"SELECT {columns} FROM documents WHERE status=?"
             params = [STATUS_APPROVED]
         elif role == ROLE_DATA_OFFICER:
-            query = "SELECT * FROM documents WHERE uploaded_by=?"
+            query = f"SELECT {columns} FROM documents WHERE uploaded_by=?"
             params = [user["email"]]
         else:
-            query = "SELECT * FROM documents WHERE 1=1"
+            query = f"SELECT {columns} FROM documents WHERE 1=1"
             params = []
 
         if status_filter and role != ROLE_VIEWER:
@@ -2359,8 +2516,7 @@ def get_documents(
             params.append(doc_type)
 
         query += " ORDER BY created_at DESC"
-        cur = db.execute(query, tuple(params))
-        raw_list = cur.fetchall()
+        raw_list = db.execute(query, tuple(params)).fetchall()
 
         results = []
         for r in raw_list:
@@ -2368,11 +2524,6 @@ def get_documents(
             f = json.loads(item.get("fields") or "{}")
             item["fields"] = f
             item["metadata"] = decode_document_metadata(item.get("metadata"))
-            
-            if role == ROLE_VIEWER:
-                item.pop("reviewer_comments", None)
-                item.pop("ocr_text", None)
-                item.pop("cleaned_ocr_text", None)
 
             if district and f.get("district", {}).get("value", "").lower() != district.lower():
                 continue
@@ -2381,7 +2532,8 @@ def get_documents(
 
             results.append(item)
 
-        return {"documents": results}
+    total = len(results)
+    return {"documents": results[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
 
 @app.get("/api/documents/{doc_id}")
 def get_document(doc_id: str, user: dict = Depends(get_current_user)):
@@ -2439,6 +2591,12 @@ def map_js():
 def portal_ui_js():
     return FileResponse(os.path.join(BASE_DIR, "portal-ui.js"), media_type="application/javascript")
 
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon_svg():
+    # index.html references /favicon.svg; without this route every page load
+    # logs a 404 for a file that is part of the repository.
+    return FileResponse(os.path.join(BASE_DIR, "favicon.svg"), media_type="image/svg+xml")
+
 os.makedirs(os.path.join(BASE_DIR, "assets"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "css"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "js"), exist_ok=True)
@@ -2454,6 +2612,29 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 # Mount AI Admin Assistant at the end so all functions and models are fully defined
 from admin_assistant import router as assistant_router
 app.include_router(assistant_router)
+
+# SA gateway (Admin AI security lock: verified credential -> administrator
+# identity -> short-lived SA session) and the read-only Verification Officer
+# assistant. Both resolve identity server-side only.
+import sa_gateway
+sa_gateway.seed_sa_credential_from_env()
+from sa_gateway import router as sa_router
+from officer_assistant import router as officer_assistant_router
+app.include_router(sa_router)
+app.include_router(officer_assistant_router)
+
+# AI-governance tables: created at startup, never inside a request. The import
+# must stay after every server definition — the governance router resolves
+# Depends(_admin_user()) at import time.
+import ai_governance as _ai_governance
+_ai_governance.ensure_governance_tables()
+
+# SA Investigation: SA orchestrates the existing Land Intelligence services for
+# an uploaded document and proposes a recommendation through the governance
+# flow above. Tables are created here at startup, never inside a request.
+import sa_investigation as _sa_investigation
+app.include_router(_sa_investigation.router)
+_sa_investigation.ensure_investigation_tables()
 
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))
