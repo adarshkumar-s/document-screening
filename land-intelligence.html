@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Land Intelligence</title>
+  <link rel="stylesheet" href="/css/land-intelligence.css">
+</head>
+<body>
+  <main class="shell">
+    <header><div><p class="eyebrow">DILRMP · REVIEW WORKSPACE</p><h1>Land Intelligence</h1><p class="muted">Evidence-linked parcel review, OCR quality and ownership signals.</p></div></header>
+    <section class="search card"><label for="survey">Survey / Khasra number</label><input id="survey" autocomplete="off" placeholder="e.g. 142/3"><label for="village">Village (optional)</label><input id="village" autocomplete="off" placeholder="Village"><button id="run">Analyse parcel</button></section>
+    <div id="message" class="message hidden"></div>
+    <section id="result" class="hidden">
+      <div class="grid three" id="summary"></div>
+      <div class="grid two"><article class="card"><h2>Risk signals</h2><div id="flags"></div></article><article class="card"><h2>Evidence</h2><div id="evidence"></div></article></div>
+      <article class="card"><h2>OCR quality tools</h2><div class="ocr-grid"><div><h3>Diagnosis</h3><pre id="ocrDiagnosis">Use document detail to inspect a specific OCR result.</pre></div><div><h3>Owner comparison</h3><div class="row"><input id="ownerA" placeholder="Name A"><input id="ownerB" placeholder="Name B"><button id="compare">Compare</button></div><pre id="ownerResult"></pre></div></div></article>
+      <p class="disclaimer">Signals are evidence summaries for human verification. They do not establish legal title, fraud, or a final legal determination.</p>
+    </section>
+  </main>
+  <script src="/js/land-intelligence.js"></script>
+</body>
+</html>
