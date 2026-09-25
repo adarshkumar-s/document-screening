@@ -1,22 +1,74 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Land Intelligence</title>
   <link rel="stylesheet" href="/css/land-intelligence.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 </head>
 <body>
+  <div class="tricolor"></div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">LI</div>
+      <div><div class="eyebrow">DILRMP · REVIEW WORKSPACE</div><h1>Land Intelligence</h1><p>Parcel-centric mutation, encumbrance, litigation, risk and map review.</p></div>
+    </div>
+    <a class="back-link" href="/">← Document Screening</a>
+  </header>
+
   <main class="shell">
-    <header><div><p class="eyebrow">DILRMP · REVIEW WORKSPACE</p><h1>Land Intelligence</h1><p class="muted">Evidence-linked parcel review, OCR quality and ownership signals.</p></div></header>
-    <section class="search card"><label for="survey">Survey / Khasra number</label><input id="survey" autocomplete="off" placeholder="e.g. 142/3"><label for="village">Village (optional)</label><input id="village" autocomplete="off" placeholder="Village"><button id="run">Analyse parcel</button></section>
-    <div id="message" class="message hidden"></div>
-    <section id="result" class="hidden">
-      <div class="grid three" id="summary"></div>
-      <div class="grid two"><article class="card"><h2>Risk signals</h2><div id="flags"></div></article><article class="card"><h2>Evidence</h2><div id="evidence"></div></article></div>
-      <article class="card"><h2>OCR quality tools</h2><div class="ocr-grid"><div><h3>Diagnosis</h3><pre id="ocrDiagnosis">Use document detail to inspect a specific OCR result.</pre></div><div><h3>Owner comparison</h3><div class="row"><input id="ownerA" placeholder="Name A"><input id="ownerB" placeholder="Name B"><button id="compare">Compare</button></div><pre id="ownerResult"></pre></div></div></article>
-      <p class="disclaimer">Signals are evidence summaries for human verification. They do not establish legal title, fraud, or a final legal determination.</p>
+    <section class="search-card">
+      <div class="search-row">
+        <div class="field grow"><label>Search parcel / owner</label><input id="q" placeholder="Survey, khasra, village, owner…"></div>
+        <div class="field"><label>Village</label><input id="village" placeholder="Village"></div>
+        <div class="field"><label>District</label><input id="district" placeholder="District"></div>
+        <button id="searchBtn" class="btn primary">Search</button>
+        <button id="clearBtn" class="btn">Clear</button>
+      </div>
     </section>
+
+    <section id="metrics" class="metrics"></section>
+
+    <nav class="tabs" aria-label="Land Intelligence sections">
+      <button class="tab active" data-tab="records">▦ Records</button>
+      <button class="tab" data-tab="mutations">⇄ Mutations</button>
+      <button class="tab" data-tab="encumbrances">▣ Encumbrances</button>
+      <button class="tab" data-tab="cases">⚖ Court Cases</button>
+      <button class="tab" data-tab="risk">⚠ Risk Review</button>
+      <button class="tab" data-tab="map">⌖ Mapping</button>
+      <button class="tab" data-tab="reports">▤ Reports</button>
+    </nav>
+
+    <div id="message" class="message hidden"></div>
+    <section id="records" class="panel"></section>
+    <section id="mutations" class="panel hidden"></section>
+    <section id="encumbrances" class="panel hidden"></section>
+    <section id="cases" class="panel hidden"></section>
+    <section id="risk" class="panel hidden"></section>
+    <section id="map" class="panel hidden"></section>
+    <section id="reports" class="panel hidden"></section>
   </main>
+
+  <dialog id="mutationDialog">
+    <form method="dialog" id="mutationForm" class="dialog-form">
+      <div class="dialog-head"><h2>Create mutation application</h2><button value="cancel" class="icon-btn">×</button></div>
+      <div class="form-grid">
+        <label>Survey / Khasra<input name="survey_number" required></label>
+        <label>Village<input name="village"></label>
+        <label>Previous owner<input name="previous_owner"></label>
+        <label>New owner<input name="new_owner" required></label>
+        <label>Mutation type<select name="reason_type"><option>SALE</option><option>GIFT</option><option>INHERITANCE</option><option>PARTITION</option><option>MERGER</option><option>COURT_DECREE</option><option>OTHER</option></select></label>
+        <label>Deed no.<input name="deed_no"></label>
+        <label>Deed date<input name="deed_date" placeholder="YYYY-MM-DD"></label>
+        <label>Tehsil<input name="tehsil"></label>
+        <label>District<input name="district"></label>
+      </div>
+      <div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="saveMutation" class="btn primary">Submit application</button></div>
+    </form>
+  </dialog>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/js/land-intelligence.js"></script>
 </body>
 </html>
