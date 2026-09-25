@@ -70,7 +70,7 @@ async function submitSaPassword() {
   const passwordInput=document.getElementById('saIdentityPassword');
   const submit=document.getElementById('saPasswordSubmit');
   const password=passwordInput?.value || '';
-  if(!saSelectedIdentity || !password){ 
+  if(!saSelectedIdentity || !password){
     const box=document.getElementById('saActivationError'); if(box){box.textContent='Enter the password for the selected administrator.';box.classList.remove('hidden');}
     return;
   }

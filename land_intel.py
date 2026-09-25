@@ -1008,6 +1008,14 @@ def _case_reference(case: Dict[str, Any]) -> Dict[str, Any]:
         "relief_sought": _text(case.get("relief_sought")),
         "decision_summary": _text(case.get("decision_summary")),
         "evidence_doc_ids": case.get("evidence_doc_ids") or [],
+        # additive structured-party / hearing / stay details (DEMO-LI)
+        "petitioner": _text(case.get("petitioner")),
+        "respondent": _text(case.get("respondent")),
+        "title": _text(case.get("title")),
+        "stage": _text(case.get("stage")),
+        "next_hearing_date": _text(case.get("next_hearing_date")),
+        "affects_transfer": bool(case.get("affects_transfer")),
+        "related_mutation_id": case.get("related_mutation_id") or None,
     }
 
 
@@ -1390,6 +1398,7 @@ def _register_states(land: Dict[str, Any], *, case_index: Optional[Dict[Any, Lis
         "active_court_cases": active_cases,
         "litigation_status": "ACTIVE" if active_cases else ("CLOSED" if cases else "NONE"),
         "encumbrance_banner": _encumbrance_banner({"active_encumbrances": active, "encumbrances": encumbrances}),
+        "litigation_banner": _litigation_banner({"active_court_cases": active_cases, "court_cases": cases}),
     }
 
 
@@ -1402,6 +1411,39 @@ def _mutation_rollup_status(mutations: Sequence[Dict[str, Any]]) -> str:
         if preferred in statuses:
             return preferred
     return sorted(statuses)[0] or "NONE"
+
+
+def _litigation_banner(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Alert-style projection of the litigation state for one parcel.
+
+    Powers the "Active litigation found for this property" alert in the
+    document land-context panel and the land-record detail header. Additive to
+    the register's own ``litigation`` aggregates; carries no new rules.
+    """
+    active = state.get("active_court_cases") or []
+    cases = state.get("court_cases") or []
+    if active:
+        case = active[0]
+        return {
+            "tone": "danger",
+            "icon": "⚠",
+            "text": "Active litigation found for this property",
+            "case_number": _text(case.get("case_number")),
+            "court": _text(case.get("court_name")),
+            "petitioner": _text(case.get("petitioner")),
+            "respondent": _text(case.get("respondent")),
+            "parties": _text(case.get("parties")),
+            "status": _text(case.get("status")),
+            "next_hearing_date": _text(case.get("next_hearing_date")),
+            "affects_transfer": bool(case.get("affects_transfer")),
+            "court_case_id": case.get("id"),
+            "active_case_count": len(active),
+            "case_count": len(cases),
+        }
+    return {"tone": "ok", "icon": "⚖", "text": "No active litigation" + (" (prior case(s) on record are closed)" if cases else ""),
+            "case_number": None, "court": None, "petitioner": None, "respondent": None, "parties": None,
+            "status": None, "next_hearing_date": None, "affects_transfer": False,
+            "court_case_id": None, "active_case_count": 0, "case_count": len(cases)}
 
 
 def _land_summary(land: Dict[str, Any], *, case_index: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
@@ -1592,6 +1634,7 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
         "encumbrances": state["encumbrances"],
         "encumbrance_banner": state["encumbrance_banner"],
         "litigation": litigation,
+        "litigation_banner": state["litigation_banner"],
         "timeline": build_timeline(land, state["encumbrances"], state["mutations"],
                                   state["court_cases"], risk=risk),
         "risk": risk,
@@ -1853,6 +1896,7 @@ def document_land_context(document: Dict[str, Any], user: Dict[str, Any]) -> Dic
         "risk_flags": [{"code": flag["code"], "severity": flag["severity"], "title": flag["title"]} for flag in risk["flags"]],
         "litigation_status": state["litigation_status"],
         "active_court_case_count": len(state["active_court_cases"]),
+        "litigation_banner": state["litigation_banner"],
         "detail_url": f"/?land_id={land['land_id']}",
     }
     if user.get("role") in REVIEWER_ROLES:

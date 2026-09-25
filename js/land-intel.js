@@ -22,6 +22,7 @@
       records: 'Records',
       mutations: 'Mutations',
       encumbrances: 'Encumbrances',
+      courtCases: 'Court Cases',
       riskReview: 'Risk Review',
       reports: 'Reports',
       search: 'Search survey, village, owner…',
@@ -257,6 +258,9 @@
       APPROVED: ['li-clear', 'APPROVED'],
       DRAFT: ['li-muted', 'DRAFT'],
       PENDING_VERIFICATION: ['li-review', 'PENDING'],
+      DECIDED: ['li-clear', 'DECIDED'],
+      SETTLED: ['li-clear', 'SETTLED'],
+      WITHDRAWN: ['li-clear', 'WITHDRAWN'],
     };
     const [cls, label] = map[key] || ['li-muted', key || '—'];
     return `<span class="li-chip ${cls}">${esc(label)}</span>`;
@@ -360,6 +364,8 @@
     const risk = d.risk || {};
     const banner = d.encumbrance_banner || {};
     const isGate = banner && String(banner.tone) === 'danger';
+    const litBanner = d.litigation_banner || {};
+    const litGate = litBanner && String(litBanner.tone) === 'danger';
     const ownership = (d.ownership_history || []).map((event) => `
       <li class="li-history-item">
         <div class="li-history-year">${event.year || '—'}</div>
@@ -405,8 +411,11 @@
         <div class="li-history-year">${esc(c.filed_date || '—')}</div>
         <div>
           <b>${dash(c.case_number)}</b> <span class="li-chip ${String(c.status).toUpperCase() === 'ACTIVE' ? 'li-high' : 'li-clear'}">${esc(c.status || '—')}</span>
-          <div class="li-sub">${dash(c.case_type)} · ${dash(c.court_name)}</div>
+          ${c.affects_transfer ? '<span class="li-chip li-high">&#9940; transfer stayed</span>' : ''}
+          <div class="li-sub">${dash(c.case_type)} · ${dash(c.court_name)}${c.stage ? ' · ' + esc(c.stage) : ''}</div>
           <div class="li-sub">Parties: ${dash(c.parties)}</div>
+          ${c.next_hearing_date ? `<div class="li-sub">Next hearing: ${esc(c.next_hearing_date)}</div>` : ''}
+          ${c.title ? `<div class="li-sub">${esc(c.title)}</div>` : ''}
           ${c.decision_summary ? `<div class="li-sub">Outcome: ${esc(c.decision_summary)}</div>` : ''}
           ${c.relief_sought ? `<div class="li-sub">Relief: ${esc(c.relief_sought)}</div>` : ''}
           ${(c.evidence_doc_ids && c.evidence_doc_ids.length) ? `<div class="li-evidence-wrap">${c.evidence_doc_ids.map((id) => evidenceItem({ type: 'document', ref: id })).join('')}</div>` : ''}
@@ -456,6 +465,7 @@
         </div>
       </div>
       ${isGate ? `<div class="li-gate-banner"><b>${esc(banner.icon || '🔴')} ${esc(t('activeEncumbrance'))}</b> — ${esc(banner.lender || '')} ${esc(banner.reference || '')} ${banner.amount != null ? money(banner.amount) : ''}</div>` : ''}
+      ${litGate ? `<div class="li-gate-banner"><b>&#9888; ${esc(litBanner.text || 'Active litigation found for this property')}</b> — <span class="mono">${esc(litBanner.case_number || '')}</span> ${esc(litBanner.court || '')}${litBanner.next_hearing_date ? ` · next hearing ${esc(litBanner.next_hearing_date)}` : ''}${litBanner.affects_transfer ? ' · &#9940; transfer stayed by court order' : ''}</div>` : ''}
       <div class="li-grid">
         <div class="li-card"><h4>${esc(t('property'))}</h4>
           <div class="li-kv"><span>${esc(t('surveyKhasra'))}</span><b>${dash(d.property.survey)}${d.property.khasra ? ' / ' + esc(d.property.khasra) : ''}</b></div>
@@ -961,6 +971,52 @@
   }
 
   // =========================================================================
+  // SUB-TAB: COURT CASES (litigation register — read-only browse)
+  // =========================================================================
+  async function loadCourtCases() {
+    const q = encodeURIComponent(S.courtQuery || '');
+    const d = await api(`/api/court-cases?q=${q}&limit=100`);
+    S.courtCases = d.court_cases || [];
+    renderCourtCases();
+  }
+
+  function renderCourtCases() {
+    const root = $('liCourtsPane');
+    if (!root) return;
+    const rows = (S.courtCases || []).map((c) => `
+      <tr>
+        <td><b class="mono">${esc(c.case_number)}</b><div class="li-sub">${dash(c.filed_date)}</div></td>
+        <td>${dash(c.court_name)}<div class="li-sub">${dash(c.case_type)}</div></td>
+        <td><b>${dash(c.petitioner)}</b><div class="li-sub">v. ${dash(c.respondent)}</div></td>
+        <td><b>${dash(c.survey_number)}</b><div class="li-sub">${dash(c.village)}</div></td>
+        <td>${statusPill(c.status)}${c.affects_transfer ? '<div class="li-sub">&#9940; transfer stayed</div>' : ''}</td>
+        <td>${dash(c.next_hearing_date)}</td>
+        <td style="text-align:right"><button class="btn ghost" style="padding:3px 8px;font-size:11px" data-case-open="${esc(c.land_id || '')}">Open land record</button></td>
+      </tr>`).join('');
+    root.innerHTML = `
+      <div class="li-toolbar">
+        <input id="liCourtSearch" type="search" placeholder="Search case no, party, court, survey, village…" value="${esc(S.courtQuery || '')}" style="max-width:320px">
+        <span class="li-count">${(S.courtCases || []).length} court cases</span>
+      </div>
+      <div style="overflow-x:auto">
+      <table class="gov-table">
+        <thead><tr><th>Case No</th><th>Court</th><th>Parties</th><th>${esc(t('surveyKhasra'))}</th><th>${esc(t('status'))}</th><th>Next hearing</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7" class="li-empty">${esc(t('noData'))}</td></tr>`}</tbody>
+      </table></div>
+      <div class="li-sub" style="margin-top:8px">Court cases are recorded by reviewers; they feed the deterministic ACTIVE_LITIGATION / TRANSFER_STAYED risk signals. Synthetic demo litigation is fictional.</div>`;
+    const search = $('liCourtSearch');
+    if (search) {
+      search.addEventListener('input', () => {
+        window.clearTimeout(S.debounceTimer);
+        S.debounceTimer = window.setTimeout(() => { S.courtQuery = search.value; loadCourtCases().catch(alertError); }, 250);
+      });
+    }
+    root.querySelectorAll('[data-case-open]').forEach((btn) => {
+      btn.addEventListener('click', () => { if (btn.dataset.caseOpen) openLandDetail(btn.dataset.caseOpen).catch(alertError); });
+    });
+  }
+
+  // =========================================================================
   // WORKSPACE SHELL
   // =========================================================================
   async function runDueDiligence(landId, button) {
@@ -1031,6 +1087,7 @@
       ['records', t('records')],
       ['mutations', t('mutations')],
       ['encumbrances', t('encumbrances')],
+      ['courts', t('courtCases')],
       ['risk', t('riskReview')],
       ['reports', t('reports')],
     ];
@@ -1050,6 +1107,7 @@
         <div id="liDetailPane" class="${showingDetail ? '' : 'hidden'}"></div>
         <div id="liMutationsPane" class="${S.sub === 'mutations' ? '' : 'hidden'}"></div>
         <div id="liEncumbrancesPane" class="${S.sub === 'encumbrances' ? '' : 'hidden'}"></div>
+        <div id="liCourtsPane" class="${S.sub === 'courts' ? '' : 'hidden'}"></div>
         <div id="liRiskPane" class="${S.sub === 'risk' ? '' : 'hidden'}"></div>
         <div id="liReportsPane" class="${S.sub === 'reports' ? '' : 'hidden'}"></div>
       </div>`;
@@ -1058,6 +1116,7 @@
     if (S.sub === 'records') loadLands().catch(alertError);
     if (S.sub === 'mutations') { S.openMutation ? renderMutationReview() : loadMutations().catch(alertError); }
     if (S.sub === 'encumbrances') loadEncumbrances().catch(alertError);
+    if (S.sub === 'courts') loadCourtCases().catch(alertError);
     if (S.sub === 'risk') loadRisk().catch(alertError);
     if (S.sub === 'reports') loadReports().catch(alertError);
   }
@@ -1088,6 +1147,8 @@
       return `<span class="li-chip ${cls}">⚠ ${esc(flag.title)}</span>`;
     }).join('');
     const banner = context.encumbrance_banner || {};
+    const lit = context.litigation_banner || {};
+    const litActive = lit && String(lit.tone) === 'danger';
     const gate = banner.tone === 'danger' && isReviewer();
     host.innerHTML = `
       <div class="li-ctx-panel" style="margin-top:14px;background:#f8fafc;border:2px solid ${banner.tone === 'danger' ? '#dc2626' : 'var(--gov-border)'};border-radius:8px;padding:12px">
@@ -1100,16 +1161,29 @@
             ? `<b style="color:#dc2626">🔴 ${esc(t('activeEncumbrance'))}</b> — ${esc(banner.lender || '')} <span class="mono">${esc(banner.reference || '')}</span> ${banner.amount != null ? money(banner.amount) : ''}`
             : `🟢 ${esc(banner.text || t('noActiveEncumbrance'))}`}
         </div>
+        <div style="margin-top:6px;font-size:12px">
+          &#9878; Litigation: ${litActive
+            ? `<b style="color:#dc2626">&#9888; ${esc(lit.text || 'Active litigation found for this property')}</b> — <span class="mono">${esc(lit.case_number || '')}</span> ${esc(lit.court || '')}${lit.next_hearing_date ? ` · next hearing ${esc(lit.next_hearing_date)}` : ''}${lit.affects_transfer ? ' · &#9940; transfer stayed' : ''}`
+            : `🟢 ${esc(lit.text || 'No litigation recorded')}`}
+        </div>
         ${flags ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${flags}</div>` : ''}
         ${gate && context.recommendation ? `<div style="margin-top:8px;font-size:12px;color:#78350f"><b>🤖 ${esc(t('aiRecommendation'))}:</b> ${esc(context.recommendation)}</div>` : ''}
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn ghost" style="padding:3px 10px;font-size:11px" id="liCtxLand">Open land record</button>
+          ${litActive ? `<button class="btn ghost" style="padding:3px 10px;font-size:11px" id="liCtxCase">&#9878; Open court case</button>` : ''}
           ${gate ? `<button class="btn ok" style="padding:3px 10px;font-size:11px" id="liCtxMutation">${esc(t('newMutation'))}</button>` : ''}
         </div>
       </div>`;
     if (!host.parentElement) (anchor && anchor.parentElement ? anchor.parentElement : card).insertBefore(host, anchor ? anchor.nextSibling : null);
     host.classList.remove('hidden');
     $('liCtxLand').addEventListener('click', () => {
+      S.selectedLand = context.land_id;
+      switchSub('records');
+      if (typeof switchStaffTab === 'function') switchStaffTab('landintel');
+      openLandDetail(context.land_id).catch(alertError);
+    });
+    const caseBtn = $('liCtxCase');
+    if (caseBtn) caseBtn.addEventListener('click', () => {
       S.selectedLand = context.land_id;
       switchSub('records');
       if (typeof switchStaffTab === 'function') switchStaffTab('landintel');

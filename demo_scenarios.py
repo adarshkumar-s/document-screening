@@ -34,6 +34,8 @@ from server import (
     require_roles,
 )
 from land_intel import _audit, ensure_land_tables
+import land_demo_data
+import land_demo_docs
 
 demo_router = APIRouter(prefix="/api/admin/demo", tags=["Demo Scenarios"])
 
@@ -634,14 +636,70 @@ def demo_preview(user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
     return preview()
 
 
+@demo_router.get("/land-intel/index")
+def land_intel_demo_index(user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
+    """Demo-data index for the DEMO-LI Land Intelligence dataset: scenario ->
+    parcel -> expected result -> documents -> expected alert, plus the sample
+    document inventory and which files are actually present on disk."""
+    import os
+
+    from server import BASE_DIR
+
+    docs_dir = os.path.join(str(BASE_DIR), "samples", "demo-land-intel")
+    manifest = land_demo_docs.document_manifest()
+    for entry in manifest:
+        entry["file_present"] = os.path.isfile(os.path.join(docs_dir, entry["filename"]))
+    return {
+        "dataset": land_demo_data.DATASET,
+        "seed_endpoint": 'POST /api/admin/demo/seed {"scenario": "LI"}',
+        "clear_endpoint": "DELETE /api/admin/demo/data",
+        "scenarios": land_demo_docs.SCENARIO_INDEX,
+        "documents": manifest,
+    }
+
+
 @demo_router.post("/seed")
 def seed_scenarios(req: SeedRequest, user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
     """Seed deterministic demo scenarios (administrator only, audited)."""
     assert_demo_writes_allowed()
     wanted = (req.scenario or "all").strip().upper()
     known = {item["id"] for item in SCENARIOS}
-    if wanted != "ALL" and wanted not in known:
-        raise HTTPException(status_code=422, detail=f"Unknown scenario '{req.scenario}'. Use 'all' or one of {sorted(known)}.")
+    if wanted not in {"ALL", "LI"} and wanted not in known:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown scenario '{req.scenario}'. Use 'all', 'LI' (Land Intelligence dataset) or one of {sorted(known)}.")
+    if wanted == "LI":
+        # insert-if-absent accounting: only artifacts that did not exist yet
+        # count as created (same semantics as the S1-S16 seeders).
+        pre_existing = set()
+        with get_db() as db:
+            for table in ("land_mutations", "land_encumbrances", "land_court_cases"):
+                try:
+                    pre_existing.update(row[0] for row in db.execute(
+                        f"SELECT id FROM {table} WHERE id LIKE ?", (f"{DEMO_ID_PREFIX}LI-%",)).fetchall())
+                except Exception:
+                    pass
+            try:
+                pre_existing.update(row[0] for row in db.execute(
+                    "SELECT id FROM documents WHERE id LIKE ?", (f"{DEMO_ID_PREFIX}LI-%",)).fetchall())
+            except Exception:
+                pass
+        li = land_demo_data.seed_all()
+        tracked = {artifact_id for ids in li["artifacts"].values() for artifact_id in ids}
+        created_total = len(tracked - pre_existing)
+        _audit(user, "DEMO_DATA_SEEDED",
+               f"DEMO-LI Land Intelligence dataset seeded: {li['parcel_count']} parcels, {created_total} artifacts")
+        return {
+            "status": "seeded",
+            "requested": wanted,
+            "created": {"total": created_total},
+            "skipped_artifacts": {},
+            "land_intel": {
+                "dataset": land_demo_data.DATASET,
+                "parcel_count": li["parcel_count"],
+                "scenarios": len(li["artifacts"]),
+                "artifacts": li["artifacts"],
+            },
+        }
     result = seed_all()  # deterministic dataset: seeding is all-or-nothing and idempotent
     _audit(user, "DEMO_DATA_SEEDED",
            f"Demo scenarios seeded ({wanted}): created {result['created']['total']}, "
@@ -653,7 +711,12 @@ def seed_scenarios(req: SeedRequest, user: Dict[str, Any] = Depends(require_role
 def clear_demo_data(user: Dict[str, Any] = Depends(require_roles(ROLE_ADMIN))):
     """Remove ONLY demo-tagged artifacts. Production data is untouched."""
     assert_demo_writes_allowed()
-    return clear_demo_dataset(actor=user.get("email") or "ADMIN")
+    result = clear_demo_dataset(actor=user.get("email") or "ADMIN")
+    li_removed = land_demo_data.clear_all()
+    removed = result["removed"]
+    for key, value in li_removed.items():
+        removed[key] = removed.get(key, 0) + value
+    return result
 
 
 def clear_demo_dataset(actor: str = "ADMIN") -> Dict[str, Any]:
@@ -686,5 +749,8 @@ def clear_demo_dataset(actor: str = "ADMIN") -> Dict[str, Any]:
         removed["events"] = removed["mutations"]
         removed["court_cases"] = db.execute("DELETE FROM land_court_cases WHERE id LIKE ?",
                                             (DEMO_ID_PREFIX + "%",)).rowcount or 0
+    li_removed = land_demo_data.clear_all()
+    for key, value in li_removed.items():
+        removed[key] = removed.get(key, 0) + value
     _audit({"email": actor, "full_name": actor}, "DEMO_DATA_CLEARED", f"Demo data cleared: {removed}")
     return {"status": "cleared", "removed": removed}

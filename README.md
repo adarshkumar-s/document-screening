@@ -100,12 +100,32 @@ property resolution).
   manifest, writes an automatic safety copy of the current data first, then
   restores, verifies counts, and audits every step. Member sanitisation
   rejects path traversal; RBAC rejects non-admins with 403.
-- **Demo scenarios** — ten deterministic, admin-governed fixtures
-  (`POST /api/admin/demo/seed`) covering clean records, valid mutations,
-  active encumbrances, ownership changes without mutations, conflicts, area
-  jumps, pending/rejected mutations, low-quality OCR and duplicates. All demo
-  artifacts are tagged and removable via `DELETE /api/admin/demo/data`
-  without touching production data.
+- **Court-case (litigation) register** — civil/revenue cases recorded against
+  a parcel (same survey + village identity) with court, unique case number,
+  filing/closing dates, structured parties, status
+  (`ACTIVE / DECIDED / WITHDRAWN / SETTLED`), stage, issue summary, next
+  hearing, an orders log (`POST /api/court-cases/{id}/orders`) and an explicit
+  `affects_transfer` stay flag. Reviewer/Admin write; every authenticated user
+  reads; every change is audited. Active cases feed two deterministic risk
+  flags — `ACTIVE_LITIGATION` and `TRANSFER_STAYED` — and surface as an
+  "Active litigation found for this property" alert in the document
+  land-context panel, the land-record detail (with a per-case litigation card,
+  court-case timeline entries and a due-diligence shortcut) and verification
+  reports.
+- **Demo scenarios** — sixteen deterministic, admin-governed fixtures S1–S16
+  (`POST /api/admin/demo/seed` with `"all"` or a scenario id) covering clean
+  records, valid mutations, active encumbrances, ownership changes without
+  mutations, conflicts, area jumps, pending/rejected mutations, low-quality
+  OCR, duplicates and a full litigation arc (active suit, stay, decided and
+  withdrawn matters, sale during litigation). Plus the larger synthetic
+  **`DEMO-LI-` Land Intelligence dataset** — 19 interconnected parcels across
+  mutation / encumbrance / litigation / risk scenarios with 25 generated
+  sample documents in `samples/demo-land-intel/` — seeded with
+  `{"scenario": "LI"}`; browse its index at
+  `GET /api/admin/demo/land-intel/index` and read
+  `samples/demo-land-intel/INDEX.md`. All demo artifacts are tagged and
+  removable via `DELETE /api/admin/demo/data` without touching production
+  data.
 
 ### New API surface
 
@@ -123,7 +143,12 @@ GET                 /api/land-records/risk-review  (verifier/admin)
 GET                 /api/land-records/{land_id}/encumbrances | /mutations
 POST                /api/reports/land-verification
 GET                 /api/reports/land-verification/{ref}(.qr.png)
+GET/POST            /api/court-cases   (list/search + register; reviewer/admin write)
+GET/PUT             /api/court-cases/{id}          (+ POST /{id}/orders, /{id}/close)
+GET                 /api/land-records/{land_id}/litigation | /litigation-risk
+GET                 /api/land-records/{land_id}/due-diligence  (reviewer/admin)
 GET/POST/DELETE     /api/admin/demo/scenarios | /seed | /data   (admin only)
+GET                 /api/admin/demo/land-intel/index               (admin only)
 GET                 /api/admin/data-management/backup(/manifest) (admin only)
 POST                /api/admin/data-management/restore            (admin only)
 ```
@@ -353,4 +378,4 @@ The container runs `main:app`.
 python -m pytest -q
 ```
 
-The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. `tests/test_sa_investigation.py` covers SA Investigation extraction, matching, court/mutation/ownership findings, timeline, scenarios, isolation, approval CAS/replay/concurrency and audit hygiene. JavaScript syntax checks use `node --check map.js` and the existing portal scripts.
+The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. `tests/test_sa_investigation.py` covers SA Investigation extraction, matching, court/mutation/ownership findings, timeline, scenarios, isolation, approval CAS/replay/concurrency and audit hygiene; `tests/test_court_cases.py` and `tests/test_litigation_risk.py` cover the litigation register and its risk integration; `tests/test_demo_scenarios.py` covers the S1–S16 demo dataset; `tests/test_land_demo.py` covers the `DEMO-LI` synthetic dataset (seeding, idempotence, relationships, risk verdicts, extraction of every sample document, and the upload → match → active-litigation-alert flow). JavaScript syntax checks use `node --check map.js` and the existing portal scripts.

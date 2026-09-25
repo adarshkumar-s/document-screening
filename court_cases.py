@@ -35,6 +35,7 @@ CASE_STATUSES = ("ACTIVE", "DECIDED", "WITHDRAWN", "SETTLED")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS land_court_cases (
     id TEXT PRIMARY KEY,
+    property_id TEXT,
     survey_number TEXT NOT NULL DEFAULT '',
     khasra_number TEXT DEFAULT '',
     village TEXT DEFAULT '',
@@ -45,10 +46,19 @@ CREATE TABLE IF NOT EXISTS land_court_cases (
     court_name TEXT NOT NULL DEFAULT '',
     filed_date TEXT DEFAULT '',
     closed_date TEXT DEFAULT '',
+    next_hearing_date TEXT,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
+    stage TEXT DEFAULT '',
     parties TEXT DEFAULT '',
+    petitioner TEXT DEFAULT '',
+    respondent TEXT DEFAULT '',
+    title TEXT DEFAULT '',
+    issue_summary TEXT DEFAULT '',
     relief_sought TEXT DEFAULT '',
     decision_summary TEXT DEFAULT '',
+    affects_transfer INTEGER NOT NULL DEFAULT 0,
+    related_mutation_id TEXT,
+    related_encumbrance_id TEXT,
     evidence_doc_ids TEXT DEFAULT '[]',
     notes TEXT DEFAULT '',
     created_by TEXT DEFAULT '',
@@ -56,6 +66,35 @@ CREATE TABLE IF NOT EXISTS land_court_cases (
     updated_at REAL NOT NULL DEFAULT 0
 )
 """
+
+# Structured order log (DEMO-LI dataset and the /orders endpoint). Kept beside
+# the register so a case's interim orders travel with it.
+_ORDERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS land_case_orders (
+    id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL,
+    order_date TEXT DEFAULT '',
+    order_type TEXT DEFAULT 'ORDER',
+    summary TEXT DEFAULT '',
+    created_by TEXT DEFAULT '',
+    created_at REAL NOT NULL DEFAULT 0
+)
+"""
+
+#: Columns added after the register first shipped; existing databases are
+#: migrated additively so older rows keep working (mirrors mapping.py).
+_MIGRATION_COLUMNS = (
+    ("property_id", "TEXT"),
+    ("next_hearing_date", "TEXT"),
+    ("stage", "TEXT DEFAULT ''"),
+    ("petitioner", "TEXT DEFAULT ''"),
+    ("respondent", "TEXT DEFAULT ''"),
+    ("title", "TEXT DEFAULT ''"),
+    ("issue_summary", "TEXT DEFAULT ''"),
+    ("affects_transfer", "INTEGER NOT NULL DEFAULT 0"),
+    ("related_mutation_id", "TEXT"),
+    ("related_encumbrance_id", "TEXT"),
+)
 
 
 _schema_ready = False
@@ -74,9 +113,19 @@ def ensure_schema() -> None:
     with get_db() as db:
         db.execute(_SCHEMA)
         try:
+            db.execute(_ORDERS_SCHEMA)
             db.execute("CREATE INDEX IF NOT EXISTS idx_land_cases_land ON land_court_cases(survey_number, village)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_land_cases_status ON land_court_cases(status)")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_land_cases_case_number ON land_court_cases(case_number)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_land_case_orders_case ON land_case_orders(case_id)")
+        except Exception:
+            pass
+        # Additive migration for registers created before the DEMO-LI merge.
+        try:
+            existing = {row["name"] for row in db.execute("PRAGMA table_info(land_court_cases)").fetchall()}
+            for column, definition in _MIGRATION_COLUMNS:
+                if column not in existing:
+                    db.execute(f"ALTER TABLE land_court_cases ADD COLUMN {column} {definition}")
         except Exception:
             pass
     _schema_ready = True
@@ -182,6 +231,17 @@ class CourtCaseCreate(BaseModel):
     relief_sought: str = ""
     evidence_doc_ids: List[str] = []
     notes: str = ""
+    # additive DEMO-LI fields (structured parties, hearing data, stay flag)
+    petitioner: str = ""
+    respondent: str = ""
+    title: str = ""
+    stage: str = ""
+    issue_summary: str = ""
+    next_hearing_date: Optional[str] = None
+    affects_transfer: bool = False
+    related_mutation_id: Optional[str] = None
+    related_encumbrance_id: Optional[str] = None
+    property_id: Optional[str] = None
 
 
 class CourtCaseClose(BaseModel):
@@ -222,6 +282,19 @@ def get_court_cases(survey: str = Query(""), village: str = Query(""),
     if needle:
         items = [c for c in items if needle in " ".join(str(c.get(k) or "") for k in
                   ("case_number", "court_name", "parties", "survey_number", "village", "district", "case_type", "status")).casefold()]
+    # additive: expose the derived land record id so the UI can deep-link from
+    # the litigation register to the full land record (same deterministic
+    # identity scheme as every /api/land-records payload).
+    try:
+        from land_intel import land_identity
+        for item in items:
+            if isinstance(item, dict):
+                try:
+                    item["land_id"] = land_identity({"survey_number": item.get("survey_number"), "khasra_number": item.get("khasra_number"), "village": item.get("village")})
+                except Exception:
+                    pass
+    except Exception:
+        pass
     return {"court_cases": items, "active": sum(1 for c in items if _s(c.get("status")).upper() == "ACTIVE")}
 
 
@@ -244,11 +317,16 @@ def create_court_case(req: CourtCaseCreate, user: Dict[str, Any] = Depends(requi
         if exists:
             raise HTTPException(409, "A court case with this case number is already registered")
         db.execute("""INSERT INTO land_court_cases
-            (id,survey_number,khasra_number,village,tehsil,district,case_number,case_type,court_name,
-             filed_date,closed_date,status,parties,relief_sought,decision_summary,evidence_doc_ids,notes,created_by,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (cid,survey,_s(req.khasra_number),_s(req.village),_s(req.tehsil),_s(req.district),_s(req.case_number),
-             case_type,_s(req.court_name),_s(req.filed_date),"","ACTIVE",_s(req.parties),_s(req.relief_sought),"",
+            (id,property_id,survey_number,khasra_number,village,tehsil,district,case_number,case_type,court_name,
+             filed_date,closed_date,next_hearing_date,status,stage,parties,petitioner,respondent,title,issue_summary,
+             relief_sought,decision_summary,affects_transfer,related_mutation_id,related_encumbrance_id,
+             evidence_doc_ids,notes,created_by,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (cid,_s(req.property_id) or None,survey,_s(req.khasra_number),_s(req.village),_s(req.tehsil),_s(req.district),
+             _s(req.case_number),case_type,_s(req.court_name),_s(req.filed_date),"",
+             _s(req.next_hearing_date) or None,"ACTIVE",_s(req.stage),_s(req.parties),_s(req.petitioner),
+             _s(req.respondent),_s(req.title),_s(req.issue_summary),_s(req.relief_sought),"",
+             1 if req.affects_transfer else 0,_s(req.related_mutation_id) or None,_s(req.related_encumbrance_id) or None,
              __import__("json").dumps(req.evidence_doc_ids),_s(req.notes),user.get("email") or "",now,now))
     _audit(user, "COURT_CASE_CREATED", f"Case {_s(req.case_number)} registered on survey {survey} ({_s(req.village)})")
     with get_db() as db:
@@ -256,14 +334,25 @@ def create_court_case(req: CourtCaseCreate, user: Dict[str, Any] = Depends(requi
     return {"court_case": _dict(row)}
 
 
+def _case_orders(db: Any, case_id: str) -> List[Dict[str, Any]]:
+    try:
+        rows = db.execute("SELECT * FROM land_case_orders WHERE case_id=? ORDER BY COALESCE(order_date,'') ASC, created_at ASC",
+                          (_s(case_id),)).fetchall()
+    except Exception:
+        return []
+    return [dict(row) for row in rows]
+
+
 @router.get("/api/court-cases/{case_id}")
 def get_court_case(case_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     ensure_schema()
     with get_db() as db:
-        row = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
-    if not row:
-        raise HTTPException(404, "Court case not found")
-    return {"court_case": _dict(row)}
+        row = db.execute("SELECT * FROM land_court_cases WHERE id=? OR case_number=?", (_s(case_id), _s(case_id))).fetchone()
+        if not row:
+            raise HTTPException(404, "Court case not found")
+        case = _dict(row)
+        case["orders"] = _case_orders(db, case["id"])
+    return {"court_case": case}
 
 
 @router.post("/api/court-cases/{case_id}/close")
@@ -296,9 +385,18 @@ class CourtCaseUpdate(BaseModel):
     relief_sought: Optional[str] = None
     evidence_doc_ids: Optional[List[str]] = None
     notes: Optional[str] = None
+    # additive DEMO-LI fields
+    petitioner: Optional[str] = None
+    respondent: Optional[str] = None
+    title: Optional[str] = None
+    stage: Optional[str] = None
+    issue_summary: Optional[str] = None
+    next_hearing_date: Optional[str] = None
+    affects_transfer: Optional[bool] = None
 
 
-_UPDATABLE = ("case_type", "court_name", "filed_date", "parties", "relief_sought", "notes")
+_UPDATABLE = ("case_type", "court_name", "filed_date", "parties", "relief_sought", "notes",
+              "petitioner", "respondent", "title", "stage", "issue_summary")
 
 
 @router.put("/api/court-cases/{case_id}")
@@ -327,6 +425,10 @@ def update_court_case(case_id: str, req: CourtCaseUpdate,
         if req.evidence_doc_ids is not None:
             _validate_evidence(req.evidence_doc_ids, user)
             updates["evidence_doc_ids"] = __import__("json").dumps(req.evidence_doc_ids)
+        if req.next_hearing_date is not None:
+            updates["next_hearing_date"] = _s(req.next_hearing_date) or None
+        if req.affects_transfer is not None:
+            updates["affects_transfer"] = 1 if req.affects_transfer else 0
         if not updates:
             raise HTTPException(422, "No changes supplied")
         assignments = ", ".join(f"{column}=?" for column in updates)
@@ -337,6 +439,39 @@ def update_court_case(case_id: str, req: CourtCaseUpdate,
     with get_db() as db:
         updated = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
     return {"court_case": _dict(updated)}
+
+
+class CaseOrderCreate(BaseModel):
+    order_date: str = ""
+    order_type: str = "ORDER"
+    summary: str
+
+
+CASE_ORDER_TYPES = ("HEARING", "ORDER", "INJUNCTION", "COMMISSION", "DECREE", "DISPOSAL", "WITHDRAWAL", "ADJOURNMENT", "OTHER")
+
+
+@router.post("/api/court-cases/{case_id}/orders")
+def add_case_order(case_id: str, req: CaseOrderCreate,
+                   user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES))):
+    """Append an interim order / hearing note to a case's structured log."""
+    ensure_schema()
+    order_type = _s(req.order_type).upper() or "ORDER"
+    if order_type not in CASE_ORDER_TYPES:
+        raise HTTPException(422, f"Invalid order type. Use one of {CASE_ORDER_TYPES}")
+    summary = _s(req.summary)
+    if not summary:
+        raise HTTPException(422, "An order summary is required")
+    with get_db() as db:
+        row = db.execute("SELECT * FROM land_court_cases WHERE id=? OR case_number=?", (_s(case_id), _s(case_id))).fetchone()
+        if not row:
+            raise HTTPException(404, "Court case not found")
+        db.execute("INSERT INTO land_case_orders (id, case_id, order_date, order_type, summary, created_by, created_at) VALUES (?,?,?,?,?,?,?)",
+                   (uuid.uuid4().hex[:12], row["id"], _s(req.order_date), order_type, summary, user.get("email") or "", time.time()))
+        case = _dict(row)
+        case["orders"] = _case_orders(db, row["id"])
+    _audit(user, "COURT_CASE_ORDER_ADDED",
+           f"Order ({order_type}, {_s(req.order_date) or 'undated'}) added to court case {_s(row['case_number'])}: {summary[:120]}")
+    return {"court_case": case}
 
 
 @router.get("/api/land-records/{land_id}/litigation")
@@ -350,6 +485,9 @@ def land_litigation(land_id: str, user: Dict[str, Any] = Depends(get_current_use
     if not land:
         raise HTTPException(404, "Land record not found")
     cases = list_cases(land.get("survey") or "", land.get("village") or "")
+    with get_db() as db:
+        for case in cases:
+            case["orders"] = _case_orders(db, _s(case.get("id")))
     active = [c for c in cases if _s(c.get("status")).upper() == "ACTIVE"]
     closed = [c for c in cases if _s(c.get("status")).upper() in CLOSED_STATUSES]
     return {
@@ -379,9 +517,20 @@ def litigation_flags(survey: str, village: str, mutations: List[Dict[str, Any]],
     active = [c for c in cases if _s(c.get("status")).upper() == "ACTIVE"]
     closed = [c for c in cases if _s(c.get("status")).upper() in CLOSED_STATUSES]
     for case in active:
+        parties = _s(case.get("parties")) or " v. ".join(
+            part for part in (_s(case.get("petitioner")), _s(case.get("respondent"))) if part)
+        hearing = _s(case.get("next_hearing_date"))
         flags.append({"code":"ACTIVE_LITIGATION","severity":"HIGH","title":"Active court case on this land",
-                      "detail":f"{case.get('case_number') or 'Case'} — {case.get('court_name') or 'court'} ({case.get('case_type') or 'type'}). Pending litigation must be reviewed before transfer.",
+                      "detail":f"{case.get('case_number') or 'Case'} — {case.get('court_name') or 'court'} ({case.get('case_type') or 'type'})"
+                               + (f", {parties}" if parties else "")
+                               + (f", next hearing {hearing}" if hearing else "")
+                               + ". Pending litigation must be reviewed before transfer.",
                       "evidence":[{"type":"court_case","ref":case.get("id"),"label":case.get("case_number")}]})
+        if case.get("affects_transfer"):
+            flags.append({"code":"TRANSFER_STAYED","severity":"HIGH","title":"Court stay/injunction recorded against transfer",
+                          "detail":f"Case {case.get('case_number') or 'Case'} carries an interim order affecting transfer of this land. "
+                                   "Any sale, gift, lease or mutation completion must wait until the order is vacated or the case is decided.",
+                          "evidence":[{"type":"court_case","ref":case.get("id"),"label":case.get("case_number")}]})
         filed = _s(case.get("filed_date")); closed_date = _s(case.get("closed_date"))
         for mutation in mutations or []:
             deed = _s(mutation.get("deed_date"))
