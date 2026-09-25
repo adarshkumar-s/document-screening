@@ -4,6 +4,14 @@ import os
 from fastapi.responses import FileResponse
 
 from server import BASE_DIR, app
+
+# Install the document-processing bridge before any upload request can resolve
+# server.run_ocr_pipeline. This preserves the existing routes while allowing
+# text PDFs to bypass expensive raster OCR and ensuring OCR text can backfill
+# land identifiers needed by Land Intelligence matching.
+import ocr_land_bridge
+ocr_land_bridge.install()
+
 from ai_governance import router as ai_approval_router
 from mapping import document_history_router, map_router
 from land_intel import encumbrance_router, land_router, mutation_router, report_router
