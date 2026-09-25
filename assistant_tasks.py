@@ -138,18 +138,26 @@ def ensure_tasks_table() -> None:
             """
         )
         # Additive migration for registries created before the worker lease.
-        try:
-            columns = {row["name"] for row in db.execute("PRAGMA table_info(assistant_requests)").fetchall()}
-            if "run_id" not in columns:
-                db.execute("ALTER TABLE assistant_requests ADD COLUMN run_id TEXT")
-            if "heartbeat_at" not in columns:
-                db.execute("ALTER TABLE assistant_requests ADD COLUMN heartbeat_at REAL")
-        except Exception:
-            try:
-                db.execute("ALTER TABLE assistant_requests ADD COLUMN IF NOT EXISTS run_id TEXT")
-                db.execute("ALTER TABLE assistant_requests ADD COLUMN IF NOT EXISTS heartbeat_at REAL")
-            except Exception:
-                pass
+        # The deployed database can be PostgreSQL; PRAGMA is SQLite-only and
+        # aborts the PostgreSQL transaction before the fallback can run.
+        if getattr(db, "is_pg", False):
+            columns = {
+                row["column_name"]
+                for row in db.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name=?",
+                    ("assistant_requests",),
+                ).fetchall()
+            }
+        else:
+            columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(assistant_requests)").fetchall()
+            }
+        if "run_id" not in columns:
+            db.execute("ALTER TABLE assistant_requests ADD COLUMN run_id TEXT")
+        if "heartbeat_at" not in columns:
+            db.execute("ALTER TABLE assistant_requests ADD COLUMN heartbeat_at REAL")
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_assistant_requests_user ON assistant_requests(user_id, created_at)"
         )
