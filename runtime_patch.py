@@ -18,12 +18,31 @@ def _seed_demo_once_if_requested():
     if os.getenv("SEED_DEMO_LI_ON_STARTUP", "").strip().lower() != "true":
         return
     try:
-        # Use the canonical S1-S16 seeder rather than the lower-level data
-        # fixture. It already owns the application schema, audit semantics and
-        # insert-if-absent behavior and is compatible with the live Postgres DB.
+        # The canonical demo_scenarios seeder still contains one legacy
+        # SQLite UPSERT. Adapt that statement only while the explicit demo
+        # seed is running; never alter normal application DB behavior.
+        import server
         import demo_scenarios
-        result = demo_scenarios.seed_all(dry_run=False)
-        print(f"[DEMO SEED] canonical seeder completed: {result.get('created', {})}")
+        original_execute = server.DBConnection.execute
+
+        def demo_execute(self, query, params=()):
+            if self.is_pg and isinstance(query, str) and re.match(
+                r"^\s*INSERT\s+OR\s+(REPLACE|IGNORE)\s+INTO\b", query, re.I
+            ):
+                query = re.sub(
+                    r"^\s*INSERT\s+OR\s+(REPLACE|IGNORE)\s+INTO\b",
+                    "INSERT INTO", query, count=1, flags=re.I
+                )
+                stripped = query.rstrip().rstrip(";")
+                query = stripped + " ON CONFLICT DO NOTHING"
+            return original_execute(self, query, params)
+
+        server.DBConnection.execute = demo_execute
+        try:
+            result = demo_scenarios.seed_all(dry_run=False)
+            print(f"[DEMO SEED] canonical seeder completed: {result.get('created', {})}")
+        finally:
+            server.DBConnection.execute = original_execute
     except Exception as exc:
         import traceback
         print("[DEMO SEED] canonical seeder failed:", type(exc).__name__, str(exc))
