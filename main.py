@@ -16,7 +16,7 @@ from ai_governance import router as ai_approval_router
 from mapping import document_history_router, map_router
 from land_intel import encumbrance_router, land_router, mutation_router, report_router
 from court_cases import router as court_cases_router
-from demo_scenarios import demo_router
+from demo_scenarios import demo_router, seed_all
 from backup_restore import backup_router
 from land_intelligence import router as land_intelligence_router
 from parcel_locator import router as parcel_locator_router
@@ -36,6 +36,22 @@ app.include_router(court_cases_router)
 app.include_router(demo_router)
 app.include_router(backup_router)
 app.include_router(land_intelligence_router)
+
+
+@app.on_event("startup")
+def seed_demo_on_startup_when_explicitly_enabled():
+    """One-shot, idempotent demo seeding for a controlled deployment.
+
+    This is intentionally opt-in and does not expose a production API bypass.
+    The Render environment flag is removed immediately after the seed deploy.
+    The existing seeder is insert-if-absent and only creates DEMO-* artifacts.
+    """
+    if os.getenv("SEED_DEMO_LI_ON_STARTUP", "").strip().lower() != "true":
+        return
+    result = seed_all(dry_run=False)
+    created = result.get("created", {})
+    print(f"[DEMO SEED] startup seed complete: {created}")
+
 
 @app.get("/land-intelligence", include_in_schema=False)
 def land_intelligence_ui():
