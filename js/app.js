@@ -109,7 +109,17 @@ function openDocumentDeepLink(){
 }
 function openLandDeepLink(){
   const params = new URLSearchParams(window.location.search);
-  if(!me || !window.LandIntel) return;
+  if(!me) return;
+  // A locate link must enter the actual map, not silently open land details.
+  if ((params.get('map') === '1' || params.get('locate') === '1') &&
+      (params.get('document_id') || params.get('land_id') || params.get('parcel'))) {
+    const target = new URLSearchParams({ locate: '1' });
+    if (params.get('document_id')) target.set('document_id', params.get('document_id'));
+    else target.set('land_id', params.get('land_id') || params.get('parcel'));
+    window.location.replace('/map?' + target.toString());
+    return;
+  }
+  if(!window.LandIntel) return;
   if(me.role !== ROLE_VERIFICATION_OFFICER && me.role !== ROLE_ADMIN) return;
   // Land Intelligence detail lives in the existing staff portal routing.
   // SA Investigation evidence links may add ?mutation= / ?encumbrance= to open the
@@ -1396,6 +1406,7 @@ function renderStaffRecords(docs){
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
         <td style="text-align:right">
           <button class="btn ghost" onclick="openStaffReview('${doc.id}')" style="padding:4px 8px;font-size:11px">View</button>
+          <a class="btn ghost" href="/map?document_id=${encodeURIComponent(doc.id)}&amp;locate=1" style="padding:4px 8px;font-size:11px">Locate on map</a>
         </td>
       </tr>
     `;

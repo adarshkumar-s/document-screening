@@ -301,3 +301,7 @@ label select:focus, label input:focus { border-color: #3182b7; box-shadow: 0 0 0
 @media (max-width: 900px) {
   .show-mode-picker { width: 100%; }
 }
+
+/* Reference shapes are never styled as verified reviewer pins. */
+.record-badge.reference { color: #4338ca; background: #eef2ff; border-color: #c7d2fe; }
+.reference-dot { background: #6366f1; }

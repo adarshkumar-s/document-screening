@@ -149,7 +149,7 @@ def test_location_states_provenance_and_real_coverage_metrics():
 
 
 def test_reference_geometry_is_explicitly_non_authoritative():
-    headers = _make_user("VIEWER")
+    headers = _make_user("VERIFICATION_OFFICER")
     response = client.get("/api/map/properties?village=Demo%20Village", headers=headers)
     assert response.status_code == 200
     data = response.json()

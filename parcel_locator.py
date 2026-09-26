@@ -231,10 +231,17 @@ def resolve_parcel(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_c
     village = str(payload.get("village") or "").strip()
     district = str(payload.get("district") or "").strip()
 
+    if not property_id and not survey:
+        raise HTTPException(status_code=400, detail="A parcel ID or survey/khasra number is required.")
+
     if property_id:
         candidates = [row for row in rows if str(row["property_id"]) == property_id or str(row["parcel_id"]) == property_id]
     else:
-        candidates = _filter_rows(rows, q=survey, village=village, district=district, survey=survey)
+        # Resolution requires identity equality, unlike the fuzzy search endpoint.
+        # Survey 12 must never silently resolve parcel 123 or 12/1.
+        candidates = [row for row in _filter_rows(rows, village=village, district=district)
+                      if any(_land_norm(row[field]) == _land_norm(survey)
+                             for field in ("survey_number", "gat_number", "khasra_number"))]
 
     if not candidates:
         raise HTTPException(status_code=404, detail="No authorized parcel matched the supplied identity.")
@@ -276,6 +283,8 @@ def secure_map_properties(
 ):
     """RBAC-filtered replacement for the legacy reference-property endpoint."""
     rows = _filter_rows(_visible_properties(user), q=q, village=village, district=district, survey=survey)
+    if tehsil:
+        rows = [row for row in rows if _norm(row["taluka"]) == _norm(tehsil)]
     return {
         "properties": [_row_payload(row) | {
             "synthetic": "synthetic" in str(row["data_source"] or "").casefold()

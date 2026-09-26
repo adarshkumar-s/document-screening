@@ -1187,8 +1187,7 @@
     // preserves the parcel identity (?land_id=) and the map view flag.
     const locateBtn = $('liCtxLocate');
     if (locateBtn) locateBtn.addEventListener('click', () => {
-      const url = context.detail_url || ('/?land_id=' + encodeURIComponent(context.land_id));
-      window.location.href = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'map=1';
+      window.location.href = '/map?land_id=' + encodeURIComponent(context.land_id) + '&locate=1';
     });
     const caseBtn = $('liCtxCase');
     if (caseBtn) caseBtn.addEventListener('click', () => {

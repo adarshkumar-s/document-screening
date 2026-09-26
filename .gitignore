@@ -13,3 +13,6 @@ data/*.db
 .env.*
 !.env.example
 data/backup_before_restore_*/
+
+.cache/
+.pytest_cache/

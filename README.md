@@ -2,7 +2,7 @@
 
 **Document-grounded land-record mapping for the existing screening portal**
 
-This repository is a FastAPI document-screening application with a narrow GIS workspace adapted from the mapping workflow in `adarshkumar-s/Portfolio`. The map is an index of screened document records; it is not a cadastral authority, legal opinion, or ownership determination.
+This repository is a FastAPI document-screening application with a document-grounded GIS workspace. The click-to-locate behavior follows the working reference in [`GP-HUE/land_records`](https://github.com/GP-HUE/land_records). The map is an index of screened document records; it is not a cadastral authority, legal opinion, or ownership determination.
 
 ## What is preserved
 
@@ -16,7 +16,7 @@ The canonical `server.app` remains the source of truth for:
 
 The replacement is intentionally limited to the mapping surface and mapping-only document coordinates/history. The map never edits OCR fields or document identity fields.
 
-## Portfolio-derived map workflow
+## Record-click mapping workflow
 
 Open `/map` from the portal after signing in. The replacement map provides:
 
@@ -29,6 +29,10 @@ Open `/map` from the portal after signing in. The replacement map provides:
 - **year-wise history** — survey-and-village passbook containing the current record, earlier records, ownership-chain changes, transfer evidence, and deterministic review signals;
 - **audited exact pins** — Verification Officers and Administrators can set or clear a document pin; every change is written to the existing audit table;
 - **privacy-aware visibility** — viewer and data-officer access follows the same document visibility rules as the canonical document API.
+
+Clicking a record on either map now focuses its stored pin/reference shape. If neither exists, the explicit click requests a structured village lookup, with a labelled district-level fallback. No batch geocoding runs on page load. A missing place or unavailable geocoder produces a visible message instead of a silent click; geocodes never overwrite reviewer pins or OCR fields.
+
+The portal's **Locate on map** action opens `/map?document_id=…&locate=1`; land links resolve through the existing role-scoped land-detail API. `/land-intelligence` uses one map controller and the bundled Leaflet files, rather than a competing inline controller and a CDN dependency.
 
 External tile and geocoding services are optional. Tile failures leave the record list and schematic mode available. Nominatim lookups are cached and throttled; unresolved lookups never create coordinates.
 
@@ -379,3 +383,17 @@ python -m pytest -q
 ```
 
 The suite covers the existing application regression paths plus map asset loading, document-grounded records, visibility, exact-pin RBAC/audit, cached geocoding, history navigation, and compatibility helpers. `tests/test_sa_investigation.py` covers SA Investigation extraction, matching, court/mutation/ownership findings, timeline, scenarios, isolation, approval CAS/replay/concurrency and audit hygiene; `tests/test_court_cases.py` and `tests/test_litigation_risk.py` cover the litigation register and its risk integration; `tests/test_demo_scenarios.py` covers the S1–S16 demo dataset; `tests/test_land_demo.py` covers the `DEMO-LI` synthetic dataset (seeding, idempotence, relationships, risk verdicts, extraction of every sample document, and the upload → match → active-litigation-alert flow). JavaScript syntax checks use `node --check map.js` and the existing portal scripts.
+
+### Click-to-locate browser regression tests
+
+The browser suite uses real Leaflet with deterministic API/geocoder responses, plus an authenticated real-API pin test. It is opt-in in the default suite:
+
+```bash
+pip install playwright
+playwright install chromium
+# In another terminal, with the same DB_PATH (the real-API test seeds that DB):
+uvicorn main:app --host 0.0.0.0 --port 8000
+MAP_BROWSER_URL=http://127.0.0.1:8000 python -m pytest tests/test_map_browser.py -q
+```
+
+Use a disposable test database, not production. `MAP_BROWSER_EXECUTABLE` can point at an already-installed Chromium. Geocoder cascade, wrong-state rejection, cache and offline-retry tests run normally in `tests/test_map_geocode_selection.py`.
