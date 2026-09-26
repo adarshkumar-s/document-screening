@@ -109,19 +109,39 @@ function openDocumentDeepLink(){
 }
 function openLandDeepLink(){
   const params = new URLSearchParams(window.location.search);
-  const landId = params.get('land_id');
-  if(!landId || !me || !window.LandIntel) return;
+  if(!me || !window.LandIntel) return;
   if(me.role !== ROLE_VERIFICATION_OFFICER && me.role !== ROLE_ADMIN) return;
   // Land Intelligence detail lives in the existing staff portal routing.
   // SA Investigation evidence links may add ?mutation= / ?encumbrance= to open the
   // specific register entry inside the same workspace.
+  //
+  // The canonical parcel identity is ?land_id= (what document_land_context's
+  // detail_url emits). The OCR "Locate on map" action preserves the same
+  // resolver and additionally accepts ?parcel= (same parcel identity) and
+  // ?document_id= (resolve the document to its parcel through the canonical
+  // resolver). ?map=1 / ?locate=1 are view flags; there is no separate OCR map.
   const mutationId = params.get('mutation');
-  window.setTimeout(()=>{
-    if(mutationId && typeof window.LandIntel.openMutation === 'function') window.LandIntel.openMutation(mutationId);
-    else window.LandIntel.openLand(landId);
+  const directLand = params.get('land_id') || params.get('parcel');
+  const documentId = params.get('document_id');
+  const cleanup = ()=>{
     const clean = new URL(window.location.href);
-    ['land_id','mutation','encumbrance'].forEach(k=>clean.searchParams.delete(k));
+    ['land_id','parcel','document_id','mutation','encumbrance','map','locate'].forEach(k=>clean.searchParams.delete(k));
     window.history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : ''));
+  };
+  window.setTimeout(async ()=>{
+    try{
+      let landId = directLand;
+      if(!landId && documentId){
+        // Resolve the document to its canonical parcel through the same
+        // RBAC-scoped context the map and Land Intelligence use.
+        const doc = await api('/api/documents/' + encodeURIComponent(documentId));
+        landId = (doc && doc.land_context && doc.land_context.land_id) || '';
+      }
+      if(!landId) return;
+      if(mutationId && typeof window.LandIntel.openMutation === 'function') window.LandIntel.openMutation(mutationId);
+      else window.LandIntel.openLand(landId);
+    }catch(e){ /* deep link is best-effort */ }
+    cleanup();
   }, 0);
 }
 function openInvestigationDeepLink(){
@@ -587,6 +607,7 @@ function setupStaffPortal(role){
     tabs = [
       ['dashboard', '📊 Dashboard'],
       ['upload', '➕ Upload & Verify'],
+      ['bulk', '📦 Bulk OCR'],
       ['queue', '⏳ Verification Queue'],
       ['consistency', '🔍 Consistency Check'],
       ['compare', '⚖️ Comparison'],
@@ -598,6 +619,7 @@ function setupStaffPortal(role){
     tabs = [
       ['dashboard', '📊 Dashboard'],
       ['upload', '➕ Upload Document'],
+      ['bulk', '📦 Bulk OCR'],
       ['queue', '⏳ Verification Queue'],
       ['consistency', '🔍 Consistency Check'],
       ['records', '🗂️ All Records'],
@@ -751,7 +773,7 @@ function switchStaffTab(tabName){
     t.classList.toggle('active', t.dataset.stab === tabName);
   });
 
-  ['dashboard','upload','queue','review','compare','consistency','records','audit','landintel','investigations'].forEach(p=>{
+  ['dashboard','upload','bulk','queue','review','compare','consistency','records','audit','landintel','investigations'].forEach(p=>{
     const elPane = $('#staff-tab-' + p);
     if(elPane) elPane.classList.toggle('hidden', p !== tabName);
   });
@@ -761,6 +783,7 @@ function switchStaffTab(tabName){
 
   if(tabName === 'dashboard') loadStaffDashboard();
   if(tabName === 'queue') loadStaffQueue();
+  if(tabName === 'bulk') loadBulkOcrView();
   if(tabName === 'consistency') initConsistencyWorkspace();
   if(tabName === 'records') loadStaffRecords();
   if(tabName === 'audit') loadStaffAudit();
@@ -882,9 +905,12 @@ async function handleStaffUpload(file){
   const lang = $('#staffLangSelect')?.value || 'auto';
   const docType = $('#staffDocTypeSelect')?.value || 'Land Record';
   const state = $('#staffStateSelect')?.value || '';
+  const mode = document.querySelector('input[name="staffProcMode"]:checked')?.value || 'ocr_li';
+  const labelEl = document.getElementById('staffProcessingLabel');
+  if(labelEl) labelEl.textContent = mode === 'ocr_only' ? 'Extracting text and running fast OCR...' : 'Extracting text and running fast OCR (Land Intelligence runs in background)...';
 
   try{
-    const r = await fetch(authUrl(`/api/process?lang=${encodeURIComponent(lang)}&doc_type=${encodeURIComponent(docType)}&state=${encodeURIComponent(state)}`),{
+    const r = await fetch(authUrl(`/api/process?lang=${encodeURIComponent(lang)}&doc_type=${encodeURIComponent(docType)}&state=${encodeURIComponent(state)}&mode=${encodeURIComponent(mode)}`),{
       method:'POST', headers: token ? {'Authorization':'Bearer '+token} : {}, body: fd
     });
     const d = await r.json();
@@ -1623,6 +1649,138 @@ async function staffChangePassword(){
     alert('Password updated successfully.');
     $('#staffCpCurrent').value=''; $('#staffCpNew').value='';
   }catch(e){ alert('Failed to update password: ' + e.message); }
+}
+
+// ==========================================================================
+// BULK OCR — same pipeline as single-document upload; each file independent.
+// ==========================================================================
+let currentBulkId = null;
+let bulkPoller = null;
+
+function wireBulkDropZone(){
+  const drop = $('#bulkDropZone');
+  const fi = $('#bulkFileInput');
+  if(!drop || drop._wired) return;
+  drop._wired = true;
+  drop.onclick = () => fi.click();
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('drag'); };
+  drop.ondragleave = () => drop.classList.remove('drag');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('drag'); if(e.dataTransfer.files.length) startBulkUpload(e.dataTransfer.files); };
+  fi.onchange = () => { if(fi.files.length) startBulkUpload(fi.files); };
+}
+
+async function startBulkUpload(fileList){
+  const files = [...fileList];
+  if(!files.length) return;
+  const mode = document.querySelector('input[name="bulkProcMode"]:checked')?.value || 'ocr_li';
+  try{
+    const created = await api('/api/bulk', {method:'POST', body: JSON.stringify({mode})});
+    currentBulkId = created.batch_id;
+    $('#bulkProgress').classList.remove('hidden');
+    for(const f of files){
+      await uploadOneBulkFile(currentBulkId, f);
+    }
+    await api(`/api/bulk/${currentBulkId}/finalize`, {method:'POST'});
+    refreshBulkView();
+    loadBulkHistory();
+  }catch(e){ alert('Bulk error: ' + e.message); }
+}
+
+async function uploadOneBulkFile(batchId, file){
+  const fd = new FormData();
+  fd.append('file', file);
+  try{
+    await fetch(authUrl(`/api/bulk/${batchId}/files?doc_type=Land%20Record&lang=auto`),{
+      method:'POST', headers: token ? {'Authorization':'Bearer '+token} : {}, body: fd
+    });
+    refreshBulkView();
+  }catch(e){
+    console.error('bulk upload error', e);
+  }
+}
+
+async function refreshBulkView(){
+  if(!currentBulkId) return;
+  try{
+    const b = await api('/api/bulk/' + currentBulkId);
+    renderBulk(b);
+  }catch(e){}
+}
+
+function renderBulk(b){
+  const box = $('#bulkStatsGrid');
+  if(!box) return;
+  const c = b.counts || {};
+  box.innerHTML = `
+    <div class="stat-card" style="border-top:3px solid var(--gov-navy)"><div style="font-size:24px;font-weight:800;color:var(--gov-navy)">${b.total||0}</div><div style="font-size:11px;color:var(--muted);font-weight:700">TOTAL</div></div>
+    <div class="stat-card" style="border-top:3px solid var(--gov-green)"><div style="font-size:24px;font-weight:800;color:var(--gov-green)">${c.completed||0}</div><div style="font-size:11px;color:var(--muted);font-weight:700">COMPLETED</div></div>
+    <div class="stat-card" style="border-top:3px solid var(--warn)"><div style="font-size:24px;font-weight:800;color:var(--warn)">${c.processing||0}</div><div style="font-size:11px;color:var(--muted);font-weight:700">PROCESSING</div></div>
+    <div class="stat-card" style="border-top:3px solid var(--err)"><div style="font-size:24px;font-weight:800;color:var(--err)">${c.failed||0}</div><div style="font-size:11px;color:var(--muted);font-weight:700">FAILED</div></div>
+    <div class="stat-card" style="border-top:3px solid #d97706"><div style="font-size:24px;font-weight:800;color:#d97706">${c.needs_review||0}</div><div style="font-size:11px;color:var(--muted);font-weight:700">NEEDS REVIEW</div></div>
+  `;
+  const summary = $('#bulkSummaryBox');
+  if(summary){
+    summary.innerHTML = `
+      <div style="font-size:13px;background:#f8fafc;border:1px solid var(--gov-border);padding:10px;border-radius:6px">
+        <b>Batch ${escapeHtml(b.id)}</b> · mode: <b>${escapeHtml(b.mode)}</b>
+      </div>
+    `;
+  }
+  const list = $('#bulkItemsList');
+  if(list){
+    list.innerHTML = '';
+    (b.items||[]).forEach(it => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:grid;grid-template-columns:1fr auto auto auto auto auto auto;gap:8px;align-items:center;padding:8px;border-bottom:1px solid var(--gov-border-light);font-size:12px';
+      row.innerHTML = `
+        <div><b>${escapeHtml(it.filename)}</b><div style="color:var(--muted);font-size:11px">${escapeHtml(it.state||'PENDING')}${it.error?' · '+escapeHtml(it.error):''}</div></div>
+        <span class="chip">OCR: ${Math.round((it.ocr_confidence||0)*100)}%</span>
+        <span class="chip">Parcel: ${escapeHtml(it.parcel_match||'—')}</span>
+        <span class="chip">Mut: ${escapeHtml(it.mutation_status||'—')}</span>
+        <span class="chip">Enc: ${escapeHtml(it.encumbrance_status||'—')}</span>
+        <span class="chip">Lit: ${escapeHtml(it.litigation_status||'—')}</span>
+        <div>${(it.state==='FAILED'||it.state==='ERROR')?`<button class="btn ghost" style="padding:4px 8px;font-size:11px" onclick="retryBulkItem('${it.id}')">Retry</button>`:''}</div>
+      `;
+      list.appendChild(row);
+    });
+  }
+}
+
+async function retryBulkItem(itemId){
+  try{ await api(`/api/bulk/items/${itemId}/retry`, {method:'POST'}); refreshBulkView(); }
+  catch(e){ alert('Retry failed: '+e.message); }
+}
+
+async function loadBulkHistory(){
+  const box = $('#bulkHistoryList');
+  if(!box) return;
+  try{
+    const d = await api('/api/bulk');
+    box.innerHTML = (d.batches||[]).map(b=>{
+      const c = b.counts||{};
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid var(--gov-border-light);font-size:12px">
+        <div><b>${escapeHtml(b.id)}</b> · ${escapeHtml(b.mode)} · total ${b.total||0}</div>
+        <div style="color:var(--muted)">${c.completed||0} done · ${c.failed||0} failed</div>
+        <button class="btn ghost" style="padding:3px 8px;font-size:11px" onclick="openBulk('${b.id}')">Open</button>
+      </div>`;
+    }).join('') || '<div class="muted" style="font-size:12px">No batches yet.</div>';
+  }catch(e){ box.innerHTML = '<div class="errorbox">'+escapeHtml(e.message)+'</div>'; }
+}
+
+async function openBulk(batchId){
+  currentBulkId = batchId;
+  $('#bulkProgress').classList.remove('hidden');
+  refreshBulkView();
+}
+
+async function loadBulkOcrView(){
+  wireBulkDropZone();
+  if(!document.getElementById('bulkModeOcrLi')?.checked) document.getElementById('bulkModeOcrLi').checked = true;
+  loadBulkHistory();
+  if(currentBulkId) refreshBulkView();
+  if(!bulkPoller){
+    bulkPoller = setInterval(()=>{ if(currentBulkId && !$('#staff-tab-bulk')?.classList.contains('hidden')) refreshBulkView(); }, 4000);
+  }
 }
 
 (async function boot(){
