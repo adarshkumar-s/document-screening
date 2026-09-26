@@ -792,6 +792,7 @@ def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, An
     lang_candidates = strategy.get("lang_candidates") or [strategy.get("lang", "hin+eng+tel+tam"), "eng"]
 
     data = None
+    best_blank_result = None
     selected_lang = "eng"
     last_error: Optional[Exception] = None
     for candidate in lang_candidates:
@@ -799,17 +800,25 @@ def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, An
             if not HAS_TESSERACT:
                 last_error = RuntimeError("Tesseract OCR engine is not installed (python package pytesseract missing)")
                 break
-            data = pytesseract.image_to_data(
+            candidate_data = pytesseract.image_to_data(
                 img,
                 lang=candidate,
                 config=f"--oem 3 --psm {psm}",
                 output_type=pytesseract.Output.DICT,
             )
-            selected_lang = candidate
-            break
+            recognized = any(str(word or "").strip() for word in candidate_data.get("text", []))
+            if recognized:
+                data = candidate_data
+                selected_lang = candidate
+                break
+            if best_blank_result is None:
+                best_blank_result = candidate_data
+                selected_lang = candidate
         except Exception as exc:
             last_error = exc
             continue
+    if data is None:
+        data = best_blank_result
 
     if data is None:
         # Distinguish "engine broken/missing" (silent-failure trap) from a blank
@@ -2043,6 +2052,62 @@ _P1_PATTERNS = {
 }
 
 
+def _parse_land_coordinate(value: str) -> Optional[Tuple[float, float]]:
+    """Parse a labelled printed latitude/longitude pair without guessing.
+
+    Coordinates are only consumed when they occur beside an explicit corner
+    label. This avoids turning survey numbers or dates into map positions.
+    """
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    translated = []
+    for char in text:
+        try:
+            translated.append(str(unicodedata.digit(char)))
+        except (TypeError, ValueError):
+            translated.append(char)
+    text = "".join(translated)
+    match = re.search(
+        r"(?<![\d.])(-?\d{1,3}(?:\.\d+)?)"
+        r"([^\d\-]{0,12}?)"
+        r"(-?\d{1,3}(?:\.\d+)?)\s*(?:°|º|deg)?\s*([EW])?",
+        text, re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        latitude, longitude = float(match.group(1)), float(match.group(3))
+    except (TypeError, ValueError):
+        return None
+    hemispheres = re.findall(r"[NS]", match.group(2).upper())
+    if hemispheres and hemispheres[-1] == "S":
+        latitude = -abs(latitude)
+    if (match.group(4) or "").upper() == "W":
+        longitude = -abs(longitude)
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    return round(latitude, 7), round(longitude, 7)
+
+
+def _extract_printed_coordinates(text: str) -> Dict[str, Dict[str, Any]]:
+    """Extract explicitly labelled coordinate/corner fields from OCR lines."""
+    label = re.compile(
+        r"(?:coordinate|coordinates|coord|corner|point|gps|निर्देशांक|कोऑर्डिनेट)"
+        r"\s*(?:no\.?\s*)?([1-5])?\s*[:#.\-]?\s*(.*)$", re.I,
+    )
+    fields: Dict[str, Dict[str, Any]] = {}
+    next_slot = 1
+    for line in _normalize_ocr_text(text).splitlines():
+        for match in label.finditer(line):
+            value = match.group(2).strip(" :|,;-")[:100]
+            if not _parse_land_coordinate(value):
+                continue
+            slot = int(match.group(1)) if match.group(1) else next_slot
+            if 1 <= slot <= 5:
+                fields[f"coordinate_{slot}"] = {"value": value, "confidence": 0.75}
+                next_slot = max(next_slot, slot + 1)
+    return fields
+
+
 def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
     text = _normalize_ocr_text(text)
     fields = {k: {"value": "", "confidence": 0.0} for k in FIELD_KEYS}
@@ -2083,6 +2148,9 @@ def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
                 fields["khatauni_year"] = {"value": m.group(1), "confidence": 0.6}
 
     enriched, validation = enrich_and_validate_fields(fields)
+    # Explicitly labelled printed plot corners are additional map evidence, not
+    # document identity fields. Keep them alongside the standard extraction.
+    enriched.update(_extract_printed_coordinates(text))
     if not enriched.get("owner_name", {}).get("value") and filename:
         validation["issues"].append({
             "severity": "warning",

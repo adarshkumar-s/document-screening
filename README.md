@@ -48,7 +48,7 @@ The old Land Intelligence UI, credential-free demo router/assets, and old mappin
 
 ## OCR language coverage
 
-The upload and staff OCR selectors expose 21 Tesseract language packs: English, Hindi, Telugu, Tamil, Bengali, Marathi, Gujarati, Punjabi, Kannada, Odia, Urdu, Assamese, Malayalam, Nepali, Sanskrit, Sindhi, Sinhala, Arabic, Persian, Burmese, and Tibetan. Auto-detection retains the existing multilingual fallback and never changes the document validation or approval rules.
+The upload and staff OCR selectors expose 21 Tesseract language packs: English, Hindi, Telugu, Tamil, Bengali, Marathi, Gujarati, Punjabi, Kannada, Odia, Urdu, Assamese, Malayalam, Nepali, Sanskrit, Sindhi, Sinhala, Arabic, Persian, Burmese, and Tibetan. Auto-detection retains the existing multilingual fallback and never changes the document validation or approval rules. Scanned PDFs are OCR-processed page-by-page (up to 20 pages per upload), and low scan confidence is surfaced on extracted fields for reviewer attention. Explicitly labelled GPS/corner coordinates can produce a screening-only plot shape; reviewers can also trace a boundary in the map. Neither source establishes an authoritative cadastral boundary.
 
 ## Land Intelligence extension (encumbrances, mutations, land risk, reports)
 
@@ -174,6 +174,7 @@ POST                /api/admin/data-management/restore            (admin only)
 - `GET /api/map/summary` — role-scoped coverage and review metrics.
 - `GET /api/map/export.csv` — role-scoped CSV map register for review/reporting.
 - `PUT /api/map/records/{doc_id}/location` — audited verifier/admin exact pin update; send `{"lat":null,"lon":null}` to clear.
+- `PUT /api/map/records/{doc_id}/boundary` — audited verifier/admin polygon boundary traced from 3–50 latitude/longitude corners; saved separately from OCR/document identity fields.
 - `POST /api/map/geocode` — cached, throttled village/district lookup for approximate markers with a seven-day cache policy.
 - `GET /api/documents/{doc_id}/history` — year-ordered survey/village passbook with ownership-chain and transfer review signals.
 

@@ -34,6 +34,7 @@ from server import (
     get_db,
     log_audit,
     require_roles,
+    _parse_land_coordinate,
 )
 
 map_router = APIRouter(prefix="/api/map", tags=["Document Map"])
@@ -359,6 +360,8 @@ def _ensure_tables() -> None:
         # validation, and audit columns remain untouched.
         _ensure_document_column(db, "lat", "REAL")
         _ensure_document_column(db, "lon", "REAL")
+        _ensure_document_column(db, "map_geometry", "TEXT")
+        _ensure_document_column(db, "map_geometry_source", "TEXT")
         db.execute(
             """CREATE TABLE IF NOT EXISTS properties (
                 property_id TEXT PRIMARY KEY,
@@ -853,6 +856,26 @@ def _map_document_visible(row: Any, user: Dict[str, Any]) -> bool:
     return True
 
 
+def _document_boundary(fields: Dict[str, Any], stored: Any = None) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Return an explicit saved boundary or a polygon from labelled OCR corners."""
+    geometry = _parse_json(stored, None) if stored else None
+    if isinstance(geometry, dict) and geometry.get("type") in {"Polygon", "MultiPolygon"}:
+        return geometry, "Officer-digitized boundary"
+    points: List[List[float]] = []
+    for index in range(1, 6):
+        field = fields.get(f"coordinate_{index}")
+        value = field.get("value", "") if isinstance(field, dict) else field
+        pair = _parse_land_coordinate(value)
+        if pair:
+            latitude, longitude = pair
+            points.append([longitude, latitude])
+    if len(points) < 3:
+        return None, ""
+    if points[0] != points[-1]:
+        points.append(points[0])
+    return {"type": "Polygon", "coordinates": [points]}, "OCR-extracted printed coordinates"
+
+
 def _map_document_item(row: Any) -> Dict[str, Any]:
     fields = _parse_json(row["fields"], {}) or {}
     lat = row["lat"] if "lat" in row.keys() else None
@@ -868,6 +891,13 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
     verified_at = row["location_verified_at"] if "location_verified_at" in row.keys() else None
     location_status = "EXACT_PIN" if has_exact_pin else ("VILLAGE_LEVEL" if village else "UNRESOLVED")
     location_source = (persisted_source or "Authorised reviewer pin") if has_exact_pin else ("Document village fields; geocode on request" if village else None)
+    geometry, geometry_source = _document_boundary(
+        fields,
+        row["map_geometry"] if "map_geometry" in row.keys() else None,
+    )
+    stored_geometry_source = row["map_geometry_source"] if "map_geometry_source" in row.keys() else None
+    if stored_geometry_source:
+        geometry_source = stored_geometry_source
     item = {
         "id": row["id"],
         "filename": row["filename"],
@@ -887,6 +917,8 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
         "year": _field_value(fields, "khatauni_year", "year", "document_date"),
         "lat": float(lat) if lat is not None else None,
         "lon": float(lon) if lon is not None else None,
+        "geometry": geometry,
+        "geometry_source": geometry_source,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"] if "updated_at" in row.keys() else row["created_at"],
         "location_status": location_status,
@@ -978,7 +1010,7 @@ def _map_property_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, An
 # land-records / risk-review / detail request.
 _MAP_RECORD_COLUMNS = (
     "id", "filename", "doc_type", "status", "fields", "validation", "mean_conf",
-    "lat", "lon", "uploaded_by", "created_at", "updated_at",
+    "lat", "lon", "map_geometry", "map_geometry_source", "uploaded_by", "created_at", "updated_at",
 )
 
 
@@ -1234,6 +1266,52 @@ def map_set_document_location(
             }
     log_audit(actor, action, detail, doc_id)
     return result
+
+
+@map_router.put("/records/{doc_id}/boundary")
+def map_set_document_boundary(
+    doc_id: str,
+    payload: Dict[str, Any],
+    user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
+):
+    """Persist an officer-traced plot boundary without changing OCR fields."""
+    raw_points = payload.get("points")
+    reason = str(payload.get("reason") or "").strip()[:500]
+    if not isinstance(raw_points, list) or not 3 <= len(raw_points) <= 50:
+        raise HTTPException(status_code=400, detail="A boundary needs 3 to 50 valid corner points.")
+    points: List[List[float]] = []
+    for raw in raw_points:
+        try:
+            if isinstance(raw, dict):
+                latitude, longitude = float(raw.get("lat")), float(raw.get("lon"))
+            else:
+                latitude, longitude = float(raw[0]), float(raw[1])
+        except (TypeError, ValueError, IndexError):
+            raise HTTPException(status_code=400, detail="Each boundary corner must have numeric latitude and longitude.")
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            raise HTTPException(status_code=400, detail="Boundary coordinates are outside valid latitude/longitude ranges.")
+        points.append([round(longitude, 7), round(latitude, 7)])
+    if len({(point[0], point[1]) for point in points}) < 3:
+        raise HTTPException(status_code=400, detail="A boundary requires at least three distinct corners.")
+    if points[0] != points[-1]:
+        points.append(points[0])
+    geometry = {"type": "Polygon", "coordinates": [points]}
+    geometry_json = _json(geometry)
+    actor = user.get("full_name", user.get("email", "user"))
+    changed_at = _now()
+    with get_db() as db:
+        row = db.execute("SELECT id FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Record not found.")
+        db.execute(
+            "UPDATE documents SET map_geometry=?, map_geometry_source=?, updated_at=? WHERE id=?",
+            (geometry_json, "Officer-digitized boundary", changed_at, doc_id),
+        )
+    detail = f"Officer-digitized mapping boundary saved with {len(points) - 1} corners."
+    if reason:
+        detail += f" Reason: {reason}"
+    log_audit(actor, "boundary_set", detail, doc_id)
+    return {"ok": True, "geometry": geometry, "geometry_source": "Officer-digitized boundary", "updated_at": changed_at}
 
 
 def _public_geocode_result(value: Dict[str, Any]) -> Dict[str, Any]:

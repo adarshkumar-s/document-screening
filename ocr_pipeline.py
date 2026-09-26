@@ -317,6 +317,9 @@ _CANONICAL_OCR_LIVE = True
 # ---------------------------------------------------------------------------
 _MIN_TEXT_LEN_FOR_EMBEDDED = 40  # below this we assume scanned PDF
 _MIN_WORDS_FOR_EMBEDDED = 8
+# Bound synchronous work on unusually large uploads while still scanning all
+# normal land-record packets rather than silently OCR-ing page one only.
+_MAX_OCR_PDF_PAGES = 20
 
 
 def extract_pdf_embedded_text(content: bytes) -> Tuple[bool, str, int]:
@@ -337,7 +340,7 @@ def extract_pdf_embedded_text(content: bytes) -> Tuple[bool, str, int]:
         return False, "", 0
     collected: List[str] = []
     total_len = 0
-    for i in range(min(pages, 5)):  # cap at first 5 pages for perf
+    for i in range(min(pages, _MAX_OCR_PDF_PAGES)):
         try:
             page = pdf[i]
             tp = page.get_textpage()
@@ -461,6 +464,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     pages = 1
     intermediate_image = None
     engine_error: Optional[str] = None
+    pages_ocrd = 1
 
     if ext == ".pdf":
         if not srv.HAS_PDFIUM:
@@ -468,21 +472,43 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
         usable, embedded_text, page_count = extract_pdf_embedded_text(content)
         pages = page_count or 1
         if usable:
+            pages_ocrd = min(pages, _MAX_OCR_PDF_PAGES)
             ocr_text = embedded_text
             detected_lang = srv.detect_primary_script(ocr_text) or "eng"
             confidence = 0.95
             word_count = len([w for w in ocr_text.split() if any(ch.isalnum() for ch in w)])
             ocr_method = "pdf_text_layer"
         else:
-            # Scanned PDF: rasterize once
-            img, pages = _render_pdf_first_page(content, scale=1.8)
-            intermediate_image = img
-            ocr_res = await asyncio.to_thread(run_fast_ocr, img, lang)
-            ocr_text = ocr_res.get("text", "")
-            detected_lang = ocr_res.get("detected_language", "eng")
-            confidence = float(ocr_res.get("confidence", 0.0) or 0.0)
-            word_count = int(ocr_res.get("word_count", 0) or 0)
-            engine_error = ocr_res.get("engine_error")
+            # Scanned PDFs must be read page-by-page: the prior first-page-only
+            # path silently discarded owners, survey numbers, and transfer
+            # entries printed on later pages. Keep a firm limit for resource
+            # safety and report when a large PDF is truncated.
+            pdf = srv.pdfium.PdfDocument(content)
+            pages = len(pdf)
+            pages_ocrd = min(pages, _MAX_OCR_PDF_PAGES)
+            page_texts: List[str] = []
+            page_confidences: List[float] = []
+            page_words = 0
+            page_errors: List[str] = []
+            for page_index in range(min(pages, _MAX_OCR_PDF_PAGES)):
+                page = pdf[page_index]
+                image = page.render(scale=2.2).to_pil()
+                if page_index == 0:
+                    intermediate_image = image
+                page_result = await asyncio.to_thread(run_fast_ocr, image, lang)
+                page_text = str(page_result.get("text") or "").strip()
+                if page_text:
+                    page_texts.append(f"[Page {page_index + 1}]\n{page_text}")
+                page_confidences.append(float(page_result.get("confidence", 0.0) or 0.0))
+                page_words += int(page_result.get("word_count", 0) or 0)
+                if page_result.get("engine_error"):
+                    page_errors.append(str(page_result["engine_error"]))
+                if page_result.get("detected_language") and page_text:
+                    detected_lang = page_result["detected_language"]
+            ocr_text = "\n\n".join(page_texts)
+            confidence = sum(page_confidences) / len(page_confidences) if page_confidences else 0.0
+            word_count = page_words
+            engine_error = "; ".join(dict.fromkeys(page_errors)) or None
     else:
         # Image path
         from PIL import Image
@@ -506,6 +532,33 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     detected = srv.extract_fields_from_ocr(ocr_text, filename or "upload")
     enriched_fields = detected["fields"]
     validation = detected["validation"]
+    low_confidence_fields = []
+    for field_name, field_value in enriched_fields.items():
+        if not isinstance(field_value, dict) or not str(field_value.get("value") or "").strip():
+            continue
+        try:
+            extracted_confidence = float(field_value.get("confidence", 0.95))
+        except (TypeError, ValueError):
+            extracted_confidence = 0.5
+        # Deterministic label extraction alone must not claim 95% certainty
+        # when the underlying scan was visibly poor. OCR word-level confidence
+        # is not field-specific, so use it as a conservative upper bound.
+        field_value["confidence"] = round(min(extracted_confidence, confidence), 3)
+        if field_value["confidence"] < 0.65:
+            low_confidence_fields.append(field_name)
+    if low_confidence_fields:
+        validation.setdefault("issues", []).append({
+            "severity": "warning", "field": "ocr_confidence",
+            "msg": "Low OCR confidence; verify extracted values: " + ", ".join(low_confidence_fields[:12]) + ".",
+        })
+        if validation.get("verdict") != "rejected":
+            validation["verdict"] = "review"
+    if ext == ".pdf" and pages > _MAX_OCR_PDF_PAGES:
+        validation.setdefault("issues", []).append({
+            "severity": "warning", "field": "ocr_text",
+            "msg": (f"This PDF has {pages} pages; the safe per-upload limit is "
+                    f"{_MAX_OCR_PDF_PAGES}. Only the first {_MAX_OCR_PDF_PAGES} pages were processed."),
+        })
 
     # A missing/broken OCR engine must never look like a successful-but-blank
     # document: surface the reason in every place the UI reads.
@@ -566,6 +619,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             "ocr_method": ocr_method,
             "content_hash": chash,
             "duration_ms": duration_ms,
+            "pages_processed": pages_ocrd,
+            "pages_omitted": max(0, pages - pages_ocrd) if ext == ".pdf" else 0,
             "ocr_engine": "unavailable" if engine_limited else ("pdf_text_layer" if ocr_method == "pdf_text_layer" else "tesseract"),
             **({"ocr_engine_error": engine_error} if engine_limited else {}),
         },
