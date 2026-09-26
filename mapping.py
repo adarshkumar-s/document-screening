@@ -49,6 +49,14 @@ def _now() -> float:
 
 
 LAND_IDENTIFIER_FIELDS = ("survey_number", "gat_number", "khasra_number")
+# Cross-column aliases for strong identifiers: documents extract "gat no"
+# into survey_number while the parcel table may store it in gat_number (and
+# vice versa). Only consulted when the primary column is empty.
+_SIBLING_IDENTIFIER_COLUMNS = {
+    "survey_number": ("gat_number",),
+    "gat_number": ("survey_number",),
+    "khasra_number": ("gat_number",),
+}
 
 
 _SYNTHETIC_PROPERTIES = [
@@ -518,6 +526,7 @@ def _ensure_tables() -> None:
 
 
 def _property_by_id(property_id: str) -> Optional[Dict[str, Any]]:
+    ensure_schema()
     with get_db() as db:
         row = _property_row(db, property_id)
     return _property_dict(row) if row else None
@@ -525,6 +534,7 @@ def _property_by_id(property_id: str) -> Optional[Dict[str, Any]]:
 
 def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
     """Resolve extracted identity fields to controlled parcel candidates."""
+    ensure_schema()
     supplied = {
         "survey_number": _field_value(fields, "survey_number"),
         "gat_number": _field_value(fields, "gat_number"),
@@ -554,12 +564,21 @@ def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
         conflicting: List[str] = []
         for field_name, document_value in available.items():
             parcel_value = row[field_name] if field_name in row.keys() else None
-            if not parcel_value:
+            if parcel_value:
+                if _key_for(field_name, document_value) == _key_for(field_name, parcel_value):
+                    matched.append(field_name)
+                else:
+                    conflicting.append(field_name)
                 continue
-            if _key_for(field_name, document_value) == _key_for(field_name, parcel_value):
-                matched.append(field_name)
-            else:
-                conflicting.append(field_name)
+            # The same land number can live in a sibling column of the parcel
+            # record (documents say "gat no" where the table stores gat_number
+            # and vice versa). Cross-check siblings ONLY when the primary
+            # column is empty so a genuine conflict can never be masked.
+            for sibling in _SIBLING_IDENTIFIER_COLUMNS.get(field_name, ()):
+                sibling_value = row[sibling] if sibling in row.keys() else None
+                if sibling_value and _key_for(sibling, document_value) == _key_for(sibling, sibling_value):
+                    matched.append(sibling)
+                    break
         strong_matches = [field for field in matched if field in LAND_IDENTIFIER_FIELDS]
         geography_matches = [field for field in matched if field in ("village", "taluka", "district")]
         if not matched:
@@ -748,6 +767,7 @@ def analyze_ownership_history(records: Sequence[Dict[str, Any]]) -> Dict[str, An
 
 
 def _history_for_property(property_id: str) -> Dict[str, Any]:
+    ensure_schema()
     with get_db() as db:
         rows = db.execute(
             """SELECT d.* FROM documents d JOIN property_documents pd ON pd.document_id=d.id
@@ -816,6 +836,7 @@ def _apply_location(property_id: str, request: LocationUpdate, actor: Dict[str, 
 
 
 def update_property_location(property_id: str, request: LocationUpdate, actor: Dict[str, Any]) -> Dict[str, Any]:
+    ensure_schema()
     return _apply_location(property_id, request, actor)
 
 
@@ -897,6 +918,7 @@ def _map_location_audit_context(document_ids: Sequence[str]) -> Dict[str, Dict[s
     Verification identity and time are intentionally derived from the existing
     audit table rather than duplicated in the OCR document schema.
     """
+    ensure_schema()
     if not document_ids:
         return {}
     wanted = {str(value) for value in document_ids}
@@ -928,6 +950,7 @@ def _map_property_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, An
     synthetic/reference geometry must never turn an unresolved document into a
     verified parcel location.
     """
+    ensure_schema()
     if not document_ids:
         return {}
     with get_db() as db:
@@ -958,6 +981,7 @@ _MAP_RECORD_COLUMNS = (
 
 
 def _map_visible_records(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    ensure_schema()
     with get_db() as db:
         rows = db.execute(
             f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents ORDER BY created_at DESC LIMIT 10000"
@@ -1098,6 +1122,7 @@ def map_properties(
     are useful for orientation and comparison only; they are never presented
     as legal cadastral boundaries or as a substitute for a document pin.
     """
+    ensure_schema()
     with get_db() as db:
         rows = db.execute("SELECT * FROM properties ORDER BY village, survey_number, property_id LIMIT 5000").fetchall()
     filtered = []
@@ -1132,6 +1157,7 @@ def map_properties(
 @map_router.get("/export.csv")
 def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
     """Download a review-friendly map register without exposing hidden records."""
+    ensure_schema()
     output = io.StringIO(newline="")
     output.write("\\ufeff")
     writer = csv.DictWriter(output, fieldnames=(
@@ -1215,6 +1241,7 @@ def _public_geocode_result(value: Dict[str, Any]) -> Dict[str, Any]:
 @map_router.post("/geocode")
 def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_current_user)):
     """Geocode a free-form village query with a cached Nominatim request."""
+    ensure_schema()
     global _map_last_geocode_request
     query = str(payload.get("query") or "").strip()
     if not query or len(query) > 200:
@@ -1327,6 +1354,7 @@ def _history_summary(items: Sequence[Dict[str, Any]], ownership: Dict[str, Any])
 @document_history_router.get("/documents/{doc_id}/history")
 def document_history(doc_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     """Return a complete survey/village passbook, including the current record."""
+    ensure_schema()
     with get_db() as db:
         current = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
         if not current:
@@ -1368,6 +1396,29 @@ def document_history(doc_id: str, user: Dict[str, Any] = Depends(get_current_use
 
 
 
-# Run the compatibility schema migration once at import. The canonical app
-# calls this again after test/deployment DB swaps; all operations are idempotent.
-_ensure_tables()
+# Run the compatibility schema migration once at import AND lazily per active
+# database. Tests and tools swap server.DB_PATH at runtime; the import-time call
+# alone left later databases without the mapping tables ("no such table:
+# properties"), which broke parcel resolution and the map workspace.
+_ENSURED_DB_KEYS: set = set()
+
+
+def _db_schema_key() -> str:
+    import server
+    return "|".join(str(getattr(server, name, "") or "")
+                    for name in ("DATABASE_URL", "DB_PATH", "SQLITE_PATH"))
+
+
+def ensure_schema() -> None:
+    """Create/migrate the mapping schema for the CURRENT database (once per DB).
+
+    Idempotent and free after the first call for a given database, so it is
+    safe on hot request paths (no DDL is issued once the schema exists)."""
+    key = _db_schema_key()
+    if key in _ENSURED_DB_KEYS:
+        return
+    _ensure_tables()
+    _ENSURED_DB_KEYS.add(key)
+
+
+ensure_schema()

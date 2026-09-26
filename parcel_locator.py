@@ -46,6 +46,7 @@ def _json(value: Any) -> Any:
 
 def _authorized_property_ids(user: Dict[str, Any]) -> Optional[set[str]]:
     """Return parcel IDs visible through the canonical document RBAC."""
+    mapping.ensure_schema()
     role = str(user.get("role") or "").upper()
     if role in {"ADMIN", "VERIFICATION_OFFICER"}:
         return None
@@ -63,6 +64,7 @@ def _authorized_property_ids(user: Dict[str, Any]) -> Optional[set[str]]:
 
 
 def _visible_properties(user: Dict[str, Any]) -> List[Any]:
+    mapping.ensure_schema()
     allowed = _authorized_property_ids(user)
     with get_db() as db:
         rows = db.execute("SELECT * FROM properties ORDER BY village, survey_number, property_id").fetchall()

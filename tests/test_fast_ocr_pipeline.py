@@ -284,25 +284,30 @@ def test_bulk_uses_same_pipeline_and_resolves_parcel():
     assert seeded.status_code == 200, seeded.text
 
     sample = Path("samples/demo-land-intel/DEMO-LI-COURT-001-court-order.pdf")
-    cb = client.post("/api/bulk", headers=headers, json={"mode": "ocr_li"})
-    bid = cb.json()["batch_id"]
-    up = client.post(f"/api/bulk/{bid}/files", headers=headers,
-                     files={"file": (sample.name, sample.read_bytes(), "application/pdf")})
-    assert up.status_code == 200, up.text
-    assert up.json()["status"] == "OK"
-    doc_id = up.json()["doc_id"]
+    try:
+        cb = client.post("/api/bulk", headers=headers, json={"mode": "ocr_li"})
+        bid = cb.json()["batch_id"]
+        up = client.post(f"/api/bulk/{bid}/files", headers=headers,
+                         files={"file": (sample.name, sample.read_bytes(), "application/pdf")})
+        assert up.status_code == 200, up.text
+        assert up.json()["status"] == "OK"
+        doc_id = up.json()["doc_id"]
 
-    detail = client.get(f"/api/documents/{doc_id}", headers=headers).json()
-    assert detail["fields"]["survey_number"]["value"] == "131"
-    assert detail["fields"]["village"]["value"] == "Shantiban"
-    context = detail["land_context"]
-    assert context.get("matched") is True
-    banner = context.get("litigation_banner") or {}
-    assert banner.get("text") == "Active litigation found for this property"
-    assert banner.get("case_number") == "DEMO-CS-2025-0142"
+        detail = client.get(f"/api/documents/{doc_id}", headers=headers).json()
+        assert detail["fields"]["survey_number"]["value"] == "131"
+        assert detail["fields"]["village"]["value"] == "Shantiban"
+        context = detail["land_context"]
+        assert context.get("matched") is True
+        banner = context.get("litigation_banner") or {}
+        assert banner.get("text") == "Active litigation found for this property"
+        assert banner.get("case_number") == "DEMO-CS-2025-0142"
 
-    # The batch item carries the RBAC-scoped statuses through the same resolver.
-    batch = client.get(f"/api/bulk/{bid}", headers=headers).json()
-    item = batch["items"][0]
-    assert item["parcel_match"]
-    assert item["litigation_status"] == "ACTIVE_LITIGATION"
+        # The batch item carries the RBAC-scoped statuses through the same resolver.
+        batch = client.get(f"/api/bulk/{bid}", headers=headers).json()
+        item = batch["items"][0]
+        assert item["parcel_match"]
+        assert item["litigation_status"] == "ACTIVE_LITIGATION"
+    finally:
+        # Wipe the demo corpus (including the uploaded sample) so repeated test
+        # runs never inherit stale demo documents.
+        client.delete("/api/admin/demo/data", headers=headers)

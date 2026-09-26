@@ -209,6 +209,10 @@ def cache_lookup(chash: str, user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         metadata = json.loads(row["metadata_json"] or "{}")
     except Exception:
         metadata = {}
+    if metadata.get("ocr_engine_error") and get_server().tesseract_available():
+        # Cached while the OCR engine was broken and the engine works NOW:
+        # treat as a miss so the document is re-processed for real.
+        return None
     return {
         "content_hash": chash,
         "source_doc_id": row["source_doc_id"],
@@ -251,13 +255,33 @@ def cache_store(chash: str, user: Dict[str, Any], source_doc_id: str, filename: 
     if isinstance(fields.get("document_type"), dict):
         doc_type_val = fields["document_type"].get("value", "Land Record") or "Land Record"
     with _get_db() as db:
+        # ON CONFLICT works on BOTH PostgreSQL and modern SQLite (the previous
+        # SQLite-only INSERT OR REPLACE was invalid PostgreSQL syntax and made
+        # every production OCR request fail after OCR completed).
         db.execute(
             """
-            INSERT OR REPLACE INTO ocr_cache (
+            INSERT INTO ocr_cache (
                 content_hash, owner_email, owner_role, visibility_scope, source_doc_id,
                 filename, lang, ocr_text, cleaned_text, detected_language, confidence,
                 fields, validation, ocr_method, pages, word_count, metadata_json, created_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT (content_hash) DO UPDATE SET
+                owner_email=excluded.owner_email,
+                owner_role=excluded.owner_role,
+                visibility_scope=excluded.visibility_scope,
+                source_doc_id=excluded.source_doc_id,
+                filename=excluded.filename,
+                lang=excluded.lang,
+                ocr_text=excluded.ocr_text,
+                cleaned_text=excluded.cleaned_text,
+                detected_language=excluded.detected_language,
+                confidence=excluded.confidence,
+                fields=excluded.fields,
+                validation=excluded.validation,
+                ocr_method=excluded.ocr_method,
+                pages=excluded.pages,
+                word_count=excluded.word_count,
+                metadata_json=excluded.metadata_json
             """,
             (
                 chash,
@@ -280,6 +304,12 @@ def cache_store(chash: str, user: Dict[str, Any], source_doc_id: str, filename: 
                 time.time(),
             ),
         )
+
+
+# Capability marker: the canonical cache/OCR implementations carry the
+# production fixes (PostgreSQL-safe UPSERT, engine-error surfacing, single-pass
+# line-structured OCR). The legacy runtime hotfixes must not shadow them.
+_CANONICAL_OCR_LIVE = True
 
 
 # ---------------------------------------------------------------------------
@@ -345,12 +375,15 @@ def run_fast_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
     """Deterministic OCR without Gemini pre-scan.
 
     Uses sensible defaults; AI verification is deferred to an async task and
-    does NOT block this path.
+    does NOT block this path. When the OCR engine itself is missing/broken the
+    result carries an ``engine_error`` key so callers can surface the reason
+    instead of silently returning empty text.
     """
     srv = get_server()
+    candidates = srv._ocr_languages(requested_lang or "auto")
     strategy = {
-        "lang": "hin+eng+tel+tam" if requested_lang in ("auto", "", None) else srv._ocr_languages(requested_lang)[0],
-        "lang_candidates": srv._ocr_languages(requested_lang),
+        "lang": candidates[0],
+        "lang_candidates": candidates,
         "psm": 3,
         "rotation": 0,
         "enhance": True,
@@ -427,6 +460,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     ocr_method = "tesseract"
     pages = 1
     intermediate_image = None
+    engine_error: Optional[str] = None
 
     if ext == ".pdf":
         if not srv.HAS_PDFIUM:
@@ -448,6 +482,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             detected_lang = ocr_res.get("detected_language", "eng")
             confidence = float(ocr_res.get("confidence", 0.0) or 0.0)
             word_count = int(ocr_res.get("word_count", 0) or 0)
+            engine_error = ocr_res.get("engine_error")
     else:
         # Image path
         from PIL import Image
@@ -462,6 +497,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
         detected_lang = ocr_res.get("detected_language", "eng")
         confidence = float(ocr_res.get("confidence", 0.0) or 0.0)
         word_count = int(ocr_res.get("word_count", 0) or 0)
+        engine_error = ocr_res.get("engine_error")
 
     # Deterministic field extraction. Reuse the canonical, tested extractor
     # (server.extract_fields_from_ocr) so the fast pipeline produces EXACTLY the
@@ -470,6 +506,16 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     detected = srv.extract_fields_from_ocr(ocr_text, filename or "upload")
     enriched_fields = detected["fields"]
     validation = detected["validation"]
+
+    # A missing/broken OCR engine must never look like a successful-but-blank
+    # document: surface the reason in every place the UI reads.
+    if engine_error and not ocr_text.strip():
+        validation.setdefault("issues", []).append({
+            "severity": "error",
+            "field": "ocr_text",
+            "msg": ("OCR engine unavailable on this server — no text could be extracted: "
+                    f"{engine_error}. Install Tesseract (plus language packs) or set TESSERACT_CMD."),
+        })
 
     duration_ms = int((time.time() - t0) * 1000)
     ocr_result_meta = {
@@ -484,8 +530,9 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     if doc_id:
         cache_store(chash, user or {}, doc_id, filename, lang,
                     ocr_result_meta, enriched_fields, validation, pages,
-                    metadata={})
+                    metadata={"ocr_engine_error": engine_error} if engine_error else {})
 
+    engine_limited = bool(engine_error) and not ocr_text.strip()
     return {
         "mean_conf": int(round(confidence * 100)),
         "languages": ["English", detected_lang],
@@ -496,12 +543,17 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
         "validation": validation,
         "ai_decision_support": {
             "pipeline_mode": "FAST_DETERMINISTIC_OCR",
-            "ocr_quality": "GOOD" if confidence >= 0.75 else ("UNCERTAIN" if confidence >= 0.45 else "FAILED"),
+            "ocr_quality": ("ENGINE_UNAVAILABLE" if engine_limited else
+                            "GOOD" if confidence >= 0.75 else ("UNCERTAIN" if confidence >= 0.45 else "FAILED")),
             "ocr_confidence": confidence,
             "ocr_word_count": word_count,
             "ocr_strategy": {"method": ocr_method},
-            "recommendation": "READY_FOR_REVIEW" if validation.get("verdict") != "rejected" else "REVIEW_REQUIRED",
-            "explanation": "Fast deterministic OCR; AI enhancement, parcel matching and Land Intelligence run asynchronously.",
+            "recommendation": ("INSTALL_OCR_ENGINE" if engine_limited else
+                               "READY_FOR_REVIEW" if validation.get("verdict") != "rejected" else "REVIEW_REQUIRED"),
+            "explanation": ("OCR engine (Tesseract) is unavailable on this server — install it (plus language "
+                            "packs) or set TESSERACT_CMD, then re-process this document."
+                            if engine_limited else
+                            "Fast deterministic OCR; AI enhancement, parcel matching and Land Intelligence run asynchronously."),
             "cache_hit": False,
             "ocr_method": ocr_method,
         },
@@ -514,8 +566,10 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             "ocr_method": ocr_method,
             "content_hash": chash,
             "duration_ms": duration_ms,
+            "ocr_engine": "unavailable" if engine_limited else ("pdf_text_layer" if ocr_method == "pdf_text_layer" else "tesseract"),
+            **({"ocr_engine_error": engine_error} if engine_limited else {}),
         },
-        "escalated": validation.get("verdict") == "rejected",
+        "escalated": validation.get("verdict") == "rejected" or engine_limited,
         "metadata": c_meta,
     }
 
