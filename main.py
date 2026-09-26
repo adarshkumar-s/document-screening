@@ -5,6 +5,13 @@ from fastapi.responses import FileResponse
 
 from server import BASE_DIR, app
 
+# Install narrow production hotfixes before any request can reach the upload
+# pipeline. This explicitly wires the fast OCR implementation and removes the
+# duplicate logged-in utility logo; it does not replace the DB, routes, queue,
+# mapping system, or Land Intelligence architecture.
+import runtime_patch
+runtime_patch.apply()
+
 # Install the document-processing bridge before any upload request can resolve
 # server.run_ocr_pipeline. This preserves the existing routes while allowing
 # text PDFs to bypass expensive raster OCR and ensuring OCR text can backfill
