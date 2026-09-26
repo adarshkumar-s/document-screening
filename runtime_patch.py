@@ -12,14 +12,14 @@ def _json(value):
         return "{}"
 
 
-def _rv(row, key, index):
+def _rowdict(row):
     try:
-        return row[key]
+        return {key: row[key] for key in row.keys()}
     except Exception:
         try:
-            return row[index]
+            return dict(row)
         except Exception:
-            return None
+            return {}
 
 
 def _backfill_demo_parcels():
@@ -33,11 +33,11 @@ def _backfill_demo_parcels():
                    ORDER BY village, property_id"""
             ).fetchall()
             village_seen = {}
-            for row in props:
-                property_id = _rv(row, "property_id", 0)
-                village = str(_rv(row, "village", 2) or "DEMO")
-                geometry = _rv(row, "geometry", 4)
-                if geometry:
+            for raw in props:
+                row = _rowdict(raw)
+                property_id = row.get("property_id")
+                village = str(row.get("village") or "DEMO")
+                if row.get("geometry"):
                     village_seen[village] = village_seen.get(village, 0) + 1
                     continue
                 index = village_seen.get(village, 0)
@@ -59,8 +59,9 @@ def _backfill_demo_parcels():
                 )
 
             docs = db.execute("SELECT id, fields FROM documents WHERE id LIKE 'DEMO-LI-%'").fetchall()
-            for doc in docs:
-                doc_id, raw_fields = _rv(doc, "id", 0), _rv(doc, "fields", 1)
+            for raw_doc in docs:
+                doc = _rowdict(raw_doc)
+                doc_id, raw_fields = doc.get("id"), doc.get("fields")
                 try:
                     fields = json.loads(raw_fields or "{}")
                 except Exception:
@@ -74,14 +75,15 @@ def _backfill_demo_parcels():
                 survey, village = fv("survey_number", "khasra_number", "plot_number"), fv("village")
                 if not survey or not village:
                     continue
-                prop = db.execute(
+                raw_prop = db.execute(
                     """SELECT property_id FROM properties WHERE property_id LIKE 'DEMO-LI-%'
                        AND LOWER(COALESCE(survey_number,''))=LOWER(?)
                        AND LOWER(COALESCE(village,''))=LOWER(?) LIMIT 1""",
                     (survey, village),
                 ).fetchone()
-                if prop:
-                    property_id = _rv(prop, "property_id", 0)
+                prop = _rowdict(raw_prop)
+                property_id = prop.get("property_id")
+                if property_id:
                     db.execute(
                         """INSERT INTO property_documents(property_id, document_id, source_type, linked_at)
                            VALUES (?,?,?,?) ON CONFLICT(property_id, document_id) DO NOTHING""",
