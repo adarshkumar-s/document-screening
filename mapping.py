@@ -14,6 +14,7 @@ import io
 import json
 import re
 import time
+import threading
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -42,6 +43,7 @@ MAP_NOMINATIM_USER_AGENT = "Document-Screening-Portfolio-Map/1.0"
 MAP_GEOCODE_TTL_SECONDS = 7 * 24 * 60 * 60
 _map_geocode_cache: Dict[str, Dict[str, Any]] = {}
 _map_last_geocode_request = 0.0
+_map_geocode_lock = threading.Lock()
 
 
 def _now() -> float:
@@ -1240,13 +1242,64 @@ def _public_geocode_result(value: Dict[str, Any]) -> Dict[str, Any]:
 
 @map_router.post("/geocode")
 def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_current_user)):
-    """Geocode a free-form village query with a cached Nominatim request."""
+    """Locate an explicitly selected record, with the land_records-style cascade.
+
+    Keep legacy query callers working. Structured callers get village-first
+    lookup and a clearly labelled district fallback, never an invented parcel pin.
+    """
     ensure_schema()
-    global _map_last_geocode_request
     query = str(payload.get("query") or "").strip()
-    if not query or len(query) > 200:
-        raise HTTPException(status_code=400, detail="query required (max 200 chars)")
-    key = _normalise(query)
+    if query:
+        if len(query) > 200:
+            raise HTTPException(status_code=400, detail="query too long (max 200 chars)")
+        return _map_geocode_query(query)
+    village, tehsil, district, state = (
+        str(payload.get(name) or "").strip() for name in ("village", "tehsil", "district", "state")
+    )
+    if not (village or district) or sum(map(len, (village, tehsil, district, state))) > 200:
+        raise HTTPException(status_code=400, detail="village/district required (max 200 chars combined)")
+    levels = []
+    if village:
+        if tehsil:
+            levels.append(([village, tehsil, district, state], "village"))
+        levels.extend([([village, district, state], "village"),
+                       ([village, district], "village"), ([village, state], "village")])
+    if district:
+        levels.append(([district, state], "district"))
+    attempted = set()
+    result = {"lat": None, "lon": None}
+    for parts, level in levels:
+        query = ", ".join([part for part in parts if part] + ["India"])
+        if query in attempted:
+            continue
+        attempted.add(query)
+        result = _map_geocode_query(query, state=state, district=district)
+        if result.get("lat") is not None and result.get("lon") is not None:
+            return {**result, "match_level": level, "approximate": True}
+        # An offline provider cannot improve with four more requests.
+        if result.get("unavailable"):
+            break
+    return {**result, "match_level": "unresolved"}
+
+
+def _geocode_candidate_matches(item: Dict[str, Any], state: str, district: str) -> bool:
+    address = item.get("address") or {}
+    display = _normalise(item.get("display_name") or "")
+    def matches(wanted, candidates):
+        wanted = _normalise(wanted)
+        return not wanted or any(wanted in _normalise(value) for value in candidates if value)
+    # Never accept a same-named village in a conflicting state/district.
+    # Display-name fallback supports providers with incomplete address objects.
+    return matches(state, [address.get("state") or display]) and matches(
+        district, [address.get("county"), address.get("state_district"),
+                   address.get("city_district"), address.get("district"), display])
+
+
+def _map_geocode_query(query: str, *, state: str = "", district: str = "") -> Dict[str, Any]:
+    global _map_last_geocode_request
+    # Structured matches must not reuse an unchecked legacy first-result cache.
+    key = _normalise(query) if not (state or district) else json.dumps(
+        ["scoped", _normalise(query), _normalise(state), _normalise(district)], ensure_ascii=False)
     cached = _map_geocode_cache.get(key)
     if cached is not None and (_now() - float(cached.get("_cached_at", 0))) < MAP_GEOCODE_TTL_SECONDS:
         return {**_public_geocode_result(cached), "cached": True}
@@ -1266,30 +1319,40 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
         _map_geocode_cache[key] = {**cached_result, "_cached_at": _now()}
         return {**cached_result, "cached": True}
 
-    elapsed = _now() - _map_last_geocode_request
-    if _map_last_geocode_request and elapsed < 1.1:
-        time.sleep(max(0.0, 1.1 - elapsed))
-    params = urllib.parse.urlencode({"format": "jsonv2", "limit": 1, "q": query, "countrycodes": "in"})
+    params = urllib.parse.urlencode({"format": "jsonv2", "limit": 5, "addressdetails": 1,
+                                     "q": query, "countrycodes": "in"})
     request_obj = urllib.request.Request(
         "https://nominatim.openstreetmap.org/search?" + params,
         headers={"User-Agent": MAP_NOMINATIM_USER_AGENT, "Accept": "application/json"},
     )
-    _map_last_geocode_request = _now()
-    data = []
     try:
-        with urllib.request.urlopen(request_obj, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        # Thread-safe throttling: two simultaneous record clicks must not send
+        # concurrent requests to Nominatim from FastAPI's worker pool.
+        with _map_geocode_lock:
+            elapsed = _now() - _map_last_geocode_request
+            if _map_last_geocode_request and elapsed < 1.1:
+                time.sleep(1.1 - elapsed)
+            _map_last_geocode_request = _now()
+            with urllib.request.urlopen(request_obj, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
     except Exception:
         return {"query": query, "lat": None, "lon": None, "display_name": None,
-                "error": "geocoding unavailable (offline?) - try again later", "cached": False}
-    if not isinstance(data, list) or not data:
-        result = {"query": query, "lat": None, "lon": None, "display_name": None,
-                  "error": "no match found for '%s'" % query}
-    else:
-        latitude, longitude = _number(data[0].get("lat")), _number(data[0].get("lon"))
+                "error": "geocoding unavailable (offline?) - try again later", "cached": False,
+                "unavailable": True}
+    result = {"query": query, "lat": None, "lon": None, "display_name": None,
+              "error": "no match found for '%s'" % query}
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict) or not _geocode_candidate_matches(item, state, district):
+            continue
+        latitude, longitude = _number(item.get("lat")), _number(item.get("lon"))
+        if latitude is None or longitude is None or not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            continue
         result = {"query": query, "lat": latitude, "lon": longitude,
-                  "display_name": data[0].get("display_name"), "source": "Nominatim", "cached": False}
-    _map_geocode_cache[key] = {**{k: v for k, v in result.items() if k != "cached"}, "_cached_at": _now()}
+                  "display_name": item.get("display_name"), "source": "Nominatim", "cached": False}
+        break
+    # Negative results get a short cache, not a seven-day permanent dead end.
+    ttl_offset = 0 if result["lat"] is not None else MAP_GEOCODE_TTL_SECONDS - 60
+    _map_geocode_cache[key] = {**{k: v for k, v in result.items() if k != "cached"}, "_cached_at": _now() - ttl_offset}
     # Persist only valid coordinate results in the shared cache. An unresolved
     # network response should be retried later rather than frozen indefinitely.
     if result.get("lat") is not None and result.get("lon") is not None:

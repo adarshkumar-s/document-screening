@@ -26,12 +26,13 @@ from court_cases import router as court_cases_router
 from demo_scenarios import demo_router, seed_all
 from backup_restore import backup_router
 from land_intelligence import router as land_intelligence_router
-from parcel_locator import router as parcel_locator_router
+from parcel_locator import map_router as parcel_map_router, router as parcel_locator_router
 
 # The parcel locator is mounted before the legacy mapping router so its
 # canonical RBAC-aware parcel endpoints are available without replacing the
 # existing document-map endpoints.
 app.include_router(parcel_locator_router)
+app.include_router(parcel_map_router)
 app.include_router(map_router)
 app.include_router(document_history_router)
 app.include_router(ai_approval_router)

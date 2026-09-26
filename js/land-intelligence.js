@@ -22,6 +22,12 @@
   function renderEncumbrances(){ $('encumbrances').innerHTML=`<div class="panel-head"><div><h2>Encumbrance register</h2><p>Mortgage/loan lifecycle with lender evidence and release history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Parcel</th><th>Lender</th><th>Reference</th><th>Amount</th><th>Start</th><th>Status</th><th>Evidence</th></tr></thead><tbody>${state.encumbrances.map(e=>`<tr><td>${esc(e.survey_number)} · ${esc(e.village)}</td><td>${esc(e.lender)}</td><td>${esc(e.reference_no||'—')}</td><td>${e.amount==null?'—':'₹'+Number(e.amount).toLocaleString('en-IN')}</td><td>${esc(e.start_date||'—')}</td><td>${pill(e.status,String(e.status).toUpperCase()==='ACTIVE'?'danger':'')}</td><td>${esc(e.evidence_doc_id||'—')}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">No encumbrances found.</td></tr>'}</tbody></table></div>`; }
   function renderCases(){ $('cases').innerHTML=`<div class="panel-head"><div><h2>Court cases / litigation</h2><p>Registered cases are parcel-linked and remain distinguishable from a court-certified search.</p></div></div><div class="table-wrap"><table><thead><tr><th>Case</th><th>Parcel</th><th>Parties</th><th>Court</th><th>Filed</th><th>Next hearing</th><th>Status</th><th></th></tr></thead><tbody>${state.cases.map(c=>`<tr><td><strong>${esc(c.case_number)}</strong><br><small>${esc(c.case_type)}</small></td><td>${esc(c.survey_number)} · ${esc(c.village)}</td><td>${esc(c.parties||[c.petitioner,c.respondent].filter(Boolean).join(' v. '))}</td><td>${esc(c.court_name||'—')}</td><td>${esc(c.filed_date||'—')}</td><td>${esc(c.next_hearing_date||'—')}</td><td>${pill(c.status,String(c.status).toUpperCase()==='ACTIVE'?'danger':'')}</td><td><button class="btn small" data-case="${esc(c.id)}">Open</button></td></tr>`).join('')||'<tr><td colspan="8" class="empty">No court cases found.</td></tr>'}</tbody></table></div>`; document.querySelectorAll('[data-case]').forEach(b=>b.onclick=()=>openCase(b.dataset.case)); }
   function renderRisk(){ $('risk').innerHTML=`<div class="panel-head"><div><h2>Risk review</h2><p>Deterministic workflow signals for human verification.</p></div></div><div class="table-wrap"><table><thead><tr><th>Parcel</th><th>Owner</th><th>Verdict</th><th>Encumbrance</th><th>Litigation</th><th>Action</th></tr></thead><tbody>${state.records.map(r=>`<tr><td>${esc(r.survey)} · ${esc(r.village)}</td><td>${esc(r.current_owner||'—')}</td><td>${pill(r.risk_verdict||'CLEAR',String(r.risk_verdict).toUpperCase()==='HIGH_RISK'?'danger':'')}</td><td>${pill(r.encumbrance_status||'NONE')}</td><td>${pill(r.litigation_status||'NONE')}</td><td><button class="btn small" data-open-land="${esc(r.land_id)}">Review</button></td></tr>`).join('')||'<tr><td colspan="6" class="empty">No parcels found.</td></tr>'}</tbody></table></div>`; document.querySelectorAll('[data-open-land]').forEach(b=>b.onclick=()=>openLand(b.dataset.openLand)); }
+  function mapCoordinate(lat, lon) {
+    if (lat == null || lon == null || String(lat).trim() === '' || String(lon).trim() === '') return null;
+    const point = [Number(lat), Number(lon)];
+    return point.every(Number.isFinite) && Math.abs(point[0]) <= 90 && Math.abs(point[1]) <= 180 ? point : null;
+  }
+
   async function renderMap(){
     $('map').innerHTML=`<div class="panel-head"><div><h2>Parcel mapping</h2><p>Reference geometry is non-authoritative; reviewer pins remain auditable.</p></div></div><div class="map-filterbar"><label>Village <input id="mapVillage" placeholder="Village"></label><label>District <input id="mapDistrict" placeholder="District"></label><label>Survey/Khasra <input id="mapSurvey" placeholder="Survey"></label><button id="mapSearch" class="btn primary small">Search map</button></div><div id="mapCanvas" class="map-canvas"></div><div id="mapList" class="map-list"></div>`;
     if(typeof L==='undefined'){ $('mapCanvas').innerHTML='<div class="empty">Leaflet could not be loaded.</div>'; return; }
@@ -32,12 +38,61 @@
       if(map){map.remove();map=null;} map=L.map('mapCanvas',{preferCanvas:true}).setView([22.9734,78.6569],5);
       const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
       const parcels=L.layerGroup().addTo(map),pins=L.layerGroup().addTo(map),bounds=[];
-      state.properties.forEach(p=>{const g=p.geometry; if(g?.type==='Polygon'&&Array.isArray(g.coordinates?.[0])){const ll=g.coordinates[0].map(x=>[Number(x[1]),Number(x[0])]).filter(x=>x.every(Number.isFinite));if(ll.length>=3){const poly=L.polygon(ll,{color:'#2563eb',weight:2,fillOpacity:.18}).addTo(parcels);poly.bindPopup(`<strong>${esc(p.survey_number||p.parcel_id)}</strong><br>${esc(p.village||'')} · ${esc(p.district||'')}<br><small>Reference geometry — not authoritative cadastral boundary.</small>`);ll.forEach(x=>bounds.push(x));}} const lat=Number(p.location?.latitude??p.latitude),lon=Number(p.location?.longitude??p.longitude);if(Number.isFinite(lat)&&Number.isFinite(lon)){L.circleMarker([lat,lon],{radius:6,color:'#0f2b48',fillOpacity:.9}).bindPopup(`<strong>${esc(p.survey_number||p.parcel_id)}</strong><br>${esc(p.village||'')}<br>${esc(p.location?.status||'STORED_LOCATION')}`).addTo(pins);bounds.push([lat,lon]);}});
-      state.mapRecords.forEach(r=>{const lat=Number(r.lat),lon=Number(r.lon);if(Number.isFinite(lat)&&Number.isFinite(lon)){const m=L.marker([lat,lon]).addTo(pins);m.bindPopup(`<strong>${esc(r.survey||r.id)}</strong><br>${esc(r.village||'')}<br>${esc(r.owner||'')}<br><button class="btn small" onclick="window.LandIntelligenceOpen('${esc(r.land_id||r.id)}')">Open parcel</button>`);bounds.push([lat,lon]);}});
-      L.control.layers({'OpenStreetMap':osm,'Reference parcels':parcels,'Reviewer/document pins':pins}).addTo(map);if(bounds.length)map.fitBounds(bounds,{padding:[25,25],maxZoom:16});
-      const renderList=rows=>{$('mapList').innerHTML=rows.map(r=>`<div class="map-row"><div><strong>${esc(r.title)}</strong><span>${esc(r.subtitle)}</span><small>${esc(r.status)}</small></div>${r.land?`<button class="btn small" data-open-land="${esc(r.land)}">Open parcel</button>`:''}</div>`).join('')||'<div class="empty">No mapped parcels.</div>';document.querySelectorAll('[data-open-land]').forEach(b=>b.onclick=()=>openLand(b.dataset.openLand));};
-      renderList(state.mapRecords.map(r=>({title:r.survey||r.id,subtitle:`${r.village||''} · ${r.owner||'—'}`,status:r.location_status||'UNRESOLVED',land:r.land_id||r.id})));
-      $('mapSearch').onclick=async()=>{const v=$('mapVillage').value.trim().toLowerCase(),d=$('mapDistrict').value.trim().toLowerCase(),s=$('mapSurvey').value.trim().toLowerCase();const filtered=state.mapRecords.filter(r=>(!v||String(r.village||'').toLowerCase().includes(v))&&(!d||String(r.district||'').toLowerCase().includes(d))&&(!s||String(r.survey||'').toLowerCase().includes(s)));renderList(filtered.map(r=>({title:r.survey||r.id,subtitle:`${r.village||''} · ${r.owner||'—'}`,status:r.location_status||'UNRESOLVED',land:r.land_id||r.id})));};
+      state.properties.forEach(p=>{const g=p.geometry; if(g?.type==='Polygon'&&Array.isArray(g.coordinates?.[0])){const ll=g.coordinates[0].map(x=>[Number(x[1]),Number(x[0])]).filter(x=>x.every(Number.isFinite));if(ll.length>=3){const poly=L.polygon(ll,{color:'#2563eb',weight:2,fillOpacity:.18}).addTo(parcels);poly.bindPopup(`<strong>${esc(p.survey_number||p.parcel_id)}</strong><br>${esc(p.village||'')} · ${esc(p.district||'')}<br><small>Reference geometry — not authoritative cadastral boundary.</small>`);ll.forEach(x=>bounds.push(x));}} const point=mapCoordinate(p.location?.latitude??p.latitude,p.location?.longitude??p.longitude);if(point){const [lat,lon]=point;L.circleMarker([lat,lon],{radius:6,color:'#0f2b48',fillOpacity:.9}).bindPopup(`<strong>${esc(p.survey_number||p.parcel_id)}</strong><br>${esc(p.village||'')}<br>${esc(p.location?.status||'STORED_LOCATION')}`).addTo(pins);bounds.push([lat,lon]);}});
+      state.mapRecords.forEach(r=>{const point=mapCoordinate(r.lat,r.lon);if(point){const [lat,lon]=point;const m=L.marker([lat,lon]).addTo(pins);m.bindPopup(`<strong>${esc(r.survey||r.id)}</strong><br>${esc(r.village||'')}<br>${esc(r.owner||'')}<br><a class="btn small" href="/map?document_id=${encodeURIComponent(r.id)}&amp;locate=1">Locate record</a>`);bounds.push([lat,lon]);}});
+      L.control.layers({'OpenStreetMap':osm},{'Reference parcels':parcels,'Reviewer/document pins':pins}).addTo(map);if(bounds.length)map.fitBounds(bounds,{padding:[25,25],maxZoom:16});
+      // Record IDs are not land IDs. Locate the selected document instead of
+      // sending its ID to the unrelated land-detail endpoint.
+      const currentMap = map;
+      let selection = 0, selectedLayer = null;
+      async function locateRecord(id) {
+        const record = state.mapRecords.find(r => String(r.id) === String(id));
+        if (!record) return;
+        const request = ++selection;
+        if (selectedLayer) { selectedLayer.remove(); selectedLayer = null; }
+        try {
+          const geometry = record.reference_geometry || record.reference_property?.geometry;
+          let point = mapCoordinate(record.lat, record.lon), level = 'exact';
+          if (!geometry && !point) {
+            if (!record.village && !record.district) throw new Error('This record has no stored position, village, or district to locate.');
+            showMessage('Locating selected record…');
+            const location = await api('/api/map/geocode', {method:'POST', headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({village:record.village||'', tehsil:record.tehsil||'', district:record.district||'', state:record.state||''})});
+            if (request !== selection || map !== currentMap) return;
+            point = mapCoordinate(location.lat, location.lon);
+            if (!point) throw new Error(location.error || 'Location not found. No coordinate was fabricated.');
+            level = location.match_level === 'district' ? 'district' : 'village';
+          }
+          if (request !== selection || map !== currentMap) return;
+          const label = geometry ? 'Reference geometry — not an authoritative boundary'
+            : level === 'exact' ? 'Exact reviewer pin' : `Approximate ${level} location — not an exact parcel pin`;
+          if (geometry) {
+            selectedLayer = L.geoJSON(geometry, {style:{color:'#1d4ed8', weight:4, fillOpacity:.15}});
+            const bounds = selectedLayer.getBounds();
+            if (!bounds.isValid()) throw new Error('Stored reference geometry is invalid.');
+            selectedLayer.addTo(map);
+            map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
+          } else {
+            selectedLayer = L.circleMarker(point, {radius:10, color:'#1d4ed8', fillOpacity:.85}).addTo(map);
+            map.setView(point, level === 'exact' ? 16 : level === 'district' ? 10 : 13);
+          }
+          selectedLayer.bindPopup(`<strong>${esc(record.owner || record.survey || record.id)}</strong><br>${esc(label)}`).openPopup();
+          showMessage(label);
+        } catch (error) {
+          if (request === selection && map === currentMap) showMessage(error.message);
+        }
+      }
+      const renderList = rows => {
+        $('mapList').innerHTML = rows.map(r => `<div class="map-row" data-locate-record="${esc(r.id)}" role="button" tabindex="0">
+          <div><strong>${esc(r.title)}</strong><span>${esc(r.subtitle)}</span><small>${esc(r.status)}</small></div>
+          <button class="btn small" type="button">Locate on map</button></div>`).join('') || '<div class="empty">No matching records.</div>';
+        $('mapList').querySelectorAll('[data-locate-record]').forEach(row => {
+          row.onclick = () => locateRecord(row.dataset.locateRecord);
+          row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); locateRecord(row.dataset.locateRecord); } };
+        });
+      };
+      renderList(state.mapRecords.map(r=>({title:r.survey||r.id,subtitle:`${r.village||''} · ${r.owner||'—'}`,status:r.location_status||'UNRESOLVED',id:r.id})));
+      $('mapSearch').onclick=async()=>{const v=$('mapVillage').value.trim().toLowerCase(),d=$('mapDistrict').value.trim().toLowerCase(),s=$('mapSurvey').value.trim().toLowerCase();const filtered=state.mapRecords.filter(r=>(!v||String(r.village||'').toLowerCase().includes(v))&&(!d||String(r.district||'').toLowerCase().includes(d))&&(!s||String(r.survey||'').toLowerCase().includes(s)));renderList(filtered.map(r=>({title:r.survey||r.id,subtitle:`${r.village||''} · ${r.owner||'—'}`,status:r.location_status||'UNRESOLVED',id:r.id})));};
     }catch(e){$('mapCanvas').innerHTML=`<div class="empty">Unable to load parcel mapping: ${esc(e.message)}</div>`;showMessage(e.message);}
   }
   function renderReports(){ $('reports').innerHTML='<div class="panel-head"><div><h2>Verification reports</h2><p>Generate a parcel report from deterministic evidence.</p></div></div><div class="report-grid">'+state.records.map(r=>`<article class="report-card"><strong>${esc(r.survey||r.land_id)}</strong><span>${esc(r.village)} · ${esc(r.current_owner||'—')}</span><button class="btn small" data-report="${esc(r.land_id)}">Generate report</button></article>`).join('')+'</div>'; document.querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>generateReport(b.dataset.report)); }
