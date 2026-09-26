@@ -547,8 +547,12 @@ def clear_all() -> Dict[str, int]:
     removed = {"documents": 0, "encumbrances": 0, "mutations": 0, "events": 0, "court_cases": 0, "case_orders": 0,
                "properties": 0, "property_links": 0, "provenance": 0, "timeline": 0}
     with get_db() as db:
-        doc_ids = [row["id"] for row in db.execute("SELECT id, metadata FROM documents").fetchall()
-                   if _is_li_document(row["metadata"])]
+        # DEMO-LI artifacts are recognised by their seeder metadata OR by the
+        # reserved sample-file names of the demo corpus: uploads of the demo
+        # sample documents carry user metadata, and leaving them behind after
+        # "Wipe demo data" polluted the ownership chain of later sessions.
+        doc_ids = [row["id"] for row in db.execute("SELECT id, metadata, filename FROM documents").fetchall()
+                   if _is_li_document(row["metadata"]) or str(row["filename"] or "").startswith("DEMO-LI-")]
         if doc_ids:
             placeholders = ",".join("?" for _ in doc_ids)
             db.execute(f"DELETE FROM property_documents WHERE document_id IN ({placeholders})", tuple(doc_ids))

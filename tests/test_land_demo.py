@@ -51,12 +51,73 @@ def _count(db, table, prefix="DEMO-LI-%"):
     return db.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE id LIKE ?", (prefix,)).fetchone()["n"]
 
 
+def _purge_non_demo_rows_on_demo_parcels():
+    """The LI verdicts describe the demo dataset exactly, but other tests (or
+    previous suite runs) can leave documents/register rows that later join the
+    same parcels. Drop every non-demo row that lands on a demo parcel so the
+    scenario is self-contained regardless of suite order."""
+    import court_cases as court_cases_mod
+    import land_intel
+    from mapping import ensure_schema, get_db
+
+    ensure_schema()
+    land_intel.ensure_land_tables()
+    court_cases_mod.ensure_schema()
+    admin = {"email": "demo-pristine@vectorflux.in", "role": "ADMIN",
+             "full_name": "Demo Pristine", "d_token": "x"}
+    lands = land_intel._land_records_index(admin)
+    demo_lands = [
+        land for land in lands.values()
+        if any(str(record.get("id") or "").startswith("DEMO-LI-")
+               for record in land.get("records") or [])
+    ]
+    if not demo_lands:
+        return
+
+    def norm(value):
+        return str(value or "").lower().replace(" ", "")
+
+    stray_doc_ids = {
+        str(record.get("id"))
+        for land in demo_lands
+        for record in land.get("records") or []
+        if record.get("id") and not str(record.get("id")).startswith("DEMO-LI-")
+    }
+    parcels = {(norm(land.get("survey")), norm(land.get("village"))) for land in demo_lands}
+
+    def row_on_parcel(survey, village):
+        row_survey = norm(survey)
+        row_village = norm(village)
+        for survey_n, village_n in parcels:
+            if row_survey and row_survey == survey_n and (
+                    not row_village or not village_n or row_village == village_n):
+                return True
+        return False
+
+    with get_db() as db:
+        for doc_id in stray_doc_ids:
+            db.execute("DELETE FROM documents WHERE id=?", (doc_id,))
+            db.execute("DELETE FROM property_documents WHERE document_id=?", (doc_id,))
+        for table in ("land_encumbrances", "land_mutations"):
+            for row in db.execute(f"SELECT id, survey_number, khasra_number, village FROM {table}").fetchall():
+                if str(row["id"]).startswith("DEMO-LI-"):
+                    continue
+                if row_on_parcel(norm(row["survey_number"]) or norm(row["khasra_number"]), row["village"]):
+                    db.execute(f"DELETE FROM {table} WHERE id=?", (row["id"],))
+        for row in db.execute("SELECT id, survey_number, village FROM land_court_cases").fetchall():
+            if str(row["id"]).startswith("DEMO-LI-"):
+                continue
+            if row_on_parcel(row["survey_number"], row["village"]):
+                db.execute("DELETE FROM land_court_cases WHERE id=?", (row["id"],))
+
+
 @pytest.fixture
 def li_demo(make_user_client):
     """Admin client with the DEMO-LI dataset seeded; wiped afterwards."""
     client, headers, _ = make_user_client("ADMIN", prefix="lidemo")
     response = client.post("/api/admin/demo/seed", json={"scenario": "LI"}, headers=headers)
     assert response.status_code == 200, response.text
+    _purge_non_demo_rows_on_demo_parcels()
     yield client, headers
     client.delete("/api/admin/demo/data", headers=headers)
 

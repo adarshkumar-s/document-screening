@@ -7,7 +7,43 @@ critical upload path.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
+
+
+def extract_pdf_text(content: bytes) -> Tuple[str, int]:
+    """Return ``(text, pages)`` for a PDF.
+
+    Uses the embedded text layer of EVERY page (deterministic, fast, no OCR).
+    When the file is a scan with no usable text layer, falls back to the
+    canonical fast OCR of the first page so callers still get text."""
+    import server
+
+    if not getattr(server, "HAS_PDFIUM", False):
+        raise ValueError("PDF processing is unavailable because the PDF engine is not installed")
+    pdf = server.pdfium.PdfDocument(content)
+    pages = len(pdf)
+    if pages == 0:
+        raise ValueError("PDF contains no pages")
+    collected = []
+    for index in range(pages):
+        try:
+            textpage = pdf[index].get_textpage()
+            page_text = textpage.get_text_range() or ""
+            textpage.close()
+        except Exception:
+            page_text = ""
+        collected.append(page_text)
+    text = "\n".join(collected).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    words = [w for w in text.split() if any(ch.isalnum() for ch in w)]
+    if len(text) < 40 or len(words) < 8:
+        # Scanned PDF: rasterize once and use the canonical fast OCR path.
+        import ocr_pipeline
+
+        image, _page_count = ocr_pipeline._render_pdf_first_page(content)
+        ocr_result = ocr_pipeline.run_fast_ocr(image)
+        text = (ocr_result.get("text") or "").strip()
+    return text, pages
 
 
 def install() -> None:

@@ -37,6 +37,14 @@ def _json(value: Any) -> str:
 def _patch_ocr_pipeline(mod):
     if getattr(mod, "_runtime_hotfix_applied", False):
         return
+    if getattr(mod, "_CANONICAL_OCR_LIVE", False):
+        # The canonical ocr_pipeline now carries the production fixes that this
+        # hotfix used to provide: PostgreSQL-safe OCR cache UPSERT and a single
+        # fast Tesseract pass with engine-failure surfacing. Shadowing the
+        # canonical functions here re-introduced silent empty OCR results and
+        # extra recognition passes, so the patch is a no-op on modern builds.
+        mod._runtime_hotfix_applied = True
+        return
 
     # ------------------------------------------------------------------
     # PostgreSQL-safe OCR cache UPSERT.

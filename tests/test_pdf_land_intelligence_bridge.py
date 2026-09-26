@@ -53,22 +53,26 @@ def test_uploaded_court_pdf_gets_land_context_when_demo_records_are_seeded():
     headers = _make_admin()
     seeded = client.post("/api/admin/demo/seed", json={"scenario": "LI"}, headers=headers)
     assert seeded.status_code == 200, seeded.text
+    try:
+        sample = Path("samples/demo-land-intel/DEMO-LI-COURT-001-court-order.pdf")
+        response = client.post(
+            "/api/process",
+            files={"file": (sample.name, sample.read_bytes(), "application/pdf")},
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["fields"]["survey_number"]["value"] == "131"
+        assert payload["fields"]["village"]["value"] == "Shantiban"
 
-    sample = Path("samples/demo-land-intel/DEMO-LI-COURT-001-court-order.pdf")
-    response = client.post(
-        "/api/process",
-        files={"file": (sample.name, sample.read_bytes(), "application/pdf")},
-        headers=headers,
-    )
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["fields"]["survey_number"]["value"] == "131"
-    assert payload["fields"]["village"]["value"] == "Shantiban"
-
-    detail = client.get(f"/api/documents/{payload['id']}", headers=headers)
-    assert detail.status_code == 200, detail.text
-    context = detail.json().get("land_context") or {}
-    assert context.get("matched") is True
-    banner = context.get("litigation_banner") or {}
-    assert banner.get("text") == "Active litigation found for this property"
-    assert banner.get("case_number") == "DEMO-CS-2025-0142"
+        detail = client.get(f"/api/documents/{payload['id']}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        context = detail.json().get("land_context") or {}
+        assert context.get("matched") is True
+        banner = context.get("litigation_banner") or {}
+        assert banner.get("text") == "Active litigation found for this property"
+        assert banner.get("case_number") == "DEMO-CS-2025-0142"
+    finally:
+        # Wipe the demo corpus (including this uploaded sample) so repeated
+        # test runs never inherit stale demo documents.
+        client.delete("/api/admin/demo/data", headers=headers)

@@ -44,12 +44,67 @@ except ImportError:
 # OCR Engine
 try:
     import pytesseract
-    tesseract_cmd = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-    if os.path.isfile(tesseract_cmd):
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
     HAS_TESSERACT = True
 except ImportError:
+    pytesseract = None
     HAS_TESSERACT = False
+
+
+def _known_tesseract_locations() -> list:
+    """Well-known install locations. The default Windows Tesseract-OCR install
+    is NOT on PATH — the #1 cause of 'OCR is not working' reports."""
+    cands = []
+    if os.name == "nt":
+        cands += [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        ]
+        for env in ("LOCALAPPDATA", "ProgramData", "APPDATA"):
+            base = os.environ.get(env)
+            if base:
+                cands += [
+                    os.path.join(base, "Programs", "Tesseract-OCR", "tesseract.exe"),
+                    os.path.join(base, "chocolatey", "bin", "tesseract.exe"),
+                ]
+    return cands
+
+
+def locate_tesseract() -> str:
+    """Find the Tesseract binary: TESSERACT_CMD env -> well-known installs ->
+    system PATH. Returns '' when not found."""
+    import shutil
+    cands = [os.getenv("TESSERACT_CMD", "")] + _known_tesseract_locations() + ["tesseract"]
+    for cand in cands:
+        if not cand:
+            continue
+        resolved = cand if os.path.isabs(cand) else (shutil.which(cand) or "")
+        if resolved and os.path.exists(resolved):
+            return resolved
+    return ""
+
+
+if HAS_TESSERACT:
+    _tesseract_bin = locate_tesseract()
+    if _tesseract_bin:
+        pytesseract.pytesseract.tesseract_cmd = _tesseract_bin
+
+_TESSERACT_OK: "bool | None" = None
+
+
+def tesseract_available() -> bool:
+    """True when the Tesseract binary is actually reachable (cached)."""
+    global _TESSERACT_OK
+    if _TESSERACT_OK is None:
+        ok = False
+        if HAS_TESSERACT:
+            try:
+                import shutil as _sh
+                cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or "tesseract"
+                ok = os.path.isfile(cmd) or bool(_sh.which(cmd))
+            except Exception:
+                ok = False
+        _TESSERACT_OK = ok
+    return _TESSERACT_OK
 
 # AI Engine Setup
 try:
@@ -669,12 +724,41 @@ def _rotate_image(image: Image.Image, rotation: int) -> Image.Image:
     return image
 
 
+_AVAILABLE_OCR_LANGS: "set | None" = None
+
+
+def available_ocr_languages() -> "set | None":
+    """Language packs actually installed for this Tesseract (cached).
+
+    Returns None when the set cannot be determined (engine missing), so the
+    caller keeps the legacy candidate list."""
+    global _AVAILABLE_OCR_LANGS
+    if _AVAILABLE_OCR_LANGS is None and HAS_TESSERACT and tesseract_available():
+        try:
+            _AVAILABLE_OCR_LANGS = set(pytesseract.get_languages(config=""))
+        except Exception:
+            _AVAILABLE_OCR_LANGS = None
+    return _AVAILABLE_OCR_LANGS
+
+
 def _ocr_languages(preferred: str = "auto") -> List[str]:
-    """Return Tesseract language candidates from the shared 21-language list."""
+    """Return Tesseract language candidates from the shared 21-language list.
+
+    Explicit language codes are honoured exactly. For "auto" the multilingual
+    candidate is filtered down to the language packs that are actually
+    installed, so a machine without e.g. Telugu data does not pay for a doomed
+    multi-language Tesseract spawn on every page (speed), while a fully
+    equipped machine keeps the same hin+eng+tel+tam behaviour."""
     requested = (preferred or "auto").lower().strip()
     supported_codes = {item["code"] for item in SUPPORTED_LANGUAGES}
     if requested in supported_codes:
         return [requested]
+    installed = available_ocr_languages()
+    if installed is not None:
+        combo = [code for code in ("hin", "eng", "tel", "tam") if code in installed]
+        if not combo:
+            combo = ["eng"]
+        return ["+".join(combo), "eng"]
     # Keep the existing multilingual behaviour as the first choice for auto mode.
     return ["hin+eng+tel+tam", "eng"]
 
@@ -709,9 +793,11 @@ def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, An
 
     data = None
     selected_lang = "eng"
+    last_error: Optional[Exception] = None
     for candidate in lang_candidates:
         try:
             if not HAS_TESSERACT:
+                last_error = RuntimeError("Tesseract OCR engine is not installed (python package pytesseract missing)")
                 break
             data = pytesseract.image_to_data(
                 img,
@@ -721,16 +807,31 @@ def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, An
             )
             selected_lang = candidate
             break
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             continue
 
     if data is None:
-        return {"text": "", "confidence": 0.0, "tokens": [], "detected_language": "English"}
+        # Distinguish "engine broken/missing" (silent-failure trap) from a blank
+        # page: callers surface engine_error so the user sees WHY no text came
+        # out instead of an empty-but-successful result.
+        detail = str(last_error) if last_error else "OCR engine is unavailable"
+        return {"text": "", "confidence": 0.0, "tokens": [], "detected_language": "English",
+                "word_count": 0, "engine_error": detail}
 
     words: List[str] = []
     confs: List[float] = []
     tokens: List[Dict[str, Any]] = []
-    for i, raw_word in enumerate(data.get("text", [])):
+    # Rebuild line-structured text from the SAME image_to_data pass (no second
+    # Tesseract call): field extraction relies on line boundaries, and joining
+    # every word into one flat line made label values swallow the whole page.
+    line_words: Dict[Tuple[int, int, int], List[str]] = {}
+    line_order: List[Tuple[int, int, int]] = []
+    raw_texts = data.get("text", [])
+    block_nums = data.get("block_num") or [0] * len(raw_texts)
+    par_nums = data.get("par_num") or [0] * len(raw_texts)
+    line_nums = data.get("line_num") or [0] * len(raw_texts)
+    for i, raw_word in enumerate(raw_texts):
         word = str(raw_word or "").strip()
         try:
             raw_conf = float(data.get("conf", ["-1"])[i])
@@ -751,8 +852,16 @@ def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, An
                 int(data.get("height", [0])[i]),
             ],
         })
+        try:
+            line_key = (int(block_nums[i]), int(par_nums[i]), int(line_nums[i]))
+        except Exception:
+            line_key = (0, 0, len(line_order))
+        if line_key not in line_words:
+            line_words[line_key] = []
+            line_order.append(line_key)
+        line_words[line_key].append(word)
 
-    text = " ".join(words)
+    text = "\n".join(" ".join(line_words[key]) for key in line_order)
     avg_conf = float(sum(confs) / len(confs)) if confs else 0.0
     detected = detect_primary_script(text)
     return {
@@ -1612,35 +1721,367 @@ def _normalize_ocr_text(text: str) -> str:
     return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
 
 
+# ---------------------------------------------------------------------------
+# Robust label extraction (separator-optional + OCR-typo tolerant)
+#
+# Real OCR output is NOT "Label: Value" — Tesseract routinely drops colons and
+# table cells come out as "Label Value" or label and value on consecutive
+# lines. The strict regex pass below keeps the historical behaviour; the
+# label-scan pass fills whatever it missed using the same label machinery the
+# land_records reference extractor proved out (label -> remainder of line,
+# value cut at the next label, junk-word stripping, numeric single-token
+# fields). Both passes share _finalize_field_value so extraction rules cannot
+# drift apart.
+# ---------------------------------------------------------------------------
+FIELD_LABELS: Dict[str, Tuple[str, ...]] = {
+    "owner_name": (
+        "name of the landowner", "name of landowner", "landowner name", "name of owner",
+        "land owner name", "owner name", "landowner", "land owner", "owner",
+        "khatedar name", "khatedar", "holder name", "pattadar name", "pattadar", "ryot",
+        "मालिक का नाम", "भूमि स्वामी", "स्वामी का नाम", "धारक का नाम", "भूस्वामी", "मालिक", "स्वामी", "खातेदार",
+        "उரிமையாளர் பெயர்", "பட்டாதாரர்", "యజమాని పేరు", "పట్టాదారు",
+        "মালিকের নাম", "માલિકનું નામ", "ಮಾಲೀಕರ ಹೆಸರು", "ഉടമയുടെ പേര്",
+        "ਮਾਲਕ ਦਾ ਨਾਮ", "ମାଲିକଙ୍କ ନାମ", "مالک",
+    ),
+    "father_name": (
+        "father's name", "fathers name", "father name", "husband name", "father", "husband",
+        "पिता का नाम", "पति का नाम", "पिता", "पति",
+        "தந்தையின் பெயர்", "తండ్రి పేరు", "পিতার নাম", "પિતાનું નામ", "ತಂದೆಯ ಹೆಸರು",
+        "പിതാവിന്റെ പേര്", "ਪਿਤਾ ਦਾ ਨਾਮ", "ପିତାଙ୍କ ନାମ", "والد",
+    ),
+    "survey_number": (
+        "survey number", "survey no.", "survey no", "survey #", "survey", "s.no", "sr no",
+        "gat number", "gat no.", "gat no", "gat",
+        "सर्वे नंबर", "सर्वे नं.", "सर्वे संख्या", "सर्वेक्षण संख्या", "गट नंबर", "गट नं.",
+        "சர்வே எண்", "సర్వే నంబరు", "সার্ভে নম্বর", "સર્વે નંબર", "ಸರ್ವೆ ನಂಬರ್",
+        "സർവേ നമ്പർ", "ਸਰਵੇ ਨੰਬਰ", "ସର୍ଭେ ନମ୍ବର",
+    ),
+    "khasra_number": (
+        "khasra number", "khasra no.", "khasra no", "khasra #", "khasra",
+        "खसरा नंबर", "खसरा संख्या", "खसरा नं.", "खसरा",
+        "ਖਸਰਾ ਨੰਬਰ", "ખસરા નંબर", "ఖసరా", "খসড়া", "کھسرہ",
+    ),
+    "khata_number": (
+        "khata number", "khata no.", "khata no", "account number", "account no.", "account no", "khata",
+        "खाता नंबर", "खाता संख्या", "खाता नं.", "खाता",
+        "பட்டா எண்", "పట్టా నంబరు", "খতিয়ান নম্বর", "ખાતા નંબર", "ಖಾತೆ ಸಂಖ್ಯೆ",
+        "ਖਾਤਾ ਨੰਬਰ", "ଖାତା ନମ୍ବର",
+    ),
+    "plot_number": (
+        "plot number", "plot no.", "plot no", "plot #", "plot",
+        "प्लॉट नंबर", "प्लाट नं.", "भूखंड संख्या", "प्लॉट", "प्लाट",
+        "படுக்கை எண்", "ప్లాట్ నంబర్", "ಫ್ಲಾಟ್ ಸಂಖ್ಯೆ", "ਪਲਾਟ ਨੰਬਰ", "പ്ലോട്ട് നമ്പർ",
+    ),
+    "area": (
+        "land area", "total area", "plot area", "area", "extent",
+        "क्षेत्रफल", "रकबा", "क्षेत्र", "एरिया",
+        "பரப்பளவு", "విస్తీర్ణం", "জমির পরিমাণ", "ક્ષેત્રફળ", "ವಿಸ್ತೀರ್ಣ",
+        "വിസ്തീർണ്ണം", "ਖੇਤਰਫਲ", "କ୍ଷେତ୍ରଫଳ",
+    ),
+    "village": (
+        "village name", "village", "mauza", "gram",
+        "ग्राम का नाम", "ग्राम", "गांव", "गाँव", "मौजा",
+        "கிராமம்", "గ్రామం", "গ্রাম", "મૌજા", "ಗ್ರಾಮ", "ഗ്രാമം", "ਪਿੰਡ", "ଗ୍ରାମ",
+    ),
+    "tehsil": (
+        "tehsil", "tahsil", "taluka", "taluk", "mandal",
+        "तहसील", "तालुका", "तालुक", "मंडल",
+        "வட்டம்", "తాలూకా", "তহসিল", "તાલુકો", "ತಾಲ್ಲೂಕು", "താലൂക്ക്", "ਤਹਸੀਲ", "ତହସିଲ",
+    ),
+    "district": (
+        "district", "zilla",
+        "जिला", "ज़िला", "जनपद",
+        "மாவட்டம்", "జిల్లా", "জেলা", "જિલ્લો", "ಜಿಲ್ಲೆ", "ജില്ല", "ਜ਼ਿਲ੍ਹਾ", "ଜିଲ୍ଲା",
+    ),
+    "state": (
+        "state", "राज्य", "प्रदेश",
+        "மாநிலம்", "రాష్ట్రం", "রাজ্য", "રાજ્ય", "ರಾಜ್ಯ", "സംസ്ഥാനം", "ਰਾਜ", "ରାଜ୍ୟ",
+    ),
+    "land_class": (
+        "land classification", "class of land", "land class", "land type", "soil type",
+        "भूमि का प्रकार", "भूमि वर्ग", "भू-वर्ग", "वर्ग",
+    ),
+    "ownership_type": (
+        "ownership type", "ownership", "tenure",
+        "स्वामित्व प्रकार", "स्वामित्व", "मालिकाना",
+    ),
+    "mutation_no": (
+        "mutation case no", "mutation case number", "mutation number", "mutation no.",
+        "mutation no", "mutation #", "mutation", "dakhil kharij",
+        "नामांतरण नंबर", "नामांतरण संख्या", "नामांतरण नं.", "दाखिल खारिज", "इंतकाल",
+    ),
+    "registration_no": (
+        "registration number", "registration no.", "registration no", "reg. no", "reg no",
+        "पंजीकरण संख्या", "पंजीयन क्र.", "रजिस्ट्री नंबर", "रजिस्ट्रेशन नंबर",
+    ),
+    "khatauni_year": (
+        "khatauni year", "record year", "crop year", "fiscal year", "year",
+        "खतौनी वर्ष", "फसल वर्ष", "वर्ष", "साल",
+        "பருவாண்டு", "ఆంశ సంవత్సరం", "বর্ষ", "વર્ષ", "ವರ್ಷ", "വർഷം", "ਸਾਲ", "ବର୍ଷ",
+    ),
+}
+
+# Words that appear right after a label but are not the actual value
+# (e.g. "Survey No. Number: 452" after OCR noise).
+_JUNK_WORDS = {
+    "no", "no.", "number", "num", ":", "=", "-", "—", "–",
+    "नंबर", "नं.", "नं", "संख्या", "क्र.", "क्र", "सं.", "नाम", "का",
+}
+
+# Fields whose value is a single numeric token ("45/2", "KH-71-2", "२०१९-२०").
+_NUMERIC_FIELDS = {
+    "survey_number", "khasra_number", "khata_number", "plot_number",
+    "mutation_no", "registration_no", "khatauni_year",
+}
+
+_LABEL_RE = None
+_LABEL_GROUP_FIELD: Dict[str, str] = {}
+
+
+def _label_scan_re():
+    """One compiled regex over every field label (longest alternatives first so
+    'mutation case no' beats 'mutation' at the same position)."""
+    global _LABEL_RE, _LABEL_GROUP_FIELD
+    if _LABEL_RE is not None:
+        return _LABEL_RE, _LABEL_GROUP_FIELD
+    parts = []
+    group_field: Dict[str, str] = {}
+    idx = 0
+    for field, labels in FIELD_LABELS.items():
+        alts = []
+        for label in sorted(labels, key=len, reverse=True):
+            alts.append(re.escape(label).replace(r"\ ", r"\s+"))
+        group_name = f"fl{idx}"
+        parts.append(f"(?P<{group_name}>{'|'.join(alts)})")
+        group_field[group_name] = field
+        idx += 1
+    _LABEL_RE = re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
+    _LABEL_GROUP_FIELD = group_field
+    return _LABEL_RE, _LABEL_GROUP_FIELD
+
+
+def _clean_value(raw: str) -> str:
+    raw = re.sub(r"\s+", " ", (raw or "").strip())
+    # Strip trailing punctuation but keep brackets: real values such as
+    # "Adarsh / Shivangi (disputed)" must survive intact.
+    return raw.strip(" .,:;—–-·•").strip()
+
+
+def _strip_junk(value: str) -> str:
+    tokens = value.split()
+    while tokens and tokens[0].strip(".:-—= ").lower() in _JUNK_WORDS:
+        tokens.pop(0)
+    return " ".join(tokens).strip(" :.-—–")
+
+
+def _finalize_field_value(field: str, raw: str) -> str:
+    """Shared value cleanup: junk words, next-label cut leftovers, numeric
+    single-token fields, hard length caps."""
+    value = _clean_value(raw)
+    if not value:
+        return ""
+    value = _strip_junk(value)
+    if not value:
+        return ""
+    if field in _NUMERIC_FIELDS:
+        m = re.search(r"[^\s]*\d[^\s]*", value)
+        if m:
+            value = m.group(0).strip(" :.,;—-")
+    else:
+        value = re.split(r"\s{2,}", value)[0]
+        value = _clean_value(value)
+    if len(value.split()) > 10:
+        value = " ".join(value.split()[:10])
+    return value
+
+
+def _next_label_pos(remainder: str, current_field: str) -> int:
+    """Position of the NEXT known field label inside the remainder, or -1.
+
+    Dense forms put several fields on one line ("Survey No: 131 · Village:
+    Shantiban"). Without this cut the value swallows everything after it."""
+    label_re, group_field = _label_scan_re()
+    best = -1
+    for m in label_re.finditer(remainder):
+        if group_field.get(m.lastgroup) == current_field:
+            continue
+        if best == -1 or m.start() < best:
+            best = m.start()
+    return best
+
+
+def _lev(a: str, b: str) -> int:
+    a, b = a.lower(), b.lower()
+    if abs(len(a) - len(b)) > 2:
+        return 99
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _fuzzy_token(tok: str, field: str) -> bool:
+    """True when token is a small OCR-typo of one of the field's label words
+    ("Matation" -> "mutation"). Strictly bounded: same first char, same length
+    ±1, <=1 edit for short words and <=2 only for long words — anything looser
+    makes ordinary prose ("report" vs "record") leak into fields."""
+    t = tok.strip(" :.,").lower()
+    if len(t) < 4:
+        return False
+    for label in FIELD_LABELS.get(field, ()):
+        first = label.split()[0].lower()
+        if len(first) < 4 or abs(len(first) - len(t)) > 1:
+            continue
+        if first[0] != t[0]:
+            continue
+        maxd = 1 if len(t) <= 6 else 2
+        if _lev(t, first) <= maxd:
+            return True
+    return False
+
+
+def _label_sweep_pass(fields: Dict[str, Dict[str, Any]], text: str, fuzzy: bool = False) -> None:
+    """Fill empty fields from separator-optional labels.
+
+    Scans each line left-to-right; a label's value is the rest of the line (or
+    the next line when the label ends the line), cut where the next field's
+    label begins. Consumed regions are never re-scanned as labels, so a value
+    like 'State Test' cannot leak into the state field."""
+    lines = [ln for ln in text.splitlines()]
+    skip_next = False
+    for idx, line in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        if not line.strip():
+            continue
+        if fuzzy:
+            # Fuzzy label rescue is restricted to NUMERIC identifier fields
+            # (khasra/survey/mutation numbers are the fields an officer cannot
+            # recover by hand) and the value must carry a digit. Prose words
+            # must never become a name/year/area through typo proximity.
+            for field in FIELD_LABELS:
+                if field not in _NUMERIC_FIELDS:
+                    continue
+                if fields.get(field, {}).get("value"):
+                    continue
+                tokens = line.split()
+                for j, tok in enumerate(tokens):
+                    if not _fuzzy_token(tok, field):
+                        continue
+                    remainder = " ".join(tokens[j + 1:])
+                    nxt = _next_label_pos(remainder, field)
+                    seg = remainder if nxt <= 0 else remainder[:nxt]
+                    value = _finalize_field_value(field, seg)
+                    if value and re.search(r"\d", value):
+                        fields[field] = {"value": value, "confidence": 0.72}
+                        break
+            continue
+
+        label_re, group_field = _label_scan_re()
+        cursor = 0
+        while cursor <= len(line):
+            m = label_re.search(line, cursor)
+            if not m:
+                break
+            field = group_field.get(m.lastgroup, "")
+            if not field:
+                break
+            after_label = m.end()
+            sep = re.match(r"[\s:：=+\-–—|•·]*", line[after_label:])
+            after_sep = after_label + sep.end()
+            remainder = line[after_sep:]
+            nxt = _next_label_pos(remainder, field)
+            consumed_end = len(line)
+            value = ""
+            if nxt > 0:
+                value = _finalize_field_value(field, remainder[:nxt])
+                consumed_end = after_sep + nxt
+            elif nxt < 0:
+                value = _finalize_field_value(field, remainder)
+            else:
+                # remainder STARTS with another field's label word that is part
+                # of the value (e.g. owner 'State Test'): consume the remainder
+                # as the value instead of letting the label leak to a field.
+                value = _finalize_field_value(field, remainder)
+            if not value:
+                nxt2 = _next_label_pos(lines[idx + 1], field) if idx + 1 < len(lines) else -1
+                if idx + 1 < len(lines) and nxt2 != 0:
+                    seg = lines[idx + 1] if nxt2 <= 0 else lines[idx + 1][:nxt2]
+                    value = _finalize_field_value(field, seg)
+                if idx + 1 < len(lines):
+                    skip_next = True
+            if value and field in _NUMERIC_FIELDS and not re.search(r"\d", value):
+                # Numeric identifier fields must carry a digit — a label word
+                # inside prose ("...MUTATION OF NAMES") is not a value.
+                value = ""
+            if value and not fields.get(field, {}).get("value"):
+                fields[field] = {"value": value, "confidence": 0.9 if not fuzzy else 0.72}
+            cursor = max(consumed_end, after_label + 1)
+
+
+# Pass 1: strict "label: value" / "label - value" patterns (historical).
+_P1_PATTERNS = {
+    "owner_name": r"(?:owner(?:'s)?\s*name|name\s*of\s*(?:the\s*)?(?:land\s*)?owner|landowner(?:\s*name)?|land\W{0,2}owner|owner|मालिक(?:\s*का)?\s*नाम|भूमि\s*स्वामी|स्वामी(?:\s*का)?\s*नाम|भूस्वामी)",
+    "father_name": r"(?:father(?:'s)?\s*name|father|husband|पिता\s*का\s*नाम|पति\s*का\s*नाम)",
+    "village": r"(?:village|ग्राम|गांव|गाँव|मौजा)",
+    "tehsil": r"(?:tehsil|taluka|तहसील|तालुका)",
+    "district": r"(?:district|जिला)",
+    "state": r"(?:state|राज्य)",
+    "survey_number": r"(?:survey(?:\s*(?:no\.?|number|num\.?|#))?|gat(?:\s*(?:no\.?|number|num\.?))?|सर्वे\s*(?:नं\.?|नंबर)?|गट\s*(?:नं\.?|नंबर)?)",
+    "khasra_number": r"(?:khasra(?:\s*(?:no\.?|number|num\.?|#))?|खसरा\s*(?:नं\.?|नंबर)?)",
+    "khata_number": r"(?:khata(?:\s*(?:no\.?|number|num\.?))?|खाता\s*(?:नं\.?|नंबर)?)",
+    "plot_number": r"(?:plot(?:\s*(?:no\.?|number|num\.?|#))?|प्लॉट\s*(?:नं\.?|नंबर)?|प्लाट\s*(?:नं\.?|नंबर)?)",
+    "area": r"(?:land\s*area|area|क्षेत्रफल)",
+    "document_date": r"(?:document\s*date|date|दिनांक|तारीख)",
+    "khatauni_year": r"(?:khatauni\s*year|record\s*year|year|वर्ष)",
+    "mutation_no": r"(?:mutation(?:\s*case)?\s*(?:no\.?|number|num\.?|#)?|नामांतरण\s*(?:नं\.?|नंबर)?)",
+    "registration_no": r"(?:registration(?:\s*(?:no\.?|number|num\.?|#))?|पंजीकरण\s*(?:नं\.?|नंबर)?)",
+}
+
+
 def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
     text = _normalize_ocr_text(text)
-    patterns = {
-        "owner_name": r"(?:owner\s*name|landowner|owner|मालिक(?:\s*का)?\s*नाम|भूस्वामी)\s*[:\-]\s*([^\n]+)",
-        "father_name": r"(?:father(?:'s)?\s*name|father|husband|पिता\s*का\s*नाम|पति\s*का\s*नाम)\s*[:\-]\s*([^\n]+)",
-        "village": r"(?:village|ग्राम|गांव|गाँव)\s*[:\-]\s*([^\n]+)",
-        "tehsil": r"(?:tehsil|taluka|तहसील|तालुका)\s*[:\-]\s*([^\n]+)",
-        "district": r"(?:district|जिला)\s*[:\-]\s*([^\n]+)",
-        "state": r"(?:state|राज्य)\s*[:\-]\s*([^\n]+)",
-        "survey_number": r"(?:survey(?:\s*no\.?|\s*number)?|gat(?:\s*no\.?|\s*number)?|सर्वे\s*(?:नं\.?|नंबर)?|गट\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
-        "khasra_number": r"(?:khasra\s*(?:no\.?|number)?|खसरा\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
-        "khata_number": r"(?:khata\s*(?:no\.?|number)?|खाता\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
-        "plot_number": r"(?:plot\s*(?:no\.?|number)?|प्लॉट\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
-        "area": r"(?:area|land\s*area|क्षेत्रफल)\s*[:\-]\s*([^\n]+)",
-        "document_date": r"(?:date|document\s*date|दिनांक|तारीख)\s*[:\-]\s*([^\n]+)",
-        "khatauni_year": r"(?:khatauni\s*year|record\s*year|year|वर्ष)\s*[:\-]\s*([^\n]+)",
-        "mutation_no": r"(?:mutation\s*(?:no\.?|number)?|नामांतरण\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
-        "registration_no": r"(?:registration\s*(?:no\.?|number)?|पंजीकरण\s*(?:नं\.?|नंबर)?)\s*[:\-]\s*([^\n]+)",
-    }
     fields = {k: {"value": "", "confidence": 0.0} for k in FIELD_KEYS}
     fields["document_type"] = {"value": "Land Record", "confidence": 0.8}
-    for key, pattern in patterns.items():
-        m = re.search(pattern, text, flags=re.IGNORECASE)
+
+    # Pass 1 — strict separator patterns (word-bounded so "investigate:" can
+    # never masquerade as a "gat" label). Values are cut where the next field
+    # label begins so a dense one-line form ("Survey No: 131 · Village: X")
+    # cannot swallow everything after the first label.
+    for key, pattern in _P1_PATTERNS.items():
+        m = re.search(r"(?<!\w)(?:" + pattern + r")(?!\w)\s*[:\-]\s*([^\n]+)", text, flags=re.IGNORECASE)
         if m:
-            value = re.sub(r"\s+", " ", m.group(1).strip()).strip(" .,")
-            if key in fields:
-                fields[key] = {"value": value, "confidence": 0.95}
-            else:
-                fields[key] = {"value": value, "confidence": 0.95}
+            raw_value = m.group(1)
+            nxt = _next_label_pos(raw_value, key)
+            if nxt > 0:
+                raw_value = raw_value[:nxt]
+            fields[key] = {"value": _finalize_field_value(key, raw_value), "confidence": 0.95}
+
+    # Pass 2 — separator-optional labels ("Village Shantiban", label on one
+    # line and value on the next) for whatever pass 1 could not find.
+    _label_sweep_pass(fields, text, fuzzy=False)
+
+    # Pass 3 — fuzzy labels for OCR typos ("Matation No" -> "Mutation No").
+    still_empty = [k for k in FIELD_KEYS if not fields.get(k, {}).get("value")]
+    if still_empty:
+        _label_sweep_pass(fields, text, fuzzy=True)
+
+    # Year fallback: the year LABEL is often mangled by OCR, but the fiscal
+    # year itself (2024-25 / 202425) survives almost always. The negative
+    # lookahead keeps plain dates ("2025-07-15") out of the year field.
+    if not fields["khatauni_year"]["value"]:
+        m = re.search(r"\b(20\d{2})[-\u2013/ ]?(\d{2})\b(?!\s*[-/]\d{2})", text)
+        if m:
+            fields["khatauni_year"] = {"value": f"{m.group(1)}-{m.group(2)}", "confidence": 0.7}
+        elif re.search(r"(?<!\w)(?:khatauni\s*year|record\s*year|year|वर्ष)(?!\w)", text, re.IGNORECASE):
+            m = re.search(r"\b(20\d{2})\b", text)
+            if m:
+                fields["khatauni_year"] = {"value": m.group(1), "confidence": 0.6}
+
     enriched, validation = enrich_and_validate_fields(fields)
     if not enriched.get("owner_name", {}).get("value") and filename:
         validation["issues"].append({
@@ -1781,7 +2222,12 @@ class ConsistencyDecisionReq(BaseModel): decision: str; officer_notes: Optional[
 @app.get("/healthz")
 @app.get("/api/health")
 def healthcheck():
-    return {"status": "healthy", "ai_enabled": ai_client is not None, "time": time.time()}
+    return {
+        "status": "healthy",
+        "ai_enabled": ai_client is not None,
+        "ocr_engine": {"tesseract": tesseract_available(), "pdf": HAS_PDFIUM},
+        "time": time.time(),
+    }
 
 @app.post("/api/auth/login")
 def login(req: LoginReq):

@@ -117,12 +117,11 @@ def apply():
         print(f"[OCR] result words={wc} method={method} lang={primary}")
         return {"text":best,"confidence":0.84 if wc>=8 else (0.62 if wc>=3 else 0.0),"word_count":wc,"detected_language":detected,"method":method,"strategy":{"lang":primary}}
 
-    mod.cache_store=cache_store; mod.run_fast_ocr=fast_ocr
+    if not getattr(mod, "_CANONICAL_OCR_LIVE", False):
+        # Legacy fallback only. The canonical ocr_pipeline now carries the
+        # production fixes this patch provided (PostgreSQL-safe cache UPSERT,
+        # fast single-pass OCR). Shadowing the canonical functions here
+        # re-introduced silent empty OCR results and up to eight Tesseract
+        # passes per page — do not patch on modern builds.
+        mod.cache_store=cache_store; mod.run_fast_ocr=fast_ocr
     _seed_demo_once_if_requested(); _backfill_demo_parcels()
-    path=os.path.join(os.path.dirname(os.path.abspath(__file__)),"index.html")
-    try:
-        html=open(path,encoding="utf-8").read(); app_start=html.find('<div id="appShell" class="hidden">')
-        if app_start>=0:
-            utility_start=html.find('<div class="gov-utility-bar">',app_start); header_start=html.find('<div class="gov-header">',utility_start)
-            if utility_start>=0 and header_start>utility_start: open(path,"w",encoding="utf-8").write(html[:utility_start]+html[header_start:])
-    except Exception as exc: print("[RUNTIME PATCH] logo cleanup skipped:",type(exc).__name__)
