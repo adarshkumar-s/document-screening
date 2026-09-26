@@ -19,7 +19,7 @@
 <div id="authView" class="auth-hero-wrap">
   <div class="gov-utility-bar">
     <div style="display:flex;align-items:center">
-      <img class="vectorflow-logo vectorflow-logo-utility" src="/assets/vectorflow.png" alt="Vectorflow" onerror="this.style.display='none'">
+      <img class="vectorflow-logo vectorflow-logo-utility" src="/assets/vectorflow-logo.png" alt="Vectorflow" onerror="this.style.display='none'">
     </div>
     <div class="access-controls">
       <button class="font-size-btn" onclick="adjustFontSize(-1)">A-</button>
@@ -98,7 +98,7 @@
 <div id="appShell" class="hidden">
   <div class="gov-utility-bar">
     <div style="display:flex;align-items:center">
-      <img class="vectorflow-logo vectorflow-logo-utility" src="/assets/vectorflow.png" alt="Vectorflow" onerror="this.style.display='none'">
+      <img class="vectorflow-logo vectorflow-logo-utility" src="/assets/vectorflow-logo.png" alt="Vectorflow" onerror="this.style.display='none'">
     </div>
     <div class="access-controls">
       <span id="liveClock" style="margin-right:10px;font-family:monospace"></span>
@@ -111,7 +111,7 @@
 
   <div class="gov-header">
     <div class="gov-brand-container">
-      <img class="vectorflow-logo vectorflow-logo-header" src="/assets/vectorflow.png" alt="VectorFlow" onerror="this.style.display='none'">
+      <img class="vectorflow-logo vectorflow-logo-header" src="/assets/vectorflow-logo.png" alt="VectorFlow" onerror="this.style.display='none'">
       <div class="gov-titles">
         <div class="gov-sub-title">Digital India Land Records Modernization Programme (DILRMP)</div>
         <div class="gov-main-title">Digital Land Records Portal</div>
@@ -586,9 +586,14 @@
             <div id="staffStateHelper" class="hidden" style="margin:-4px 0 10px;color:var(--muted);font-size:11px">
               State-specific screening rules and land-record terminology will be applied where available.
             </div>
+            <div style="margin:12px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+              <span style="font-size:12px;font-weight:700">Processing Mode:</span>
+              <label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="radio" name="staffProcMode" value="ocr_only" id="staffModeOcrOnly"> OCR Only (fast)</label>
+              <label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="radio" name="staffProcMode" value="ocr_li" id="staffModeOcrLi" checked> OCR + Land Intelligence</label>
+            </div>
             <div id="staffProcessing" class="hidden simple-spinner-box">
               <span class="spinner"></span>
-              <span>Running OCR and extracting fields with AI...</span>
+              <span id="staffProcessingLabel">Running fast OCR and extracting fields...</span>
             </div>
             <div id="staffUploadEditor" class="hidden" style="margin-top:20px;border-top:2px solid var(--gov-border-light);padding-top:16px">
               <div class="guided-step-banner">
@@ -621,6 +626,41 @@
 
         <div id="staff-tab-review" class="hidden">
           <div class="card" id="staffReviewCard"></div>
+        </div>
+
+        <div id="staff-tab-bulk" class="hidden">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">📦 Bulk OCR Processing</h3>
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="radio" name="bulkProcMode" value="ocr_only" id="bulkModeOcrOnly"> OCR Only</label>
+                <label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="radio" name="bulkProcMode" value="ocr_li" id="bulkModeOcrLi" checked> OCR + Land Intelligence</label>
+              </div>
+            </div>
+            <div class="guided-step-banner">
+              <span class="step-circle">1</span>
+              <div><b>Step 1: Select Multiple Documents:</b> Upload many documents at once; each is processed through the same pipeline as a single upload, and one bad file will not fail the batch.</div>
+            </div>
+            <div class="drop-zone" id="bulkDropZone" style="margin:16px 0">
+              <div class="drop-icon">📦</div>
+              <div style="font-size:16px;font-weight:700">Click to browse or drag multiple files here</div>
+              <div style="font-size:12px;color:var(--muted);margin-top:4px">PDF, JPG, PNG, TIFF — up to 15 MB each</div>
+              <input type="file" id="bulkFileInput" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff" multiple>
+            </div>
+            <div id="bulkProgress" class="hidden" style="margin-top:16px">
+              <div id="bulkSummaryBox" class="bulk-summary"></div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:12px 0" id="bulkStatsGrid"></div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0">
+                <h4 style="margin:0;font-size:14px;color:var(--gov-navy)">Documents</h4>
+                <button class="btn ghost" onclick="refreshBulkView()" style="padding:4px 10px;font-size:12px">↻ Refresh</button>
+              </div>
+              <div class="bulk-items-list" id="bulkItemsList"></div>
+            </div>
+            <div id="bulkHistoryBox" style="margin-top:20px">
+              <h4 style="margin:0 0 8px;font-size:14px;color:var(--gov-navy)">Recent Batches</h4>
+              <div id="bulkHistoryList"></div>
+            </div>
+          </div>
         </div>
 
         <div id="staff-tab-landintel" class="hidden">
@@ -725,7 +765,7 @@
   </div>
 </div>
 
-<footer class="site-footer"><div class="site-footer-inner"><div class="site-footer-brand"><img src="/assets/vectorflow.png" alt="VectorFlow" class="site-footer-logo"><div><strong>Digital Land Records Portal</strong><span>DILRMP · Land Intelligence</span></div></div><nav class="site-footer-links"><span>Land Intelligence</span><span>Data Management</span><span>Accessibility</span><span>Audit &amp; Security</span></nav><div class="site-footer-meta">© <span id="siteFooterYear"></span> VectorFlow · Land-records workflow</div></div></footer>
+<footer class="site-footer"><div class="site-footer-inner"><div class="site-footer-brand"><img src="/assets/vectorflow-logo.png" alt="VectorFlow" class="site-footer-logo"><div><strong>Digital Land Records Portal</strong><span>DILRMP · Land Intelligence</span></div></div><nav class="site-footer-links"><span>Land Intelligence</span><span>Data Management</span><span>Accessibility</span><span>Audit &amp; Security</span></nav><div class="site-footer-meta">© <span id="siteFooterYear"></span> VectorFlow · Land-records workflow</div></div></footer>
 
 <!-- ADMINISTRATION PANEL: existing staff interfaces are mounted here once, not duplicated. -->
 <div id="administrationModal" class="administration-modal hidden" role="dialog" aria-modal="true" aria-labelledby="administrationTitle" aria-hidden="true">

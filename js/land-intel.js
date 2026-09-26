@@ -1170,6 +1170,7 @@
         ${gate && context.recommendation ? `<div style="margin-top:8px;font-size:12px;color:#78350f"><b>🤖 ${esc(t('aiRecommendation'))}:</b> ${esc(context.recommendation)}</div>` : ''}
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn ghost" style="padding:3px 10px;font-size:11px" id="liCtxLand">Open land record</button>
+          <button class="btn ghost" style="padding:3px 10px;font-size:11px" id="liCtxLocate" title="Open this parcel on the map (shareable link)">🗺 Locate on map</button>
           ${litActive ? `<button class="btn ghost" style="padding:3px 10px;font-size:11px" id="liCtxCase">&#9878; Open court case</button>` : ''}
           ${gate ? `<button class="btn ok" style="padding:3px 10px;font-size:11px" id="liCtxMutation">${esc(t('newMutation'))}</button>` : ''}
         </div>
@@ -1181,6 +1182,13 @@
       switchSub('records');
       if (typeof switchStaffTab === 'function') switchStaffTab('landintel');
       openLandDetail(context.land_id).catch(alertError);
+    });
+    // Canonical "Locate on map" link — same resolver, shareable URL that
+    // preserves the parcel identity (?land_id=) and the map view flag.
+    const locateBtn = $('liCtxLocate');
+    if (locateBtn) locateBtn.addEventListener('click', () => {
+      const url = context.detail_url || ('/?land_id=' + encodeURIComponent(context.land_id));
+      window.location.href = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'map=1';
     });
     const caseBtn = $('liCtxCase');
     if (caseBtn) caseBtn.addEventListener('click', () => {

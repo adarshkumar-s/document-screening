@@ -861,3 +861,8 @@ body.administration-open { overflow: hidden; }
 
 .li-dd-summary { border: 1px solid #93c5fd; background: #f8fbff; }
 .li-card-risk { border-left: 4px solid var(--err); }
+
+/* Bulk OCR */
+.bulk-summary { margin-bottom: 6px; }
+.bulk-items-list { max-height: 380px; overflow-y: auto; border: 1px solid var(--gov-border-light); border-radius: 6px; padding: 4px 8px; background: #fff; }
+.bulk-items-list .chip { font-size: 10px; }

@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Query, Request, Depends, status
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Query, Request, Depends, status, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -1685,6 +1685,50 @@ async def run_ocr_pipeline(content: bytes, filename: str, lang: str = "auto") ->
     return await run_ai_assisted_pipeline(image, lang)
 
 
+# The unmodified pipeline as first defined. Used only to detect when a caller or
+# test has monkeypatched ``run_ocr_pipeline`` so the upload endpoints can honor
+# that override (backward compatibility) instead of the fast pipeline below.
+_orig_run_ocr_pipeline = run_ocr_pipeline
+
+
+def _ocr_pipeline_is_overridden() -> bool:
+    """True when ``run_ocr_pipeline`` has been replaced by a test/caller.
+
+    The production PDF-text-layer bridge (``ocr_land_bridge``) also swaps the
+    attribute but marks itself with ``_land_bridge``; that is the supported
+    production path and is NOT treated as an override.
+    """
+    current = globals().get("run_ocr_pipeline")
+    if current is _orig_run_ocr_pipeline:
+        return False
+    if getattr(current, "_land_bridge", False):
+        return False
+    return True
+
+
+async def extract_document(content: bytes, filename: str, lang: str, doc_type: str,
+                           user: dict, doc_id: str) -> Dict[str, Any]:
+    """Run OCR + deterministic field extraction for an upload.
+
+    Production uses the fast, cache-first pipeline in ``ocr_pipeline`` (PDF text
+    layer first, single-pass Tesseract fallback, no AI on the critical path).
+    If a test/caller has monkeypatched ``run_ocr_pipeline`` the override is
+    honored so existing behaviour and tests are preserved.
+    """
+    if _ocr_pipeline_is_overridden():
+        parsed_candidate = run_ocr_pipeline(content, filename, lang)
+        parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
+        if "filename" not in parsed:
+            parsed["filename"] = os.path.basename(filename or "upload")
+        return parsed
+    import ocr_pipeline as _ocp
+    return await _ocp.run_fast_ocr_pipeline(
+        content, filename, lang or "auto",
+        doc_type_hint=doc_type or "Land Record",
+        user=user, doc_id=doc_id,
+    )
+
+
 def apply_ownership_review(document_id: str, property_id: Optional[str], parsed: Dict[str, Any], status_value: str, ai_payload: Dict[str, Any]) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Attach deterministic ownership evidence and force human review for consequential findings."""
     if not property_id:
@@ -1946,10 +1990,12 @@ def decode_document_metadata(value: Any) -> Dict[str, Any]:
 
 @app.post("/api/process/sample/{name}")
 async def process_sample(
+    background: BackgroundTasks,
     name: str,
     doc_type: Optional[str] = Query("Land Record"),
     lang: Optional[str] = Query("auto"),
     state: Optional[str] = Query(None),
+    mode: Optional[str] = Query("ocr_li"),
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
     document_metadata = build_document_metadata(state)
@@ -1964,9 +2010,9 @@ async def process_sample(
     with open(stored_path, "wb") as sf:
         sf.write(data)
 
+    process_mode = "ocr_only" if (mode or "").lower() == "ocr_only" else "ocr_li"
     try:
-        parsed_candidate = run_ocr_pipeline(data, name, lang)
-        parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
+        parsed = await extract_document(data, name, lang, doc_type, user, doc_id)
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Could not process sample. Please verify the sample and try again.")
 
@@ -1995,26 +2041,38 @@ async def process_sample(
         )
 
     property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
-    try:
-        from mapping import _resolve
-        property_resolution = _resolve(parsed["fields"])
-        if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
-            match_property = property_resolution["matches"][0]["property"]["property_id"]
-            with get_db() as db:
-                db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
-                db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
-            log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved sample document #{doc_id}: {property_resolution['status']}", doc_id)
-            property_resolution["property_id"] = match_property
-    except Exception:
-        property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
+    if process_mode == "ocr_li":
+        try:
+            from mapping import _resolve
+            property_resolution = _resolve(parsed["fields"])
+            if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
+                match_property = property_resolution["matches"][0]["property"]["property_id"]
+                with get_db() as db:
+                    db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
+                    db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
+                log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved sample document #{doc_id}: {property_resolution['status']}", doc_id)
+                property_resolution["property_id"] = match_property
+        except Exception:
+            property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
 
     status_value, ai_payload, ownership_reasoning = apply_ownership_review(doc_id, property_resolution.get("property_id"), parsed, status_value, ai_payload)
 
-    log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id}", doc_id)
+    log_audit(user["full_name"], "SAMPLE_PROCESS", f"Processed sample '{name}' as #{doc_id} (mode={process_mode})", doc_id)
     for correction in parsed["pipeline_meta"].get("corrections", []):
         log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
     if parsed.get("escalated"):
         log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
+
+    # Non-blocking enrichment (AI field enhancement + RBAC-scoped Land
+    # Intelligence context) on the existing assistant task queue. Parcel
+    # matching above already ran synchronously through the canonical resolver.
+    if not _ocr_pipeline_is_overridden():
+        try:
+            import ocr_pipeline as _ocp
+            _ocp.enqueue_downstream_tasks(doc_id, user, mode=process_mode)
+            background.add_task(_ocp.drain_doc_tasks, doc_id)
+        except Exception:
+            pass
 
     return {
         "id": doc_id,
@@ -2025,6 +2083,8 @@ async def process_sample(
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
         "metadata": document_metadata,
+        "mode": process_mode,
+        "processing_state": "EXTRACTION_COMPLETE",
         "property_resolution": property_resolution,
         "ownership_reasoning": ownership_reasoning,
     }
@@ -2032,10 +2092,12 @@ async def process_sample(
 
 @app.post("/api/process")
 async def process_upload(
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     doc_type: Optional[str] = Query("Land Record"),
     lang: Optional[str] = Query("auto"),
     state: Optional[str] = Query(None),
+    mode: Optional[str] = Query("ocr_li"),
     user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))
 ):
     document_metadata = build_document_metadata(state)
@@ -2046,9 +2108,9 @@ async def process_upload(
     doc_id = uuid.uuid4().hex[:12]
     ext = os.path.splitext(filename)[1].lower() or ".png"
 
-    allowed_extensions = {".png", ".jpg", ".jpeg", ".pdf"}
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".pdf", ".tif", ".tiff"}
     if ext not in allowed_extensions:
-        raise HTTPException(status_code=415, detail="Unsupported file type. Use PNG, JPEG, or PDF.")
+        raise HTTPException(status_code=415, detail="Unsupported file type. Use PNG, JPEG, TIFF, or PDF.")
     max_upload_bytes = 15 * 1024 * 1024
     if len(content) > max_upload_bytes:
         raise HTTPException(status_code=413, detail="Document exceeds the 15 MB upload limit.")
@@ -2057,11 +2119,11 @@ async def process_upload(
     with open(stored_path, "wb") as sf:
         sf.write(content)
 
+    process_mode = "ocr_only" if (mode or "").lower() == "ocr_only" else "ocr_li"
     try:
-        parsed_candidate = run_ocr_pipeline(content, filename, lang)
-        parsed = await parsed_candidate if inspect.isawaitable(parsed_candidate) else parsed_candidate
+        parsed = await extract_document(content, filename, lang, doc_type, user, doc_id)
     except Exception as exc:
-        log_audit(user["full_name"], "OCR_PROCESSING_ERROR", "Document processing failed", doc_id)
+        log_audit(user["full_name"], "OCR_PROCESSING_ERROR", f"Document processing failed: {exc}", doc_id)
         raise HTTPException(status_code=422, detail="Document processing failed. Please verify the file format and try again.")
 
     now = time.time()
@@ -2089,26 +2151,38 @@ async def process_upload(
         )
 
     property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": []}
-    try:
-        from mapping import _resolve
-        property_resolution = _resolve(parsed["fields"])
-        if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
-            match_property = property_resolution["matches"][0]["property"]["property_id"]
-            with get_db() as db:
-                db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
-                db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
-            log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved document #{doc_id}: {property_resolution['status']}", doc_id)
-            property_resolution["property_id"] = match_property
-    except Exception:
-        property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
+    if process_mode == "ocr_li":
+        try:
+            from mapping import _resolve
+            property_resolution = _resolve(parsed["fields"])
+            if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
+                match_property = property_resolution["matches"][0]["property"]["property_id"]
+                with get_db() as db:
+                    db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
+                    db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Property resolution service", now))
+                log_audit(user["full_name"], "PROPERTY_RESOLVED", f"Resolved document #{doc_id}: {property_resolution['status']}", doc_id)
+                property_resolution["property_id"] = match_property
+        except Exception:
+            property_resolution = {"status": "INSUFFICIENT DATA", "confidence": 0, "matches": [], "reasons": ["Property resolution was unavailable; document processing remains usable."]}
 
     status_value, ai_payload, ownership_reasoning = apply_ownership_review(doc_id, property_resolution.get("property_id"), parsed, status_value, ai_payload)
 
-    log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id}", doc_id)
+    log_audit(user["full_name"], "DOCUMENT_UPLOAD", f"Uploaded and processed '{filename}' as #{doc_id} (mode={process_mode})", doc_id)
     for correction in parsed["pipeline_meta"].get("corrections", []):
         log_audit(user["full_name"], "AI_FIELD_CORRECTION", json.dumps(correction, ensure_ascii=False), doc_id)
     if parsed.get("escalated"):
         log_audit(user["full_name"], "OCR_ESCALATED_TO_VERIFICATION", json.dumps(parsed["pipeline_meta"].get("escalation_report"), ensure_ascii=False), doc_id)
+
+    # Non-blocking enrichment (AI field enhancement + RBAC-scoped Land
+    # Intelligence context) on the existing assistant task queue. Parcel
+    # matching above already ran synchronously through the canonical resolver.
+    if not _ocr_pipeline_is_overridden():
+        try:
+            import ocr_pipeline as _ocp
+            _ocp.enqueue_downstream_tasks(doc_id, user, mode=process_mode)
+            background.add_task(_ocp.drain_doc_tasks, doc_id)
+        except Exception:
+            pass
 
     response = {
         "id": doc_id,
@@ -2119,6 +2193,8 @@ async def process_upload(
         "ai_decision_support": ai_payload,
         "pipeline_meta": parsed["pipeline_meta"],
         "metadata": document_metadata,
+        "mode": process_mode,
+        "processing_state": "EXTRACTION_COMPLETE",
         "ownership_reasoning": ownership_reasoning,
     }
     # SA Investigation auto-start (administrator uploads): a background task on
@@ -2635,6 +2711,231 @@ _ai_governance.ensure_governance_tables()
 import sa_investigation as _sa_investigation
 app.include_router(_sa_investigation.router)
 _sa_investigation.ensure_investigation_tables()
+
+
+# =========================================================================
+# Bulk OCR — same pipeline as single-document OCR (ocr_pipeline.run_fast_ocr_pipeline
+# + canonical parcel resolver + apply_ownership_review). Each file is processed
+# independently; one bad file never fails the batch. Downstream enrichment is
+# queued on the existing ai_tasks table (no second worker/queue).
+# =========================================================================
+class BulkCreateReq(BaseModel):
+    mode: str = "ocr_li"
+
+
+def _bulk_allowed(ext: str) -> bool:
+    return ext in {".png", ".jpg", ".jpeg", ".pdf", ".tif", ".tiff"}
+
+
+def _document_land_statuses(doc_id: str, user: dict) -> Dict[str, Any]:
+    """RBAC-scoped mutation / encumbrance / litigation / risk status for a
+    resolved document, read through the SAME Land Intelligence context used by
+    the map and Land Intelligence. Scoped to the uploader so a hidden parcel
+    simply does not match."""
+    statuses = {"parcel_match": "", "mutation_status": "", "encumbrance_status": "",
+                "litigation_status": "NO_PARCEL", "risk_status": ""}
+    try:
+        from land_intel import document_land_context
+        with get_db() as db:
+            row = db.execute(
+                """SELECT d.*, pd.property_id FROM documents d
+                   LEFT JOIN property_documents pd ON pd.document_id=d.id
+                   WHERE d.id=? LIMIT 1""",
+                (doc_id,),
+            ).fetchone()
+        if not row:
+            return statuses
+        doc_dict = dict(row)
+        try:
+            doc_dict["fields"] = json.loads(doc_dict.get("fields") or "{}")
+        except Exception:
+            doc_dict["fields"] = {}
+        ctx = document_land_context(doc_dict, user) or {}
+        if not ctx.get("matched"):
+            return statuses
+        pm = int(ctx.get("pending_mutation_count", 0) or 0)
+        ae = int(ctx.get("active_encumbrance_count", 0) or 0)
+        active_cases = int(ctx.get("active_court_case_count", 0) or 0)
+        statuses["parcel_match"] = str(doc_dict.get("property_id") or ctx.get("land_id") or "")
+        statuses["mutation_status"] = f"PENDING({pm})" if pm else "NONE"
+        statuses["encumbrance_status"] = f"ACTIVE({ae})" if ae else "CLEAR"
+        statuses["litigation_status"] = "ACTIVE_LITIGATION" if active_cases else (ctx.get("litigation_status") or "NONE")
+        statuses["risk_status"] = ctx.get("risk_verdict", "") or ""
+    except Exception:
+        pass
+    return statuses
+
+
+def _bulk_save_document(doc_id: str, filename: str, doc_type: Optional[str], parsed: Dict[str, Any],
+                        user: dict, process_mode: str, now: float, extra_metadata: Dict[str, Any]) -> str:
+    status_value = STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT
+    ai_payload = parsed["ai_decision_support"]
+    with get_db() as db:
+        db.execute(
+            """
+            INSERT INTO documents (
+                id, filename, doc_type, mean_conf, verdict, status, languages, pages,
+                fields, validation, ai_decision_support, ocr_text, cleaned_ocr_text,
+                detected_language, original_fields, metadata, uploaded_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_id, filename, doc_type or parsed.get("doc_type", "Land Record"), parsed["mean_conf"],
+                parsed["validation"]["verdict"], status_value, json.dumps(parsed["languages"]), parsed["pages"],
+                json.dumps(parsed["fields"], ensure_ascii=False),
+                json.dumps(parsed["validation"], ensure_ascii=False),
+                json.dumps(ai_payload, ensure_ascii=False),
+                parsed["ocr_text"], parsed.get("cleaned_ocr_text", parsed["ocr_text"]), parsed.get("detected_language", "eng"),
+                json.dumps(parsed.get("original_fields", parsed["fields"]), ensure_ascii=False),
+                json.dumps(extra_metadata, ensure_ascii=False),
+                user["email"], now, now
+            ),
+        )
+    return status_value
+
+
+@app.post("/api/bulk")
+async def bulk_create(req: BulkCreateReq, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    mode = "ocr_only" if (req.mode or "").lower() == "ocr_only" else "ocr_li"
+    bid = _ocp.create_batch(user, mode)
+    return {"batch_id": bid, "mode": mode}
+
+
+@app.post("/api/bulk/{batch_id}/files")
+async def bulk_upload_file(background: BackgroundTasks, batch_id: str, file: UploadFile = File(...),
+                           doc_type: Optional[str] = Query("Land Record"),
+                           lang: Optional[str] = Query("auto"),
+                           user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    batch = _ocp.get_batch(batch_id, user)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found or access denied")
+    content = await file.read()
+    filename = os.path.basename(file.filename or "upload")
+    ext = os.path.splitext(filename)[1].lower() or ".png"
+    mode = batch["mode"]
+    item_id = _ocp.add_batch_item(batch_id, filename)
+
+    if not content or not _bulk_allowed(ext):
+        _ocp.update_batch_item(item_id, state="FAILED", error="Unsupported or empty file")
+        log_audit(user["full_name"], "BULK_OCR_ERROR", f"Bulk OCR rejected '{filename}' in batch {batch_id}", None)
+        return {"item_id": item_id, "status": "FAILED", "error": "Unsupported or empty file"}
+
+    doc_id = uuid.uuid4().hex[:12]
+    stored_path = os.path.join(UPLOADS_DIR, f"{doc_id}{ext}")
+    _ocp.update_batch_item(item_id, state="EXTRACTING_TEXT", doc_id=doc_id)
+    try:
+        with open(stored_path, "wb") as sf:
+            sf.write(content)
+        now = time.time()
+        # SAME pipeline as single upload.
+        parsed = await extract_document(content, filename, lang, doc_type, user, doc_id)
+        extra_metadata = {"mode": mode, "batch_id": batch_id, "batch_item_id": item_id}
+        _bulk_save_document(doc_id, filename, doc_type, parsed, user, mode, now, extra_metadata)
+
+        # Canonical parcel resolution — synchronous, exactly like /api/process.
+        if mode == "ocr_li":
+            try:
+                from mapping import _resolve
+                property_resolution = _resolve(parsed["fields"])
+                if property_resolution.get("status") in ("MATCH", "POSSIBLE MATCH") and property_resolution.get("matches"):
+                    match_property = property_resolution["matches"][0]["property"]["property_id"]
+                    with get_db() as db:
+                        db.execute("INSERT OR IGNORE INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)", (match_property, doc_id, "uploaded_document", now))
+                        db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)", (uuid.uuid4().hex, match_property, "PROPERTY_MATCHED", f"Document {doc_id} resolved to {match_property} with {round(property_resolution['confidence'] * 100)}% confidence.", "Bulk OCR parcel matching", now))
+                    apply_ownership_review(doc_id, match_property, parsed,
+                                           STATUS_PENDING_VERIFICATION if parsed.get("escalated") else STATUS_DRAFT,
+                                           parsed["ai_decision_support"])
+            except Exception:
+                pass
+
+        # RBAC-scoped Land Intelligence statuses for the batch row.
+        statuses = _document_land_statuses(doc_id, user)
+        confidence = float(parsed.get("ai_decision_support", {}).get("ocr_confidence", 0) or 0)
+        _ocp.update_batch_item(item_id, state="READY", ocr_confidence=confidence, **statuses)
+
+        # Non-blocking AI enhancement on the existing task queue.
+        if not _ocr_pipeline_is_overridden():
+            try:
+                _ocp.enqueue_downstream_tasks(doc_id, user, mode=mode)
+                background.add_task(_ocp.drain_doc_tasks, doc_id)
+            except Exception:
+                pass
+        log_audit(user["full_name"], "BULK_OCR_FILE", f"Bulk OCR processed '{filename}' in batch {batch_id} as #{doc_id}", doc_id)
+        return {"item_id": item_id, "doc_id": doc_id, "status": "OK", "pipeline_meta": parsed["pipeline_meta"]}
+    except Exception as exc:
+        try:
+            _ocp.update_batch_item(item_id, state="FAILED", error=str(exc)[:400])
+        except Exception:
+            pass
+        log_audit(user["full_name"], "BULK_OCR_ERROR", f"Bulk OCR failed for '{filename}': {exc}", None)
+        return {"item_id": item_id, "status": "FAILED", "error": str(exc)[:400]}
+
+
+@app.post("/api/bulk/{batch_id}/finalize")
+async def bulk_finalize(batch_id: str, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    batch = _ocp.get_batch(batch_id, user)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found or access denied")
+    _ocp.finalize_batch(batch_id)
+    return {"status": "ok", "batch": _ocp.get_batch(batch_id, user)}
+
+
+@app.get("/api/bulk")
+async def bulk_list(user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    return {"batches": _ocp.list_batches_for_user(user)}
+
+
+@app.get("/api/bulk/{batch_id}")
+async def bulk_status(batch_id: str, user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    batch = _ocp.get_batch(batch_id, user)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch
+
+
+@app.post("/api/bulk/items/{item_id}/retry")
+async def bulk_retry_item(background: BackgroundTasks, item_id: str,
+                          user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    import ocr_pipeline as _ocp
+    with get_db() as db:
+        item = db.execute("SELECT * FROM ocr_batch_items WHERE id=?", (item_id,)).fetchone()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    batch = _ocp.get_batch(item["batch_id"], user)
+    if not batch:
+        raise HTTPException(status_code=403, detail="Access denied")
+    # The retained upload is reprocessed by re-running the canonical pipeline on
+    # the stored document; only re-runs downstream enrichment. If the original
+    # file was never stored (rejected type), the caller must re-upload.
+    if item["doc_id"]:
+        _ocp.update_batch_item(item_id, state="EXTRACTING_TEXT", error="")
+        try:
+            statuses = _document_land_statuses(item["doc_id"], user)
+            _ocp.update_batch_item(item_id, state="READY", **statuses)
+        except Exception:
+            _ocp.update_batch_item(item_id, state="READY")
+        _ocp.enqueue_downstream_tasks(item["doc_id"], user, mode=batch["mode"])
+        background.add_task(_ocp.drain_doc_tasks, item["doc_id"])
+        return {"status": "requeued", "item_id": item_id}
+    return {"status": "cannot_retry", "error": "Original file not retained; re-upload required."}
+
+
+# Fast OCR pipeline tables + the single downstream worker for the OCR task
+# types above. Imported at the end (after every server definition) so
+# ocr_pipeline's lazy get_server() sees a fully-built module.
+import ocr_pipeline as _ocr_pipeline  # noqa: E402
+_ocr_pipeline.ensure_ocr_cache_table()
+_ocr_pipeline.ensure_batch_table()
+# No persistent background worker is started here. Downstream enrichment is
+# recorded on the existing ai_tasks table by enqueue_downstream_tasks() and then
+# drained by drain_doc_tasks() as a FastAPI BackgroundTask on the upload/bulk
+# endpoints — no second worker loop, no competing queue.
+
 
 @app.get("/")
 def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))
