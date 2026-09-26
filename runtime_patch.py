@@ -82,46 +82,50 @@ def apply():
         with dbmod.get_db() as db:
             db.execute("""INSERT INTO ocr_cache(content_hash,owner_email,owner_role,visibility_scope,source_doc_id,filename,lang,ocr_text,cleaned_text,detected_language,confidence,fields,validation,ocr_method,pages,word_count,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(content_hash) DO UPDATE SET owner_email=excluded.owner_email,owner_role=excluded.owner_role,visibility_scope=excluded.visibility_scope,source_doc_id=excluded.source_doc_id,filename=excluded.filename,lang=excluded.lang,ocr_text=excluded.ocr_text,cleaned_text=excluded.cleaned_text,detected_language=excluded.detected_language,confidence=excluded.confidence,fields=excluded.fields,validation=excluded.validation,ocr_method=excluded.ocr_method,pages=excluded.pages,word_count=excluded.word_count,metadata_json=excluded.metadata_json""",(chash,str((user or {}).get("email") or "").lower(),str((user or {}).get("role") or "").upper(),scope,source_doc_id,os.path.basename(filename or "upload"),lang or "auto",ocr_result.get("text","") or "",ocr_result.get("cleaned_text",ocr_result.get("text","") ) or "",ocr_result.get("detected_language","eng") or "eng",float(ocr_result.get("confidence",0) or 0),_json(fields),_json(validation),ocr_result.get("method","tesseract_fast") or "tesseract_fast",int(pages or 1),int(ocr_result.get("word_count",0) or 0),_json(metadata),time.time()))
 
-    def fast_ocr(image,requested_lang="auto"):
+    def fast_ocr(image, requested_lang="auto"):
+        """Fast, real OCR: one image_to_data pass, bounded zero-word recovery."""
         requested=(requested_lang or "auto").strip().lower()
-        try: candidates=mod.get_server()._ocr_languages(requested) if requested not in ("","auto") else ["eng","hin"]
-        except Exception: candidates=["eng","hin"]
-        candidates=[c for c in candidates if c]; primary=candidates[0] if candidates else "eng"
-        base=ImageOps.exif_transpose(image).convert("L")
+        server = mod.get_server()
+        try:
+            candidates = server._ocr_languages(requested)
+        except Exception:
+            candidates = ["eng"]
+        candidates = [c for c in candidates if c] or ["eng"]
+        primary = candidates[0]
+        if not server.tesseract_available():
+            return {"text":"","confidence":0.0,"word_count":0,"detected_language":"eng","method":"tesseract_unavailable","engine_error":"Tesseract executable is not available on the running server","strategy":{"lang":primary,"psm":6}}
+        base = ImageOps.exif_transpose(image).convert("L")
         if max(base.size)>3200:
             scale=3200/max(base.size); base=base.resize((max(1,int(base.width*scale)),max(1,int(base.height*scale))))
-        variants=[ImageOps.autocontrast(base), ImageEnhance.Sharpness(ImageOps.autocontrast(base)).enhance(1.8), ImageOps.autocontrast(base).point(lambda p:255 if p>175 else 0)]
-        def words(text): return len(re.findall(r"\S+",text or ""))
-        def recognize(img,language,psm):
-            try: return (pytesseract.image_to_string(img,lang=language,config=f"--oem 3 --psm {psm}") or "").strip()
-            except Exception as exc: print(f"[OCR] tesseract attempt failed: {type(exc).__name__}"); return ""
-        best=""; method="tesseract_fast"
-        for label,img in zip(("gray","sharp","threshold"),variants):
-            for psm in (6,11):
-                text=recognize(img,primary,psm)
-                if words(text)>words(best): best=text; method=f"tesseract_{label}_psm{psm}"
-                if words(best)>=8: break
-            if words(best)>=8: break
-        if words(best)<4 and len(candidates)>1:
-            multi="+".join(candidates[:2])
-            for img in variants[:2]:
-                text=recognize(img,multi,6)
-                if words(text)>words(best): best=text; primary=multi; method="tesseract_multi"
-        if words(best)<2:
+        base=ImageOps.autocontrast(base,cutoff=0.5); base=ImageEnhance.Contrast(base).enhance(1.15); base=ImageEnhance.Sharpness(base).enhance(1.35)
+        def recognize(img, language, psm):
             try:
-                fallback=mod.get_server().run_guided_ocr(base,{"lang":primary,"psm":6,"rotation":0,"enhance":True,"denoise":False})
-                text=(fallback.get("text") or "").strip()
-                if words(text)>words(best): best=text; method="tesseract_guided_fallback"
-            except Exception as exc: print(f"[OCR] guided fallback failed: {type(exc).__name__}")
-        detected=mod.get_server().detect_primary_script(best) or "eng"; wc=words(best)
-        print(f"[OCR] result words={wc} method={method} lang={primary}")
-        return {"text":best,"confidence":0.84 if wc>=8 else (0.62 if wc>=3 else 0.0),"word_count":wc,"detected_language":detected,"method":method,"strategy":{"lang":primary}}
-
-    if not getattr(mod, "_CANONICAL_OCR_LIVE", False):
-        # Legacy fallback only. The canonical ocr_pipeline now carries the
-        # production fixes this patch provided (PostgreSQL-safe cache UPSERT,
-        # fast single-pass OCR). Shadowing the canonical functions here
-        # re-introduced silent empty OCR results and up to eight Tesseract
-        # passes per page — do not patch on modern builds.
-        mod.cache_store=cache_store; mod.run_fast_ocr=fast_ocr
+                return pytesseract.image_to_data(img,lang=language,config=f"--oem 1 --psm {psm} -c preserve_interword_spaces=1",output_type=pytesseract.Output.DICT,timeout=15), None
+            except Exception as exc: return None, str(exc)
+        def build(data):
+            if data is None: return "",[],0.0
+            texts=data.get("text",[]); confs=data.get("conf",[]); lines={}; order=[]; words=[]; scores=[]; blocks=data.get("block_num") or [0]*len(texts); pars=data.get("par_num") or [0]*len(texts); nums=data.get("line_num") or [0]*len(texts)
+            for i,raw in enumerate(texts):
+                word=str(raw or "").strip()
+                try: conf=float(confs[i])
+                except Exception: conf=-1
+                if not word or conf<0: continue
+                words.append(word); scores.append(max(0,min(1,conf/100))); key=(int(blocks[i]),int(pars[i]),int(nums[i]))
+                if key not in lines: lines[key]=[]; order.append(key)
+                lines[key].append(word)
+            return "\n".join(" ".join(lines[k]) for k in order),words,(sum(scores)/len(scores) if scores else 0.0)
+        data,err=recognize(base,primary,6); text,words,avg=build(data); method="tesseract_psm6"
+        if len(words)<2:
+            data2,err2=recognize(base,primary,11); text2,words2,avg2=build(data2)
+            if len(words2)>len(words): text,words,avg=text2,words2,avg2; method="tesseract_psm11"
+            err=err2 or err
+        if len(words)<2 and primary!="eng" and "eng" in candidates:
+            data3,err3=recognize(base,"eng",6); text3,words3,avg3=build(data3)
+            if len(words3)>len(words): text,words,avg=text3,words3,avg3; primary="eng"; method="tesseract_eng"
+            err=err3 or err
+        if not words:
+            return {"text":"","confidence":0.0,"word_count":0,"detected_language":"eng","method":method,"engine_error":err or "Tesseract returned zero recognized words","strategy":{"lang":primary,"psm":6}}
+        return {"text":text,"confidence":round(avg,3),"word_count":len(words),"detected_language":server.detect_primary_script(text) or "eng","tesseract_language":primary,"method":method,"strategy":{"lang":primary,"psm":6}}
+    mod.run_fast_ocr=fast_ocr
+    mod.cache_store=cache_store
     _seed_demo_once_if_requested(); _backfill_demo_parcels()
