@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Land Intelligence</title>
+  <link rel="stylesheet" href="/css/land-intelligence.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+  <div class="tricolor"></div>
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark">LI</div><div><div class="eyebrow">DILRMP · REVIEW WORKSPACE</div><h1>Land Intelligence</h1><p>Parcel-centric mutation, encumbrance, litigation, risk and map review.</p></div></div>
+    <a class="back-link" href="/">← Document Screening</a>
+  </header>
+  <main class="shell">
+    <section class="search-card"><div class="search-row"><div class="field grow"><label>Search parcel / owner</label><input id="q" placeholder="Survey, khasra, village, owner…"></div><div class="field"><label>Village</label><input id="village" placeholder="Village"></div><div class="field"><label>District</label><input id="district" placeholder="District"></div><button id="searchBtn" class="btn primary">Search</button><button id="clearBtn" class="btn">Clear</button></div></section>
+    <section id="metrics" class="metrics"></section>
+    <nav class="tabs" aria-label="Land Intelligence sections"><button class="tab active" data-tab="records">▦ Records</button><button class="tab" data-tab="mutations">⇄ Mutations</button><button class="tab" data-tab="encumbrances">▣ Encumbrances</button><button class="tab" data-tab="cases">⚖ Court Cases</button><button class="tab" data-tab="risk">⚠ Risk Review</button><button class="tab" data-tab="map">⌖ Mapping</button><button class="tab" data-tab="reports">▤ Reports</button></nav>
+    <div id="message" class="message hidden"></div>
+    <section id="records" class="panel"></section><section id="mutations" class="panel hidden"></section><section id="encumbrances" class="panel hidden"></section><section id="cases" class="panel hidden"></section><section id="risk" class="panel hidden"></section><section id="map" class="panel hidden"></section><section id="reports" class="panel hidden"></section>
+  </main>
+  <dialog id="mutationDialog"><form method="dialog" id="mutationForm" class="dialog-form"><div class="dialog-head"><h2>Create mutation application</h2><button value="cancel" class="icon-btn">×</button></div><div class="form-grid"><label>Survey / Khasra<input name="survey_number" required></label><label>Village<input name="village"></label><label>Previous owner<input name="previous_owner"></label><label>New owner<input name="new_owner" required></label><label>Mutation type<select name="reason_type"><option>SALE</option><option>GIFT</option><option>INHERITANCE</option><option>PARTITION</option><option>MERGER</option><option>COURT_DECREE</option><option>OTHER</option></select></label><label>Deed no.<input name="deed_no"></label><label>Deed date<input name="deed_date" placeholder="YYYY-MM-DD"></label><label>Tehsil<input name="tehsil"></label><label>District<input name="district"></label></div><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="saveMutation" class="btn primary">Submit application</button></div></form></dialog>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/js/land-intelligence.js"></script>
+  <script>
+  (()=>{
+    const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const api=async(u,o={})=>{const r=await fetch(u,{credentials:'same-origin',...o}),b=await r.json().catch(()=>({}));if(!r.ok)throw Error(b.detail||b.error||`Request failed (${r.status})`);return b};
+    let map=null,markers=[],polygons=[],records=[];
+    const panel=document.getElementById('map');
+    async function loadMap(){
+      panel.innerHTML='<div class="panel-head"><div><h2>Parcel mapping</h2><p>Reference geometry is non-authoritative. Exact reviewer pins are separately auditable.</p></div><div class="map-actions"><button id="mapFit" class="btn small">Fit parcels</button><button id="mapExport" class="btn small">Export register</button></div></div><div class="map-filterbar"><input id="mapVillage" placeholder="Village"><input id="mapDistrict" placeholder="District"><input id="mapSurvey" placeholder="Survey / Khasra"><input id="mapGeocode" placeholder="Find village / place"><button id="mapFind" class="btn small">Find</button><label><input id="showGeometry" type="checkbox" checked> Parcel geometry</label><label><input id="showPins" type="checkbox" checked> Reviewer pins</label></div><div class="map-legend"><span>▱ Reference parcel</span><span>● Exact reviewer pin</span><span>⚠ Needs review</span></div><div id="mapCanvas" class="map-canvas"></div><div id="mapSummary" class="map-summary"></div><div id="mapList" class="map-list"></div>';
+      if(!window.L){document.getElementById('mapCanvas').innerHTML='<div class="empty">Map library unavailable.</div>';return;}
+      if(map)map.remove(); map=L.map('mapCanvas',{preferCanvas:true}).setView([20.5937,78.9629],5);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
+      await refreshMap();
+      ['mapVillage','mapDistrict','mapSurvey'].forEach(id=>document.getElementById(id).addEventListener('change',refreshMap));
+      document.getElementById('showGeometry').onchange=drawLayers;document.getElementById('showPins').onchange=drawLayers;
+      document.getElementById('mapFit').onclick=()=>{const all=[...markers,...polygons].map(x=>x.getBounds?x.getBounds():x.getLatLng());if(all.length){let b=L.featureGroup([...markers,...polygons]);map.fitBounds(b.getBounds(),{padding:[24,24]});}};
+      document.getElementById('mapExport').onclick=()=>{window.location='/api/map/export.csv';};
+      document.getElementById('mapFind').onclick=async()=>{const q=document.getElementById('mapGeocode').value.trim();if(!q)return;try{const d=await api('/api/map/geocode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});if(d.lat!=null){map.setView([d.lat,d.lon],14);L.marker([d.lat,d.lon]).addTo(map).bindPopup(`<b>${esc(d.display_name||q)}</b><br>Geocoded reference location`).openPopup();}else alert(d.error||'No location found.');}catch(e){alert(e.message);}};
+    }
+    async function refreshMap(){
+      try{const p=new URLSearchParams({village:document.getElementById('mapVillage').value.trim(),district:document.getElementById('mapDistrict').value.trim(),survey:document.getElementById('mapSurvey').value.trim(),limit:'5000'});const [props,rec]=await Promise.all([api('/api/map/properties?'+p),api('/api/map/records?'+new URLSearchParams({q:document.getElementById('mapSurvey').value.trim(),village:document.getElementById('mapVillage').value.trim(),district:document.getElementById('mapDistrict').value.trim(),limit:'5000'}))]);records=rec.records||[];window.__mapProperties=props.properties||[];document.getElementById('mapSummary').innerHTML=`<strong>${props.total||0}</strong> reference parcels · <strong>${rec.total||0}</strong> screened records · <strong>${rec.metadata?.summary?.exact_pins||0}</strong> exact pins`;drawLayers();}
+      catch(e){document.getElementById('mapSummary').textContent=e.message;}
+    }
+    function drawLayers(){
+      markers.forEach(x=>x.remove());polygons.forEach(x=>x.remove());markers=[];polygons=[];
+      const showG=document.getElementById('showGeometry').checked,showP=document.getElementById('showPins').checked;
+      if(showG)(window.__mapProperties||[]).forEach(p=>{if(!p.geometry?.coordinates?.[0])return;const latlng=p.geometry.coordinates[0].map(x=>[x[1],x[0]]);const poly=L.polygon(latlng,{color:'#2563eb',weight:2,fillOpacity:.12});poly.addTo(map);poly.bindPopup(`<strong>${esc(p.survey_number||p.parcel_id)}</strong><br>${esc(p.village)}<br>${esc(p.area??'')} ${esc(p.area_unit||'')}<br><small>${esc(p.disclaimer||'Reference geometry only')}</small>`);polygons.push(poly);});
+      if(showP)records.forEach(r=>{if(r.lat==null||r.lon==null)return;const m=L.marker([r.lat,r.lon],{draggable:false});m.addTo(map);m.bindPopup(`<strong>${esc(r.survey||r.khasra||r.id)}</strong><br>${esc(r.village)} · ${esc(r.owner||r.current_owner||'')}</br>${esc(r.location_status||'EXACT_PIN')}<br><button data-open-map-land="${esc(r.id)}">Open record</button>`);markers.push(m);});
+      const bounds=L.featureGroup([...markers,...polygons]);if(markers.length||polygons.length)map.fitBounds(bounds.getBounds(),{padding:[20,20],maxZoom:16});
+      document.getElementById('mapList').innerHTML=records.map(r=>`<div class="map-row"><div><strong>${esc(r.survey||r.khasra||r.id)}</strong><span>${esc(r.village||'')} · ${esc(r.owner||r.current_owner||'—')}</span><small>${esc(r.location_status||'UNRESOLVED')} · ${esc(r.location_source||'')}</small></div><div>${r.lat!=null?'<span class="pill">PIN</span>':'<span class="pill">UNMAPPED</span>'} <button class="btn small" data-map-open="${esc(r.id)}">Open</button></div></div>`).join('')||'<div class="empty">No map records match these filters.</div>';
+      document.querySelectorAll('[data-map-open]').forEach(b=>b.onclick=()=>{if(window.LandIntelligenceOpen)window.LandIntelligenceOpen(b.dataset.mapOpen);});
+      document.querySelectorAll('[data-open-map-land]').forEach(b=>b.onclick=()=>{if(window.LandIntelligenceOpen)window.LandIntelligenceOpen(b.dataset.openMapLand);});
+    }
+    document.querySelector('.tab[data-tab="map"]').addEventListener('click',()=>setTimeout(loadMap,0));
+  })();
+  </script>
+</body>
+</html>
