@@ -19,6 +19,7 @@ from court_cases import router as court_cases_router
 from demo_scenarios import demo_router
 from backup_restore import backup_router
 from land_intelligence import router as land_intelligence_router
+from parcel_locator import router as parcel_locator_router
 
 app.include_router(map_router)
 app.include_router(document_history_router)
@@ -31,6 +32,7 @@ app.include_router(court_cases_router)
 app.include_router(demo_router)
 app.include_router(backup_router)
 app.include_router(land_intelligence_router)
+app.include_router(parcel_locator_router)
 
 @app.get("/land-intelligence", include_in_schema=False)
 def land_intelligence_ui():
