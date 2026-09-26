@@ -19,8 +19,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import sys
+import zlib
 from typing import Any, Dict, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -207,6 +209,99 @@ def _render(image: Image.Image, spec: Dict[str, Any]) -> None:  # noqa: C901
         _signature(draw, MARGIN, y + 60)
 
 
+def _pdf_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def build_pdf_with_text_layer(page_image, text: str, dpi: int = 150) -> bytes:
+    """Build a PDF that keeps the synthetic rendered page as a full-bleed
+    background image *and* carries a real, extractable text layer.
+
+    A plain rasterized PDF (what Pillow produces) has no text layer, so
+    ``pypdfium2``/``pypdf`` extraction returns nothing and the Land
+    Intelligence document bridge cannot read the case number, survey number or
+    village. Here the visual is embedded as a DCT (JPEG) image exactly as
+    before, and an *invisible* text layer (PDF render mode 3) reproduces the
+    document's plain text on top. The appearance is unchanged and unmistakably
+    synthetic; only the machine-readable text is added — no real seals,
+    identifiers or QR codes are introduced.
+    """
+    width, height = page_image.size
+    page_w_pt = round(width / dpi * 72, 2)
+    page_h_pt = round(height / dpi * 72, 2)
+
+    image_buffer = io.BytesIO()
+    page_image.save(image_buffer, "JPEG", quality=82, optimize=True)
+    image_bytes = image_buffer.getvalue()
+
+    text_lines = [line for line in text.split("\n")]
+    line_count = max(len(text_lines), 1)
+    top = page_h_pt - 15.0
+    bottom = 15.0
+    leading = max(6.0, min(14.0, (top - bottom) / line_count))
+
+    parts = [
+        "q",
+        f"{page_w_pt} 0 0 {page_h_pt} 0 0 cm",
+        "/Im0 Do",
+        "Q",
+        "BT",
+        "3 Tr",                 # invisible text: keeps the visual identical
+        "/F1 11 Tf",
+        f"{leading:.2f} TL",
+        f"40 {top:.2f} Td",
+    ]
+    for line in text_lines:
+        safe = _pdf_escape(line.encode("cp1252", "replace").decode("cp1252"))
+        parts.append(f"({safe}) Tj")
+        parts.append("T*")
+    parts.append("ET")
+    content = "\n".join(parts).encode("cp1252", "replace")
+    content_bytes = zlib.compress(content, 9)
+
+    image_obj = (
+        f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} "
+        f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+        f"/Length {len(image_bytes)} >>\nstream\n".encode()
+        + image_bytes
+        + b"\nendstream"
+    )
+    content_obj = (
+        f"<< /Length {len(content_bytes)} /Filter /FlateDecode >>\nstream\n".encode()
+        + content_bytes
+        + b"\nendstream"
+    )
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w_pt} {page_h_pt}] "
+            f"/Resources << /XObject << /Im0 5 0 R >> /Font << /F1 4 0 R >> >> "
+            f"/Contents 6 0 R >>"
+        ).encode(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        image_obj,
+        content_obj,
+    ]
+
+    out = io.BytesIO()
+    out.write(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offsets = []
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(f"{index} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref_pos = out.tell()
+    count = len(objects) + 1
+    out.write(f"xref\n0 {count}\n".encode())
+    out.write(b"0000000000 65535 f \n")
+    for offset in offsets:
+        out.write(f"{offset:010d} 00000 n \n".encode())
+    out.write(
+        f"trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode()
+    )
+    return out.getvalue()
+
+
 def render_spec(spec: Dict[str, Any], out_dir: str, force: bool = False) -> str:
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, spec["filename"])
@@ -221,7 +316,12 @@ def render_spec(spec: Dict[str, Any], out_dir: str, force: bool = False) -> str:
     page = image.convert("RGB")
     _render(page, spec)
     if spec["filename"].lower().endswith(".pdf"):
-        page.save(path, "PDF", resolution=150.0, title=f"{spec['filename']} (synthetic demo)")
+        # Keep the synthetic visual as the page background but add a real,
+        # extractable text layer so the Land Intelligence bridge can read the
+        # document identity (case no / survey / village) without raster OCR.
+        pdf_bytes = build_pdf_with_text_layer(page, document_plain_text(spec), dpi=150)
+        with open(path, "wb") as handle:
+            handle.write(pdf_bytes)
     else:
         page.save(path, "PNG", optimize=True)
     return path
