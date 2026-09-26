@@ -1,5 +1,5 @@
 """Production compatibility fixes plus controlled idempotent demo seeding."""
-import json, os, re, time
+import io, json, os, re, time
 
 
 def _json(value):
@@ -18,25 +18,14 @@ def _seed_demo_once_if_requested():
     if os.getenv("SEED_DEMO_LI_ON_STARTUP", "").strip().lower() != "true":
         return
     try:
-        # The canonical demo_scenarios seeder still contains one legacy
-        # SQLite UPSERT. Adapt that statement only while the explicit demo
-        # seed is running; never alter normal application DB behavior.
         import server
         import demo_scenarios
         original_execute = server.DBConnection.execute
-
         def demo_execute(self, query, params=()):
-            if self.is_pg and isinstance(query, str) and re.match(
-                r"^\s*INSERT\s+OR\s+(REPLACE|IGNORE)\s+INTO\b", query, re.I
-            ):
-                query = re.sub(
-                    r"^\s*INSERT\s+OR\s+(REPLACE|IGNORE)\s+INTO\b",
-                    "INSERT INTO", query, count=1, flags=re.I
-                )
-                stripped = query.rstrip().rstrip(";")
-                query = stripped + " ON CONFLICT DO NOTHING"
+            if self.is_pg and isinstance(query, str) and re.match(r"^\s*INSERT\s+OR\s+(REPLACE|IGNORE)\s+INTO\b", query, re.I):
+                query = re.sub(r"^\s*INSERT\s+OR\s+(REPLACE|IGNORE)\s+INTO\b", "INSERT INTO", query, count=1, flags=re.I)
+                query = query.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
             return original_execute(self, query, params)
-
         server.DBConnection.execute = demo_execute
         try:
             result = demo_scenarios.seed_all(dry_run=False)
@@ -50,22 +39,20 @@ def _seed_demo_once_if_requested():
 
 
 def _backfill_demo_parcels():
-    """Backfill reference geometry and links if the canonical demo seed exists."""
     try:
         from server import get_db
         with get_db() as db:
-            props=db.execute("SELECT property_id,parcel_id,village,survey_number,geometry FROM properties WHERE property_id LIKE 'DEMO-LI-%' ORDER BY village,property_id").fetchall()
-            seen={}
+            props = db.execute("SELECT property_id,parcel_id,village,survey_number,geometry FROM properties WHERE property_id LIKE 'DEMO-LI-%' ORDER BY village,property_id").fetchall()
+            seen = {}
             for raw in props:
-                row=_rowdict(raw); pid=row.get("property_id"); village=str(row.get("village") or "DEMO")
+                row = _rowdict(raw); pid = row.get("property_id"); village = str(row.get("village") or "DEMO")
                 if row.get("geometry"):
-                    seen[village]=seen.get(village,0)+1; continue
-                idx=seen.get(village,0); seen[village]=idx+1
-                base_lon,base_lat=((77.1000,28.6200) if village.casefold()=="devnapur" else (77.1150,28.6350))
-                col,ring=idx%5,idx//5; lon,lat=base_lon+col*0.0038,base_lat+ring*0.0038; w,h=0.0030,0.0028
-                geom=json.dumps({"type":"Polygon","coordinates":[[[lon,lat],[lon+w,lat],[lon+w,lat+h],[lon,lat+h],[lon,lat]]]})
-                cent=json.dumps([lon+w/2,lat+h/2])
-                db.execute("""UPDATE properties SET geometry=?,centroid=?,crs='EPSG:4326',georeferenced=0,geometry_source='Synthetic DEMO-LI reference geometry',geometry_confidence=0.70,data_source='Synthetic DEMO-LI dataset (reference only)',source_confidence=0.70,location_status='PARCEL_GEOMETRY',location_source='Synthetic DEMO-LI reference geometry',location_confidence=0.70,updated_at=? WHERE property_id=? AND geometry IS NULL""",(geom,cent,time.time(),pid))
+                    seen[village] = seen.get(village, 0) + 1; continue
+                idx = seen.get(village, 0); seen[village] = idx + 1
+                base_lon, base_lat = ((77.1000,28.6200) if village.casefold()=="devnapur" else (77.1150,28.6350))
+                col, ring = idx % 5, idx // 5; lon, lat, w, h = base_lon+col*0.0038, base_lat+ring*0.0038, 0.0030, 0.0028
+                geom = json.dumps({"type":"Polygon","coordinates":[[[lon,lat],[lon+w,lat],[lon+w,lat+h],[lon,lat+h],[lon,lat]]]}); cent=json.dumps([lon+w/2,lat+h/2])
+                db.execute("UPDATE properties SET geometry=?,centroid=?,crs='EPSG:4326',georeferenced=0,geometry_source='Synthetic DEMO-LI reference geometry',geometry_confidence=0.70,data_source='Synthetic DEMO-LI dataset (reference only)',source_confidence=0.70,location_status='PARCEL_GEOMETRY',location_source='Synthetic DEMO-LI reference geometry',location_confidence=0.70,updated_at=? WHERE property_id=? AND geometry IS NULL",(geom,cent,time.time(),pid))
             docs=db.execute("SELECT id,fields FROM documents WHERE id LIKE 'DEMO-LI-%'").fetchall()
             for raw in docs:
                 doc=_rowdict(raw)
@@ -88,7 +75,7 @@ def _backfill_demo_parcels():
 def apply():
     import ocr_pipeline as mod
     import pytesseract
-    from PIL import ImageOps
+    from PIL import ImageEnhance, ImageOps
 
     def cache_store(chash,user,source_doc_id,filename,lang,ocr_result,fields,validation,pages,metadata):
         mod.ensure_ocr_cache_table(); scope=mod._visibility_scope_for(user); dbmod=mod.get_server()
@@ -97,30 +84,41 @@ def apply():
 
     def fast_ocr(image,requested_lang="auto"):
         requested=(requested_lang or "auto").strip().lower()
-        try:candidates=mod.get_server()._ocr_languages(requested) if requested not in ("","auto") else ["eng","hin"]
-        except Exception:candidates=["eng","hin"]
-        primary=candidates[0] if candidates else "eng"; gray=ImageOps.autocontrast(ImageOps.grayscale(image))
-        if max(gray.size)>3000:
-            scale=3000/max(gray.size); gray=gray.resize((max(1,int(gray.width*scale)),max(1,int(gray.height*scale))))
+        try: candidates=mod.get_server()._ocr_languages(requested) if requested not in ("","auto") else ["eng","hin"]
+        except Exception: candidates=["eng","hin"]
+        candidates=[c for c in candidates if c]; primary=candidates[0] if candidates else "eng"
+        base=ImageOps.exif_transpose(image).convert("L")
+        if max(base.size)>3200:
+            scale=3200/max(base.size); base=base.resize((max(1,int(base.width*scale)),max(1,int(base.height*scale))))
+        variants=[ImageOps.autocontrast(base), ImageEnhance.Sharpness(ImageOps.autocontrast(base)).enhance(1.8), ImageOps.autocontrast(base).point(lambda p:255 if p>175 else 0)]
+        def words(text): return len(re.findall(r"\S+",text or ""))
         def recognize(img,language,psm):
-            try:return (pytesseract.image_to_string(img,lang=language,config=f"--oem 1 --psm {psm}") or "").strip()
-            except Exception:return ""
-        text=recognize(gray,primary,6)
-        if len(re.findall(r"\S+",text))<4:
-            alt=recognize(gray,primary,11)
-            if len(re.findall(r"\S+",alt))>len(re.findall(r"\S+",text)):text=alt
-        if len(re.findall(r"\S+",text))<4 and len(candidates)>1:
-            multi="+".join(candidates[:2]);alt=recognize(gray,multi,6)
-            if len(re.findall(r"\S+",alt))>len(re.findall(r"\S+",text)):text,primary=alt,multi
-        if len(re.findall(r"\S+",text))<2:
-            alt=recognize(gray.point(lambda p:255 if p>180 else 0),primary,6)
-            if len(re.findall(r"\S+",alt))>len(re.findall(r"\S+",text)):text=alt
-        words=re.findall(r"\S+",text);detected=mod.get_server().detect_primary_script(text) or "eng"
-        return {"text":text,"confidence":0.82 if len(words)>=8 else (0.60 if words else 0.0),"word_count":len(words),"detected_language":detected,"method":"tesseract_fast","strategy":{"lang":primary}}
+            try: return (pytesseract.image_to_string(img,lang=language,config=f"--oem 3 --psm {psm}") or "").strip()
+            except Exception as exc: print(f"[OCR] tesseract attempt failed: {type(exc).__name__}"); return ""
+        best=""; method="tesseract_fast"
+        for label,img in zip(("gray","sharp","threshold"),variants):
+            for psm in (6,11):
+                text=recognize(img,primary,psm)
+                if words(text)>words(best): best=text; method=f"tesseract_{label}_psm{psm}"
+                if words(best)>=8: break
+            if words(best)>=8: break
+        if words(best)<4 and len(candidates)>1:
+            multi="+".join(candidates[:2])
+            for img in variants[:2]:
+                text=recognize(img,multi,6)
+                if words(text)>words(best): best=text; primary=multi; method="tesseract_multi"
+        if words(best)<2:
+            try:
+                fallback=mod.get_server().run_guided_ocr(base,{"lang":primary,"psm":6,"rotation":0,"enhance":True,"denoise":False})
+                text=(fallback.get("text") or "").strip()
+                if words(text)>words(best): best=text; method="tesseract_guided_fallback"
+            except Exception as exc: print(f"[OCR] guided fallback failed: {type(exc).__name__}")
+        detected=mod.get_server().detect_primary_script(best) or "eng"; wc=words(best)
+        print(f"[OCR] result words={wc} method={method} lang={primary}")
+        return {"text":best,"confidence":0.84 if wc>=8 else (0.62 if wc>=3 else 0.0),"word_count":wc,"detected_language":detected,"method":method,"strategy":{"lang":primary}}
 
-    mod.cache_store=cache_store;mod.run_fast_ocr=fast_ocr
-    _seed_demo_once_if_requested();_backfill_demo_parcels()
-
+    mod.cache_store=cache_store; mod.run_fast_ocr=fast_ocr
+    _seed_demo_once_if_requested(); _backfill_demo_parcels()
     path=os.path.join(os.path.dirname(os.path.abspath(__file__)),"index.html")
     try:
         html=open(path,encoding="utf-8").read(); app_start=html.find('<div id="appShell" class="hidden">')
