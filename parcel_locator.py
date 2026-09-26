@@ -7,9 +7,8 @@ and never persists derived centroids/geocodes from a map lookup.
 from __future__ import annotations
 
 import json
-import math
-import re
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+import unicodedata
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -17,6 +16,9 @@ import mapping
 from server import get_current_user, get_db
 
 router = APIRouter(prefix="/api/parcels", tags=["Parcel Locator"])
+# This router is mounted before mapping.map_router so the legacy map-properties
+# endpoint cannot expose the unrestricted reference-property table.
+map_router = APIRouter(prefix="/api/map", tags=["Parcel Map"])
 
 
 def _norm(value: Any) -> str:
@@ -27,7 +29,7 @@ def _land_norm(value: Any) -> str:
     out = []
     for ch in str(value or "").strip():
         try:
-            out.append(str(__import__("unicodedata").digit(ch)))
+            out.append(str(unicodedata.digit(ch)))
         except (TypeError, ValueError):
             out.append(ch)
     return "".join(out).replace(" ", "").casefold()
@@ -43,12 +45,7 @@ def _json(value: Any) -> Any:
 
 
 def _authorized_property_ids(user: Dict[str, Any]) -> Optional[set[str]]:
-    """Return the parcel IDs visible through the canonical document RBAC.
-
-    Admin/reviewer roles retain the existing map behaviour and can inspect the
-    reference parcel register. Data officers/viewers are restricted to parcels
-    linked to documents they are already allowed to see.
-    """
+    """Return parcel IDs visible through the canonical document RBAC."""
     role = str(user.get("role") or "").upper()
     if role in {"ADMIN", "VERIFICATION_OFFICER"}:
         return None
@@ -97,11 +94,10 @@ def _row_payload(row: Any) -> Dict[str, Any]:
 def _ring_point(ring: Sequence[Sequence[float]]) -> Optional[List[float]]:
     if not ring:
         return None
-    xs = [float(p[0]) for p in ring if len(p) >= 2]
-    ys = [float(p[1]) for p in ring if len(p) >= 2]
-    if not xs or not ys:
+    points = [p for p in ring if len(p) >= 2]
+    if not points:
         return None
-    return [sum(xs) / len(xs), sum(ys) / len(ys)]
+    return [sum(float(p[0]) for p in points) / len(points), sum(float(p[1]) for p in points) / len(points)]
 
 
 def _point_in_ring(point: Sequence[float], ring: Sequence[Sequence[float]]) -> bool:
@@ -139,16 +135,21 @@ def _surface_point(geometry: Optional[Dict[str, Any]]) -> Optional[List[float]]:
     coords = geometry.get("coordinates") or []
     if typ == "Polygon" and coords:
         ring = coords[0]
-        centroid = _ring_point(ring)
-        if centroid and _point_in_geometry(centroid, geometry):
-            return centroid
-        # For the simple project geometries, the first edge midpoint is a safe
-        # fallback candidate; validate it before returning.
-        if len(ring) >= 2:
-            p = [(float(ring[0][0]) + float(ring[1][0])) / 2.0, (float(ring[0][1]) + float(ring[1][1])) / 2.0]
-            if _point_in_geometry(p, geometry):
-                return p
-        return centroid
+        candidate = _ring_point(ring)
+        if candidate and _point_in_geometry(candidate, geometry):
+            return candidate
+        # Avoid returning an outside centroid as the map focus. Try edge
+        # midpoints, then retain the centroid only as a labelled fallback.
+        for index in range(max(0, len(ring) - 1)):
+            if len(ring[index]) < 2 or len(ring[index + 1]) < 2:
+                continue
+            point = [
+                (float(ring[index][0]) + float(ring[index + 1][0])) / 2.0,
+                (float(ring[index][1]) + float(ring[index + 1][1])) / 2.0,
+            ]
+            if _point_in_geometry(point, geometry):
+                return point
+        return candidate
     if typ == "MultiPolygon" and coords:
         for polygon in coords:
             point = _surface_point({"type": "Polygon", "coordinates": polygon})
@@ -245,12 +246,7 @@ def resolve_parcel(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_c
             return {"status": "AMBIGUOUS", "matches": [_row_payload(row) for row in exact[:25]], "total": len(exact)}
 
     item = _row_payload(candidates[0])
-    return {
-        "status": "RESOLVED",
-        "persisted": False,
-        "read_only": True,
-        "parcel": item,
-    }
+    return {"status": "RESOLVED", "persisted": False, "read_only": True, "parcel": item}
 
 
 @router.post("/locate")
@@ -261,7 +257,46 @@ def locate_point(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_cur
     except (KeyError, TypeError, ValueError):
         raise HTTPException(status_code=400, detail="latitude and longitude are required.")
     for row in _visible_properties(user):
-        geometry = _json(row["geometry"])
-        if _point_in_geometry(point, geometry):
+        if _point_in_geometry(point, _json(row["geometry"])):
             return {"status": "RESOLVED", "persisted": False, "read_only": True, "parcel": _row_payload(row)}
     return {"status": "NOT_FOUND", "message": "No authorized parcel found at this location."}
+
+
+@map_router.get("/properties")
+def secure_map_properties(
+    village: str = Query("", max_length=200),
+    tehsil: str = Query("", max_length=200),
+    district: str = Query("", max_length=200),
+    survey: str = Query("", max_length=120),
+    q: str = Query("", max_length=200),
+    limit: int = Query(500, ge=1, le=5000),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """RBAC-filtered replacement for the legacy reference-property endpoint."""
+    rows = _filter_rows(_visible_properties(user), q=q, village=village, district=district, survey=survey)
+    return {
+        "properties": [_row_payload(row) | {
+            "synthetic": "synthetic" in str(row["data_source"] or "").casefold()
+                or "synthetic" in str(row["geometry_source"] or "").casefold(),
+            "authoritative": False,
+        } for row in rows[:limit]],
+        "total": len(rows),
+        "metadata": {
+            "authorized_only": True,
+            "authoritative": False,
+            "source": "Project-owned reference geometry",
+            "disclaimer": "Reference geometry only; not an authoritative cadastral boundary or legal title.",
+        },
+    }
+
+
+@map_router.get("/parcel-search")
+def map_parcel_search(
+    q: str = Query("", max_length=200),
+    village: str = Query("", max_length=200),
+    district: str = Query("", max_length=200),
+    survey: str = Query("", max_length=120),
+    limit: int = Query(25, ge=1, le=100),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    return search_parcels(q=q, village=village, district=district, survey=survey, limit=limit, user=user)
