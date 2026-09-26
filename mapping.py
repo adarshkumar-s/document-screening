@@ -48,6 +48,54 @@ def _now() -> float:
     return time.time()
 
 
+def reference_geometry_for_slot(slot: int, kind: str = "polygon") -> Dict[str, Any]:
+    """Build reference geometry by translating the existing synthetic grid.
+
+    The translation uses only the spacing already present between
+    ``_SYNTHETIC_PROPERTIES``. It is not a geocode, not a surveyed boundary,
+    and must never be copied into document latitude/longitude pins.
+    ``kind`` is ``polygon``, ``point``, ``missing_centroid`` or ``unresolved``.
+    """
+    unresolved = {
+        "geometry": None,
+        "centroid": None,
+        "geometry_source": "Synthetic demo parcel — reference geometry intentionally unresolved",
+        "geometry_confidence": None,
+        "location_status": "UNRESOLVED",
+    }
+    if str(kind or "").casefold() == "unresolved" or int(slot or 0) <= 0:
+        return unresolved
+    base = _SYNTHETIC_PROPERTIES[0]
+    ring = base["geometry"]["coordinates"][0]
+    base_centroid = base["centroid"]
+    step_lon = round(_SYNTHETIC_PROPERTIES[1]["centroid"][0] - base_centroid[0], 5) or 0.004
+    step_lat = round(_SYNTHETIC_PROPERTIES[2]["centroid"][1] - base_centroid[1], 5) or 0.00425
+    column = (int(slot) - 1) % 4
+    row = (int(slot) - 1) // 4
+    # Start east of the existing DEMO-PROP block so these shapes do not sit on
+    # those parcels or inherit their survey identity.
+    dx = round((3 + column) * step_lon, 5)
+    dy = round(row * step_lat, 5)
+    translated = [[round(point[0] + dx, 5), round(point[1] + dy, 5)] for point in ring]
+    centroid = [round(base_centroid[0] + dx, 5), round(base_centroid[1] + dy, 5)]
+    source = "Project-owned synthetic reference geometry (existing demonstration grid; not an authoritative pin)"
+    if str(kind).casefold() == "point":
+        return {
+            "geometry": {"type": "Point", "coordinates": centroid},
+            "centroid": centroid,
+            "geometry_source": source,
+            "geometry_confidence": 0.9,
+            "location_status": "REFERENCE_GEOMETRY",
+        }
+    return {
+        "geometry": {"type": "Polygon", "coordinates": [translated]},
+        "centroid": None if str(kind).casefold() == "missing_centroid" else centroid,
+        "geometry_source": source,
+        "geometry_confidence": 0.8 if str(kind).casefold() == "missing_centroid" else 0.95,
+        "location_status": "REFERENCE_GEOMETRY",
+    }
+
+
 LAND_IDENTIFIER_FIELDS = ("survey_number", "gat_number", "khasra_number")
 
 
@@ -1002,7 +1050,31 @@ def _map_visible_records(user: Dict[str, Any]) -> List[Dict[str, Any]]:
             "synthetic": "synthetic" in str(property_item.get("data_source") or "").casefold()
                 or "synthetic" in str(property_item.get("geometry_source") or "").casefold(),
         }
+        # Use geometry already loaded for this linked parcel. Do not query again
+        # here: this function is also the land-record visibility index.
+        if not has_coordinates and record.get("reference_geometry"):
+            record["location_status"] = "REFERENCE_GEOMETRY"
+            record["location_state"] = "REFERENCE_GEOMETRY"
+            record["location_label"] = "Reference geometry"
+            record["location_source"] = "Project-owned reference geometry"
+            record["location_confidence"] = "REFERENCE"
+            record["parcel_id"] = property_item.get("parcel_id")
+            record["property_id"] = property_item.get("property_id")
+            record["has_reference_geometry"] = True
+            provenance = record.get("location_provenance")
+            if isinstance(provenance, dict):
+                provenance["source"] = "Project-owned reference geometry"
+                provenance["authoritative"] = False
     return records
+
+
+def _annotate_reference_labels(records: List[Dict[str, Any]]) -> None:
+    """Identity labels for the map endpoints only. Not used by Land Intelligence lists."""
+    try:
+        import parcel_locator
+        parcel_locator.annotate_map_records(records)
+    except Exception:
+        pass
 
 
 def _map_record_matches(record: Dict[str, Any], *, q: str = "", district: str = "", tehsil: str = "", village: str = "", status: str = "", location: str = "") -> bool:
@@ -1061,6 +1133,7 @@ def map_records(
     dashboard without downloading a second dataset.
     """
     all_records = _map_visible_records(user)
+    _annotate_reference_labels(all_records)
     filtered = [record for record in all_records if _map_record_matches(
         record, q=_normalise(q), district=district, tehsil=tehsil, village=village,
         status=status, location=location)]
@@ -1080,6 +1153,7 @@ def map_records(
 def map_summary(user: Dict[str, Any] = Depends(get_current_user)):
     """Compact map dashboard metrics for the portal and integrations."""
     records = _map_visible_records(user)
+    _annotate_reference_labels(records)
     return {"summary": _map_summary(records), "metadata": {"authoritative": False}}
 
 
@@ -1140,7 +1214,9 @@ def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
         "location_status", "location_state", "location_label", "location_source", "location_confidence",
         "location_verified_by", "location_verified_at", "location_audit_available", "review_required"), extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(_map_visible_records(user))
+    exported = _map_visible_records(user)
+    _annotate_reference_labels(exported)
+    writer.writerows(exported)
     return Response(content=output.getvalue(), media_type="text/csv; charset=utf-8", headers={
         "Content-Disposition": "attachment; filename=land-map-register.csv",
         "Cache-Control": "no-store",

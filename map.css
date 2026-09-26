@@ -109,6 +109,9 @@ label select:focus, label input:focus { border-color: #3182b7; box-shadow: 0 0 0
 .exact-dot { color: #15803d; background: #22c55e; }
 .village-dot { color: #b45309; background: #f59e0b; }
 .unresolved-dot { color: #64748b; background: #94a3b8; }
+.reference-dot { color: #1d4ed8; background: #38bdf8; }
+.record-badge.reference { color: #1d4ed8; background: #dbeafe; }
+.parcel-highlight { filter: drop-shadow(0 0 3px rgba(29, 78, 216, .55)); }
 .legend-note { margin-left: auto; font-style: italic; }
 .disclaimer { margin-top: 11px; padding: 8px 11px; border-left: 3px solid #f0b24b; color: #705019; background: #fffaf0; font-size: 11px; line-height: 1.5; }
 .hidden { display: none !important; }
@@ -150,7 +153,7 @@ label select:focus, label input:focus { border-color: #3182b7; box-shadow: 0 0 0
 .popup-title { font-weight: 900; font-size: 13px; }
 .popup-detail { margin-top: 5px; color: #475569; font-size: 11px; line-height: 1.5; }
 .popup-actions { display: flex; gap: 5px; margin-top: 9px; }
-.popup-actions button { border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 7px; color: #1e4c73; background: #f8fafc; cursor: pointer; font-size: 10px; font-weight: 800; }
+.popup-actions button, .popup-actions a { border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 7px; color: #1e4c73; background: #f8fafc; cursor: pointer; font-size: 10px; font-weight: 800; text-decoration: none; }
 .history-panel { padding: 20px 24px 23px; }
 .history-head { justify-content: space-between; }
 .icon-btn { width: 30px; height: 30px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--muted); background: #fff; font-size: 20px; line-height: 1; }

@@ -342,16 +342,21 @@ function renderSimpleTable(docs){
 
   docs.forEach(doc=>{
     const f = doc.fields || {};
+    const spatial = recordSpatial(doc);
     const tr = el('tr');
+    tr.dataset.landId = spatial.land_id || '';
+    tr.dataset.parcelId = spatial.parcel_id || '';
+    tr.dataset.propertyId = spatial.property_id || '';
     tr.innerHTML = `
       <td><span class="mono">#${doc.id}</span></td>
       <td><b>${escapeHtml(f.owner_name?.value || '—')}</b></td>
       <td>${escapeHtml(f.khasra_number?.value || f.survey_number?.value || '—')}</td>
-      <td>${escapeHtml(f.village?.value || '—')}, ${escapeHtml(f.district?.value || '—')}</td>
+      <td>${escapeHtml(f.village?.value || '—')}, ${escapeHtml(f.district?.value || '—')} <span class="chip" style="font-size:10px">${escapeHtml(recordLocationText(doc))}</span></td>
       <td><span class="chip">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
       <td>${getStatusBadge(doc.status)}</td>
       <td style="text-align:right">
         <button class="btn ghost" onclick="openSimpleDetail('${doc.id}')" style="padding:4px 10px;font-size:12px">View Details</button>
+        ${locateButton(doc)}
       </td>
     `;
     tb.appendChild(tr);
@@ -1355,21 +1360,48 @@ async function loadStaffRecords(){
   }catch(e){}
 }
 
+function recordSpatial(doc){ return doc && doc.spatial ? doc.spatial : {}; }
+function recordLocationText(doc){
+  return recordSpatial(doc).location_label || 'Location not available';
+}
+function locateRecord(docId, landId, parcelId, propertyId){
+  const params = new URLSearchParams();
+  params.set('locate', '1');
+  params.set('document_id', docId);
+  if(landId) params.set('land_id', landId);
+  if(parcelId) params.set('parcel_id', parcelId);
+  if(propertyId) params.set('property_id', propertyId);
+  window.location.href = '/map?' + params.toString();
+}
+function locateButton(doc){
+  const spatial = recordSpatial(doc);
+  return `<button type="button" class="btn ghost" data-record-locate="${escapeHtml(doc.id)}" data-land-id="${escapeHtml(spatial.land_id || '')}" data-parcel-id="${escapeHtml(spatial.parcel_id || '')}" data-property-id="${escapeHtml(spatial.property_id || '')}" style="padding:4px 8px;font-size:11px;margin-left:5px">⌖ Locate</button>`;
+}
+document.addEventListener('click', (event) => {
+  const button = event.target.closest && event.target.closest('[data-record-locate]');
+  if(!button) return;
+  event.preventDefault();
+  locateRecord(button.dataset.recordLocate, button.dataset.landId, button.dataset.parcelId, button.dataset.propertyId);
+});
+
 function renderStaffRecords(docs){
   const tb = $('#staffRecordsTable tbody');
   tb.innerHTML = '';
   docs.forEach(doc=>{
     const f = doc.fields || {};
+    const spatial = recordSpatial(doc);
     tb.innerHTML += `
-      <tr>
+      <tr data-land-id="${escapeHtml(spatial.land_id || '')}" data-parcel-id="${escapeHtml(spatial.parcel_id || '')}" data-property-id="${escapeHtml(spatial.property_id || '')}">
         <td><span class="mono">#${doc.id}</span></td>
         <td><b>${escapeHtml(doc.filename)}</b></td>
         <td><span class="chip" style="font-size:10px">${escapeHtml(doc.doc_type || 'Land Record')}</span></td>
         <td>${getStatusBadge(doc.status)}</td>
         <td><span class="pill ${doc.mean_conf>=75?'valid':'review'}">${doc.mean_conf}%</span></td>
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
+        <td><span class="chip" style="font-size:10px">${escapeHtml(recordLocationText(doc))}</span></td>
         <td style="text-align:right">
           <button class="btn ghost" onclick="openStaffReview('${doc.id}')" style="padding:4px 8px;font-size:11px">View</button>
+          ${locateButton(doc)}
         </td>
       </tr>
     `;

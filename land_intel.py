@@ -24,6 +24,7 @@ import json
 import re
 import time
 import uuid
+from urllib.parse import urlencode
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1638,17 +1639,70 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
         "timeline": build_timeline(land, state["encumbrances"], state["mutations"],
                                   state["court_cases"], risk=risk),
         "risk": risk,
-        "map": {
-            "focus_record_id": land.get("reference_record_id"),
-            "url": f"/map?open_record={land.get('reference_record_id')}" if land.get("reference_record_id") else "/map",
-            "note": "Map geometry is a project-owned, non-authoritative reference.",
-        },
+        "map": _map_focus(land, user),
     }
     if user.get("role") == ROLE_ADMIN:
         detail["audit"] = _land_audit_trail(land)
     else:
         detail["audit"] = {"restricted": True, "reason": "The full audit trail is available to administrators."}
     return detail
+
+
+def _map_focus(land: Dict[str, Any], user: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a Locate URL. Failure must not break land-record detail."""
+    record_id = str(land.get("reference_record_id") or "")
+    params = {"locate": "1", "land_id": land.get("land_id") or ""}
+    if record_id:
+        params["document_id"] = record_id
+        params["open_record"] = record_id
+    parcel_id = ""
+    label = "Location not available"
+    try:
+        import parcel_locator
+        resolved = parcel_locator.resolve_for_user(
+            user,
+            land_id=land.get("land_id") or "",
+            survey_number=land.get("survey") or "",
+            khasra_number=land.get("khasra") or "",
+            village=land.get("village") or "",
+            district=land.get("district") or "",
+            tehsil=land.get("tehsil") or "",
+            document_id=record_id,
+        )
+        parcel = (resolved or {}).get("parcel") or {}
+        parcel_id = str(parcel.get("parcel_id") or "")
+        if parcel_id:
+            params["parcel_id"] = parcel_id
+        label = ((parcel.get("location") or (resolved or {}).get("location") or {}).get("label")) or label
+    except Exception:
+        parcel_id = ""
+    return {
+        "focus_record_id": record_id or None,
+        "land_id": land.get("land_id"),
+        "parcel_id": parcel_id or None,
+        "location_label": label,
+        "url": "/map?" + urlencode({key: value for key, value in params.items() if value}),
+        "note": "Map geometry is a project-owned, non-authoritative reference. Locate does not create a coordinate.",
+    }
+
+
+@land_router.get("/{land_id}/parcel")
+def land_record_parcel(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    """Read-only parcel for a land record the caller can already see."""
+    land = _get_land(user, land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land record not found.")
+    import parcel_locator
+    return parcel_locator.resolve_for_user(
+        user,
+        land_id=land_id,
+        survey_number=land.get("survey") or "",
+        khasra_number=land.get("khasra") or "",
+        village=land.get("village") or "",
+        district=land.get("district") or "",
+        tehsil=land.get("tehsil") or "",
+        document_id=str(land.get("reference_record_id") or ""),
+    )
 
 
 def _document_reference(record: Dict[str, Any]) -> Dict[str, Any]:

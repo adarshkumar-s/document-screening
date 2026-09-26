@@ -49,6 +49,9 @@ DISTRICT = "Kishandham"
 TEHSIL = "Hariharpur"
 VILLAGE_DEVNAPUR = "Devnapur"
 VILLAGE_SHANTIBAN = "Shantiban"
+# Set only while seed_all is inserting a scenario's documents, so those
+# records link to the parcel just created. Never used as a Locate side effect.
+_ACTIVE_PROPERTY_ID: Optional[str] = None
 
 def _ts(date_text: str) -> float:
     """Deterministic epoch for a YYYY-MM-DD date (no wall-clock dependency)."""
@@ -93,6 +96,11 @@ def _insert_document(doc_id: str, scenario: str, *, owner: str, survey: str, vil
              ocr_text or "SYNTHETIC DEMO DOCUMENT — NOT A REAL GOVERNMENT RECORD", "", "eng",
              json.dumps(fields), json.dumps(metadata), SEEDER, "", created, created),
         )
+        if _ACTIVE_PROPERTY_ID:
+            db.execute(
+                "INSERT OR IGNORE INTO property_documents(property_id, document_id, source_type, linked_at) VALUES (?,?,?,?)",
+                (_ACTIVE_PROPERTY_ID, doc_id, "demo_dataset", created),
+            )
 
 
 def _insert_mutation(mut_id: str, scenario: str, *, mutation_no: str, survey: str, village: str,
@@ -174,11 +182,35 @@ def _insert_case(case_id: str, scenario: str, *, case_no: str, survey: str, vill
             )
 
 
+def _reference_kind(index: int) -> str:
+    """Keep polygon, point, missing-centroid and unresolved cases in the seed.
+
+    Index 9 stays unresolved on purpose. Geometry, when present, is reference
+    only and is never written to latitude/longitude.
+    """
+    if index == 3:
+        return "point"
+    if index == 4:
+        return "missing_centroid"
+    if index == 9:
+        return "unresolved"
+    return "polygon"
+
+
 def _insert_property(index: int, scenario: str, *, survey: str, village: str, area_value: float) -> None:
     """Controlled parcel row so uploaded documents resolve through the EXISTING
-    mapping property-resolution path (mapping._resolve) as well."""
+    mapping property-resolution path (mapping._resolve) as well.
+
+    Reference geometry is filled only when the row has none. An existing
+    authoritative pin or a shape already stored by a person is left untouched.
+    """
+    global _ACTIVE_PROPERTY_ID
+    import mapping
     property_id = f"{DATASET}-PROP-{index:03d}"
     now = _ts("2026-01-01")
+    spec = mapping.reference_geometry_for_slot(index, _reference_kind(index))
+    geometry = json.dumps(spec["geometry"]) if spec.get("geometry") else None
+    centroid = json.dumps(spec["centroid"]) if spec.get("centroid") else None
     with get_db() as db:
         db.execute(
             """INSERT INTO properties (
@@ -191,11 +223,24 @@ def _insert_property(index: int, scenario: str, *, survey: str, village: str, ar
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(property_id) DO NOTHING""",
             (property_id, f"{DATASET}-PARCEL-{index:03d}", DISTRICT, TEHSIL, village, survey, "", survey,
-             "", None, area_value, "hectare", None, None, None, None,
-             None, 0, "Synthetic demo parcel — coordinates intentionally unresolved", None,
+             "", None, area_value, "hectare", geometry, centroid, None, None,
+             None, 0, spec.get("geometry_source"), spec.get("geometry_confidence"),
              "Synthetic demo dataset (not a government record)", 1.0,
-             now, now, "UNRESOLVED", "demo-dataset", None, None, None, None, None, None, "demo-dataset"),
+             now, now, spec.get("location_status") or "UNRESOLVED", "demo-dataset", None,
+             None, None, None, None, None, "demo-dataset"),
         )
+        if geometry:
+            db.execute(
+                """UPDATE properties
+                   SET geometry=?, centroid=?, geometry_source=?, geometry_confidence=?,
+                       location_status=?, georeferenced=0
+                   WHERE property_id=?
+                     AND (geometry IS NULL OR geometry='')
+                     AND latitude IS NULL AND longitude IS NULL
+                     AND COALESCE(location_status, '') != 'EXACT_PIN'""",
+                (geometry, centroid, spec.get("geometry_source"), spec.get("geometry_confidence"),
+                 spec.get("location_status") or "REFERENCE_GEOMETRY", property_id),
+            )
         db.execute(
             "INSERT OR IGNORE INTO provenance(id, property_id, field_name, value, source, confidence, created_at) VALUES (?,?,?,?,?,?,?)",
             (f"{DATASET}-PROV-{property_id}-IDENTITY", property_id, "survey_number", survey,
@@ -207,6 +252,7 @@ def _insert_property(index: int, scenario: str, *, survey: str, village: str, ar
              f"Synthetic parcel added by the {DATASET} demo dataset; not an authoritative cadastral record.",
              "demo-dataset", now),
         )
+    _ACTIVE_PROPERTY_ID = property_id
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +269,8 @@ RISK_CASE = "RISK"
 def seed_all() -> Dict[str, Any]:
     """Create the whole DEMO-LI dataset. Idempotent: re-running replaces the
     same fixed-id rows and never duplicates. Returns per-scenario artifacts."""
+    global _ACTIVE_PROPERTY_ID
+    _ACTIVE_PROPERTY_ID = None
     ensure_land_tables()
     created: Dict[str, List[str]] = {}
     prop_index = 0

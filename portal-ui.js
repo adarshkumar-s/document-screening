@@ -12,7 +12,14 @@
       if (!id || id === '—') return;
       const link = document.createElement('a');
       link.className = 'btn ghost land-map-file-link';
-      link.href = '/map?document_id=' + encodeURIComponent(id);
+      const params = new URLSearchParams({ document_id: id, locate: '1' });
+      const landId = row.getAttribute('data-land-id') || '';
+      const parcelId = row.getAttribute('data-parcel-id') || '';
+      const propertyId = row.getAttribute('data-property-id') || '';
+      if (landId) params.set('land_id', landId);
+      if (parcelId) params.set('parcel_id', parcelId);
+      if (propertyId) params.set('property_id', propertyId);
+      link.href = '/map?' + params.toString();
       link.textContent = 'Open map';
       link.style.cssText = 'display:inline-block;margin-left:6px;padding:5px 9px;font-size:11px;white-space:nowrap;text-decoration:none';
       cells[cells.length - 1].appendChild(link);

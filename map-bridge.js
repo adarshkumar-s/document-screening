@@ -110,5 +110,8 @@
   }
 
   window.MapParcelBridge = { locate: resolveFromUrl };
-  window.addEventListener('load', () => setTimeout(resolveFromUrl, 250));
+  window.addEventListener('load', () => setTimeout(() => {
+    if (window.__recordParcelLocate) return;
+    resolveFromUrl();
+  }, 250));
 })();

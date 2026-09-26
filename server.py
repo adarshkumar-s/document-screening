@@ -2533,7 +2533,23 @@ def get_documents(
             results.append(item)
 
     total = len(results)
-    return {"documents": results[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
+    page = results[offset:offset + limit]
+    # Label and ids only. Polygon rings stay on the authorized resolve endpoint.
+    try:
+        import parcel_locator
+        parcel_locator.attach_document_spatial(page)
+    except Exception:
+        for item in page:
+            item.setdefault("spatial", {
+                "location_label": "Location not available",
+                "location_kind": "unresolved",
+                "has_geometry": False,
+                "land_id": None,
+                "parcel_id": None,
+                "property_id": None,
+                "authoritative": False,
+            })
+    return {"documents": page, "total": total, "limit": limit, "offset": offset}
 
 @app.get("/api/documents/{doc_id}")
 def get_document(doc_id: str, user: dict = Depends(get_current_user)):
@@ -2586,6 +2602,14 @@ def map_css():
 @app.get("/map.js", include_in_schema=False)
 def map_js():
     return FileResponse(os.path.join(BASE_DIR, "map.js"), media_type="application/javascript")
+
+@app.get("/map-bridge.js", include_in_schema=False)
+def map_bridge_js():
+    return FileResponse(os.path.join(BASE_DIR, "map-bridge.js"), media_type="application/javascript")
+
+@app.get("/records-map-bridge.js", include_in_schema=False)
+def records_map_bridge_js():
+    return FileResponse(os.path.join(BASE_DIR, "records-map-bridge.js"), media_type="application/javascript")
 
 @app.get("/portal-ui.js", include_in_schema=False)
 def portal_ui_js():

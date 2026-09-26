@@ -459,6 +459,7 @@
         <div class="li-detail-actions">
           ${verdictChip(risk.verdict)}
           ${encChip(d.encumbrances && d.encumbrances.length ? (d.encumbrances.some((e) => e.status === 'ACTIVE') ? 'ACTIVE' : 'CLEAR') : 'NONE')}
+          ${d.map && d.map.location_label ? `<span class="chip" style="font-size:10px">${esc(d.map.location_label)}</span>` : ''}
           <a class="btn ghost" style="padding:4px 10px;font-size:12px;text-decoration:none" href="${esc((d.map && d.map.url) || '/map')}">🗺 ${esc(t('openInMap'))}</a>
           <button class="btn ghost" id="liDetailDueDiligence" style="padding:4px 10px;font-size:12px">${esc(t('dueDiligence'))}</button>
           ${isReviewer() ? `<button class="btn saffron" id="liDetailReport" style="padding:4px 10px;font-size:12px">${esc(t('generateReport'))}</button>` : ''}
