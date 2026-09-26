@@ -12,6 +12,16 @@ def _json(value):
         return "{}"
 
 
+def _rv(row, key, index):
+    try:
+        return row[key]
+    except Exception:
+        try:
+            return row[index]
+        except Exception:
+            return None
+
+
 def _backfill_demo_parcels():
     """Backfill reference geometry and property-document links for existing DEMO-LI data."""
     try:
@@ -24,9 +34,9 @@ def _backfill_demo_parcels():
             ).fetchall()
             village_seen = {}
             for row in props:
-                property_id = row[0]
-                village = str(row[2] or "DEMO")
-                geometry = row[4]
+                property_id = _rv(row, "property_id", 0)
+                village = str(_rv(row, "village", 2) or "DEMO")
+                geometry = _rv(row, "geometry", 4)
                 if geometry:
                     village_seen[village] = village_seen.get(village, 0) + 1
                     continue
@@ -50,7 +60,7 @@ def _backfill_demo_parcels():
 
             docs = db.execute("SELECT id, fields FROM documents WHERE id LIKE 'DEMO-LI-%'").fetchall()
             for doc in docs:
-                doc_id, raw_fields = doc[0], doc[1]
+                doc_id, raw_fields = _rv(doc, "id", 0), _rv(doc, "fields", 1)
                 try:
                     fields = json.loads(raw_fields or "{}")
                 except Exception:
@@ -71,7 +81,7 @@ def _backfill_demo_parcels():
                     (survey, village),
                 ).fetchone()
                 if prop:
-                    property_id = prop[0]
+                    property_id = _rv(prop, "property_id", 0)
                     db.execute(
                         """INSERT INTO property_documents(property_id, document_id, source_type, linked_at)
                            VALUES (?,?,?,?) ON CONFLICT(property_id, document_id) DO NOTHING""",
@@ -87,28 +97,11 @@ def apply():
     from PIL import ImageOps
 
     def cache_store(chash, user, source_doc_id, filename, lang, ocr_result, fields, validation, pages, metadata):
-        mod.ensure_ocr_cache_table()
-        scope = mod._visibility_scope_for(user)
-        dbmod = mod.get_server()
+        mod.ensure_ocr_cache_table(); scope=mod._visibility_scope_for(user); dbmod=mod.get_server()
         with dbmod.get_db() as db:
-            db.execute("""
-                INSERT INTO ocr_cache (content_hash,owner_email,owner_role,visibility_scope,source_doc_id,
-                    filename,lang,ocr_text,cleaned_text,detected_language,confidence,fields,validation,
-                    ocr_method,pages,word_count,metadata_json,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT (content_hash) DO UPDATE SET owner_email=excluded.owner_email,
-                    owner_role=excluded.owner_role,visibility_scope=excluded.visibility_scope,
-                    source_doc_id=excluded.source_doc_id,filename=excluded.filename,lang=excluded.lang,
-                    ocr_text=excluded.ocr_text,cleaned_text=excluded.cleaned_text,
-                    detected_language=excluded.detected_language,confidence=excluded.confidence,
-                    fields=excluded.fields,validation=excluded.validation,ocr_method=excluded.ocr_method,
-                    pages=excluded.pages,word_count=excluded.word_count,metadata_json=excluded.metadata_json
-            """, (chash,str((user or {}).get("email") or "").lower(),str((user or {}).get("role") or "").upper(),
-                  scope,source_doc_id,os.path.basename(filename or "upload"),lang or "auto",
-                  ocr_result.get("text","") or "",ocr_result.get("cleaned_text",ocr_result.get("text","") ) or "",
-                  ocr_result.get("detected_language","eng") or "eng",float(ocr_result.get("confidence",0) or 0),
-                  _json(fields),_json(validation),ocr_result.get("method","tesseract_fast") or "tesseract_fast",
-                  int(pages or 1),int(ocr_result.get("word_count",0) or 0),_json(metadata),time.time()))
+            db.execute("""INSERT INTO ocr_cache (content_hash,owner_email,owner_role,visibility_scope,source_doc_id,filename,lang,ocr_text,cleaned_text,detected_language,confidence,fields,validation,ocr_method,pages,word_count,metadata_json,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (content_hash) DO UPDATE SET owner_email=excluded.owner_email,owner_role=excluded.owner_role,visibility_scope=excluded.visibility_scope,source_doc_id=excluded.source_doc_id,filename=excluded.filename,lang=excluded.lang,ocr_text=excluded.ocr_text,cleaned_text=excluded.cleaned_text,detected_language=excluded.detected_language,confidence=excluded.confidence,fields=excluded.fields,validation=excluded.validation,ocr_method=excluded.ocr_method,pages=excluded.pages,word_count=excluded.word_count,metadata_json=excluded.metadata_json""",
+                (chash,str((user or {}).get("email") or "").lower(),str((user or {}).get("role") or "").upper(),scope,source_doc_id,os.path.basename(filename or "upload"),lang or "auto",ocr_result.get("text","") or "",ocr_result.get("cleaned_text",ocr_result.get("text","") ) or "",ocr_result.get("detected_language","eng") or "eng",float(ocr_result.get("confidence",0) or 0),_json(fields),_json(validation),ocr_result.get("method","tesseract_fast") or "tesseract_fast",int(pages or 1),int(ocr_result.get("word_count",0) or 0),_json(metadata),time.time()))
 
     def fast_ocr(image, requested_lang="auto"):
         requested=(requested_lang or "auto").strip().lower()
@@ -132,12 +125,9 @@ def apply():
             alt=recognize(gray.point(lambda p:255 if p>180 else 0),primary,6)
             if len(re.findall(r"\S+",alt))>len(re.findall(r"\S+",text)): text=alt
         words=re.findall(r"\S+",text); detected=mod.get_server().detect_primary_script(text) or "eng"
-        confidence=0.82 if len(words)>=8 else (0.60 if words else 0.0)
-        return {"text":text,"confidence":confidence,"word_count":len(words),"detected_language":detected,"method":"tesseract_fast","strategy":{"lang":primary}}
+        return {"text":text,"confidence":0.82 if len(words)>=8 else (0.60 if words else 0.0),"word_count":len(words),"detected_language":detected,"method":"tesseract_fast","strategy":{"lang":primary}}
 
-    mod.cache_store=cache_store
-    mod.run_fast_ocr=fast_ocr
-    _backfill_demo_parcels()
+    mod.cache_store=cache_store; mod.run_fast_ocr=fast_ocr; _backfill_demo_parcels()
 
     path=os.path.join(os.path.dirname(os.path.abspath(__file__)),"index.html")
     try:
