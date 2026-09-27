@@ -208,8 +208,9 @@ def render_verification_report_pdf(report: Dict[str, Any], qr_png: Optional[byte
     pdf.text(left + 6, 9, banner, bold=True, gray=0.25 if active_case_count else 0.4)
     pdf.y -= 13
     cases: List[Dict[str, Any]] = list(report.get("court_cases") or [])
-    if not cases:
-        pdf.text(left + 6, 8.5, "- Nothing recorded against this parcel in the local litigation register.", gray=0.4)
+    manual_case = str(report.get("manual_case_number") or "").strip()
+    if not cases and not manual_case:
+        pdf.text(left + 6, 8.5, "- No registered or manually entered case reference for this parcel.", gray=0.4)
         pdf.y -= 12
     for case in cases[:8]:
         pdf.ensure_space(33)
@@ -231,6 +232,12 @@ def render_verification_report_pdf(report: Dict[str, Any], qr_png: Optional[byte
             pdf.y -= 10
     if len(cases) > 8:
         pdf.text(left + 6, 8, f"... and {len(cases) - 8} more registered case(s).", gray=0.4)
+        pdf.y -= 12
+    if manual_case:
+        pdf.ensure_space(24)
+        pdf.text(left + 6, 8.5, f"Manual case reference: {manual_case}", gray=0.25)
+        pdf.y -= 10
+        pdf.text(left + 6, 8, "Source: reviewer-entered reference; not verified against the Land Intelligence register.", gray=0.4)
         pdf.y -= 12
 
     pdf.ensure_space(24)
