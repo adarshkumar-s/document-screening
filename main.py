@@ -70,4 +70,4 @@ def seed_demo_on_startup_when_explicitly_enabled():
 
 @app.get("/land-intelligence", include_in_schema=False)
 def land_intelligence_ui():
-    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"), media_type="text/html")
+    return FileResponse(os.path.join(BASE_DIR, "land-intelligence.html"), media_type="text/html", headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0"})
