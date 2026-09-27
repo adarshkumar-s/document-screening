@@ -165,8 +165,6 @@ def render_verification_report_pdf(report: Dict[str, Any], qr_png: Optional[byte
         ("Risk status", report.get("risk_status") or "-"),
         ("Encumbrance status", report.get("encumbrance_status") or "-"),
         ("Mutation status", report.get("mutation_status") or "-"),
-        ("Litigation status", report.get("litigation_status") or "NONE"),
-        ("Active court cases", report.get("active_court_case_count") or 0),
         ("Generated (UTC)", time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(float(report.get("generated_at") or time.time())))),
         ("Reviewer", report.get("reviewer") or "-"),
         ("Audit / reference ID", reference),
