@@ -5,6 +5,11 @@ from fastapi.responses import FileResponse
 
 from server import BASE_DIR, app
 
+# Central request-size and abuse controls are installed before routers are
+# registered, so upload/auth endpoints cannot accidentally bypass them.
+import security_hardening
+security_hardening.install(app)
+
 # Install narrow production hotfixes before any request can reach the upload
 # pipeline. This explicitly wires the high-recall OCR implementation and the
 # document bridge before FastAPI serves requests.
