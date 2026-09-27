@@ -924,13 +924,37 @@
   // SUB-TAB: REPORTS (Phase 11)
   // =========================================================================
   async function loadReports() {
-    const [lands, cases] = await Promise.all([
-      api('/api/land-records?limit=100'),
-      api('/api/court-cases?limit=100')
-    ]);
+    const lands = await api('/api/land-records?limit=100');
     S.lands = lands.land_records || [];
     S.landsTotal = lands.total || 0;
-    S.courtCases = cases.court_cases || [];
+
+    try {
+      // Reviewers/admins can read the complete registered litigation register.
+      const cases = await api('/api/court-cases?status=');
+      S.courtCases = cases.court_cases || [];
+    } catch (registerError) {
+      // Other staff roles may be denied an unscoped register. Recover only
+      // cases attached to parcels already visible to that user, so litigation
+      // does not disappear from the unified report builder.
+      const byId = new Map();
+      const visible = S.lands.filter((land) => String(land.survey || land.khasra || '').trim());
+      await Promise.all(visible.map(async (land) => {
+        try {
+          const survey = encodeURIComponent(String(land.survey || land.khasra || '').trim());
+          const village = encodeURIComponent(String(land.village || '').trim());
+          const result = await api(`/api/court-cases?survey=${survey}&village=${village}`);
+          for (const item of (result.court_cases || [])) {
+            if (item?.id) byId.set(String(item.id), item);
+          }
+        } catch (_) {
+          // One inaccessible parcel must not hide cases from other visible
+          // parcels.
+        }
+      }));
+      S.courtCases = [...byId.values()];
+      if (!S.courtCases.length && !visible.length) throw registerError;
+    }
+
     renderReports();
   }
 
