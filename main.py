@@ -10,32 +10,25 @@ from server import BASE_DIR, app
 import security_hardening
 security_hardening.install(app)
 
-# Install narrow production hotfixes before any request can reach the upload
-# pipeline. This explicitly wires the high-recall OCR implementation and the
-# document bridge before FastAPI serves requests.
+# DEMO-LI parcel geometry is optional. Guard its legacy backfill before the
+# production patch bundle runs so demo-only row-shape errors cannot affect boot.
 import runtime_patch
+import runtime_backfill_guard
+runtime_backfill_guard.install(runtime_patch)
 runtime_patch.apply()
 
 import ocr_runtime_fix
 ocr_runtime_fix.install()
 
-# Last resort: only after all structured OCR variants fail, use the slower
-# text-rendering path. This deliberately trades latency for extraction recall.
 import ocr_last_resort
 ocr_last_resort.install()
 
-# Final production rescue: retry orientation and, when OCR coverage is weak,
-# inspect the actual document pixels with the configured multimodal model.
-# This is intentionally slower only for difficult scans.
 import ocr_pro_rescue
 ocr_pro_rescue.install()
 
 import ocr_land_bridge
 ocr_land_bridge.install()
 
-# QR-certified copies and public verification are installed after the DB has
-# been initialized by server.py. The migration is additive and safe for old
-# records; only verified/approved records can receive a certified copy.
 import certification
 certification.install()
 app.include_router(certification.router)
