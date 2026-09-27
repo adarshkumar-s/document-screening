@@ -940,6 +940,7 @@
         <p class="li-sub">${esc(t('reportNote'))}</p>
         <div class="li-toolbar">
           <select id="liReportLand" style="max-width:420px"><option value="">— select land record —</option>${options}</select>
+          <input id="liReportManualCase" type="text" placeholder="Manual case number (optional)" aria-label="Manual case number" style="max-width:300px">
           <button class="btn saffron" id="liReportGenerate" style="padding:5px 14px;font-size:12px">${esc(t('generateReport'))}</button>
         </div>
         <div id="liReportResult" class="hidden"></div>
@@ -947,13 +948,16 @@
     $('liReportGenerate').addEventListener('click', async () => {
       const landId = $('liReportLand').value;
       if (!landId) { alert('Select a land record first.'); return; }
-      await generateReport(landId, $('liReportResult'));
+      const manualCaseNumber = String($('liReportManualCase')?.value || '').trim();
+      await generateReport(landId, $('liReportResult'), manualCaseNumber);
     });
   }
 
-  async function generateReport(landId, resultBox) {
+  async function generateReport(landId, resultBox, manualCaseNumber = '') {
     try {
-      const d = await api('/api/reports/land-verification', { method: 'POST', body: JSON.stringify({ land_id: landId }) });
+      const payload = { land_id: landId };
+      if (String(manualCaseNumber || '').trim()) payload.manual_case_number = String(manualCaseNumber).trim();
+      const d = await api('/api/reports/land-verification', { method: 'POST', body: JSON.stringify(payload) });
       const reference = d.reference_no;
       const box = resultBox || $('liReportResult') || $('liDetailPane');
       if (box) {
