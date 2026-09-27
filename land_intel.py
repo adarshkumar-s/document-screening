@@ -2087,6 +2087,7 @@ def _next_report_reference(db: Any) -> str:
 class ReportCreate(BaseModel):
     land_id: str
     document_id: Optional[str] = None
+    manual_case_number: Optional[str] = None
 
 
 def _qr_png_data_uri(content: str) -> Optional[str]:
@@ -2150,6 +2151,8 @@ def generate_land_verification_report(req: ReportCreate, user: Dict[str, Any] = 
             "court_case_count": len(state["court_cases"]),
             "highest_litigation_severity": highest_litigation_severity,
             "court_cases": [_case_reference(case) for case in state["court_cases"]],
+            "manual_case_number": _text(req.manual_case_number),
+            "manual_case_source": "Manual entry — not verified against the Land Intelligence register" if _text(req.manual_case_number) else None,
             "risk_why": risk["why"],
             "timeline": build_timeline(land, state["encumbrances"], state["mutations"],
                                        state["court_cases"], risk=risk),
@@ -2233,14 +2236,21 @@ def _render_report_html(payload: Dict[str, Any]):
         f"<td>{esc(case.get('parties') or '—')}</td><td>{esc(case.get('decision_summary') or '—')}</td></tr>"
         for case in payload.get("court_cases") or []
     )
+    manual_case = _text(payload.get("manual_case_number"))
+    manual_row = (
+        f'<tr><td class="k">{esc(manual_case)}</td><td>Manual entry · not verified</td><td>UNVERIFIED</td>'
+        f'<td>Reviewer supplied</td><td>{esc(payload.get("manual_case_source") or "Not verified against the Land Intelligence register")}</td></tr>'
+        if manual_case else ""
+    )
+    all_case_rows = case_rows + manual_row
     litigation_section = (
         f"""<h3 style="color:#1e3a8a;font-size:14px;">Court cases / litigation</h3>
-<table><tr><td class="k">Case number</td><td>Type · Court</td><td>Status</td><td>Parties</td><td>Outcome / relief</td></tr>
-{case_rows}</table>"""
-        if case_rows else
+<p style="font-size:12px;color:#64748b;margin:4px 0 8px;">Registered Land Intelligence cases and manually entered case references are shown together; manual references are not treated as verified records.</p>
+<table><tr><td class="k">Case number</td><td>Type · Court</td><td>Status</td><td>Parties / source</td><td>Outcome / relief</td></tr>
+{all_case_rows}</table>"""
+        if all_case_rows else
         '<h3 style="color:#1e3a8a;font-size:14px;">Court cases / litigation</h3>'
-        '<p class="no-cases">No court case has been registered against this parcel in this system. '
-        'This is not a court-certified litigation search.</p>'
+        '<p class="no-cases">No court case has been registered or manually entered for this parcel. This is not a court-certified litigation search.</p>'
     )
     qr_block = (
         f"<img src=\"{qr}\" width=\"120\" height=\"120\" alt=\"Verification QR\"/>"
