@@ -24,19 +24,34 @@ router = APIRouter()
 
 
 def ensure_columns() -> None:
+    statements = (
+        "ALTER TABLE documents ADD COLUMN cert_hash TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE documents ADD COLUMN cert_ref TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE documents ADD COLUMN cert_by TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE documents ADD COLUMN cert_at REAL NOT NULL DEFAULT 0",
+    )
     with server.get_db() as db:
-        statements = (
-            "ALTER TABLE documents ADD COLUMN cert_hash TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE documents ADD COLUMN cert_ref TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE documents ADD COLUMN cert_by TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE documents ADD COLUMN cert_at REAL NOT NULL DEFAULT 0",
-        )
-        for stmt in statements:
-            try:
-                db.execute(stmt if not db.is_pg else stmt.replace(" TEXT", " TEXT"))
-            except Exception:
-                # Column already exists on upgraded installations.
-                pass
+        for index, stmt in enumerate(statements):
+            if db.is_pg:
+                savepoint = f"cert_sp_{index}"
+                try:
+                    db.execute(f"SAVEPOINT {savepoint}")
+                    db.execute(stmt)
+                    db.execute(f"RELEASE SAVEPOINT {savepoint}")
+                except Exception:
+                    try:
+                        db.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    except Exception:
+                        pass
+                    try:
+                        db.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    except Exception:
+                        pass
+            else:
+                try:
+                    db.execute(stmt)
+                except Exception:
+                    pass
 
 
 def _fields(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,11 +96,7 @@ def _get_doc(doc_id: str):
 
 def _certify(row: Dict[str, Any], user: Dict[str, Any]) -> Dict[str, Any]:
     ref = row.get("cert_ref") or f"LVR-{time.strftime('%Y')}-{uuid.uuid4().hex[:8].upper()}"
-    # Calculate after forcing the current verified status into the canonical
-    # record. The hash intentionally includes OCR evidence and structured fields.
-    current = dict(row)
-    current["status"] = row.get("status")
-    digest = fingerprint(current)
+    digest = fingerprint(row)
     now = time.time()
     with server.get_db() as db:
         db.execute(
@@ -113,15 +124,10 @@ def _public_verification(row: Dict[str, Any]) -> Dict[str, Any]:
         "certified_by": row.get("cert_by") or "",
         "certified_at": row.get("cert_at") or 0,
         "cert_hash": stored,
-        "owner": value("owner_name"),
-        "survey_number": value("survey_number"),
-        "khasra_number": value("khasra_number"),
-        "khata_number": value("khata_number"),
-        "area": value("area"),
-        "village": value("village"),
-        "tehsil": value("tehsil"),
-        "district": value("district"),
-        "state": value("state"),
+        "owner": value("owner_name"), "survey_number": value("survey_number"),
+        "khasra_number": value("khasra_number"), "khata_number": value("khata_number"),
+        "area": value("area"), "village": value("village"), "tehsil": value("tehsil"),
+        "district": value("district"), "state": value("state"),
     }
 
 
@@ -130,7 +136,7 @@ def certified_pdf(doc_id: str, request: Request, user: dict = Depends(server.get
     row = _get_doc(doc_id)
     if not row:
         raise HTTPException(404, "Document not found")
-    if row.get("status") not in (server.STATUS_APPROVED, "APPROVED", "verified", "auto_approved"):
+    if row.get("status") not in (server.STATUS_APPROVED, "verified", "auto_approved"):
         raise HTTPException(403, "Certified copies are available only after verification/approval")
     if not row.get("cert_hash") or not row.get("cert_ref"):
         _certify(row, user)
@@ -139,21 +145,17 @@ def certified_pdf(doc_id: str, request: Request, user: dict = Depends(server.get
     scheme = "https" if request.url.scheme == "https" else "http"
     verify_url = f"{scheme}://{host}/verify/{doc_id}"
     fields = _fields(row)
+    def fv(key: str) -> str:
+        v = fields.get(key)
+        return str(v.get("value") or "") if isinstance(v, dict) else str(v or "")
     report = {
         "reference_no": row.get("cert_ref"), "document_id": doc_id,
-        "land_record_id": row.get("metadata") or doc_id,
-        "owner": (fields.get("owner_name") or {}).get("value", ""),
-        "father": (fields.get("father_name") or {}).get("value", ""),
-        "survey": (fields.get("survey_number") or {}).get("value", ""),
-        "khasra": (fields.get("khasra_number") or {}).get("value", ""),
-        "area": (fields.get("area") or {}).get("value", ""),
-        "village": (fields.get("village") or {}).get("value", ""),
-        "tehsil": (fields.get("tehsil") or {}).get("value", ""),
-        "district": (fields.get("district") or {}).get("value", ""),
+        "land_record_id": doc_id, "owner": fv("owner_name"), "father": fv("father_name"),
+        "survey": fv("survey_number"), "khasra": fv("khasra_number"), "area": fv("area"),
+        "village": fv("village"), "tehsil": fv("tehsil"), "district": fv("district"),
         "verification_status": str(row.get("status") or "").upper(),
-        "risk_status": "REVIEW", "encumbrance_status": "UNKNOWN",
-        "mutation_status": "UNKNOWN", "litigation_status": "UNKNOWN",
-        "generated_at": row.get("cert_at") or time.time(),
+        "risk_status": "REVIEW", "encumbrance_status": "UNKNOWN", "mutation_status": "UNKNOWN",
+        "litigation_status": "UNKNOWN", "generated_at": row.get("cert_at") or time.time(),
         "reviewer": row.get("cert_by") or "SYSTEM",
         "disclaimer": "Internal verification workflow certified copy. Verify authenticity by scanning the QR code.",
     }
@@ -172,13 +174,12 @@ def verify_page(doc_id: str):
     if not row or not row.get("cert_hash"):
         return HTMLResponse("<h2>NO CERTIFIED RECORD FOUND</h2><p>This record has not been certified.</p>", status_code=404)
     data = _public_verification(row)
-    status_class = "ok" if data["verified"] else "bad"
-    title = "VERIFIED — GENUINE & UNALTERED" if data["verified"] else "TAMPER CHECK FAILED"
-    rows = "".join(
-        f"<div class='row'><span>{label}</span><b>{data.get(key) or '—'}</b></div>"
-        for label, key in (("Owner", "owner"), ("Survey Number", "survey_number"), ("Khasra", "khasra_number"), ("Khata", "khata_number"), ("Area", "area"), ("Village", "village"), ("Tehsil", "tehsil"), ("District", "district"), ("State", "state"))
-    )
-    html = f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Land Record Verification</title><style>body{{font-family:system-ui,Arial;background:#eef2f7;padding:24px;color:#0f172a}}.card{{max-width:680px;margin:auto;background:white;border:1px solid #cbd5e1;border-radius:14px;padding:24px;box-shadow:0 4px 20px #0001}}h1{{font-size:20px}}.badge{{padding:14px;border-radius:10px;background:{'#dcfce7' if status_class=='ok' else '#fee2e2'};color:{'#166534' if status_class=='ok' else '#991b1b'};font-weight:800}}.row{{display:flex;gap:16px;padding:9px 0;border-bottom:1px dashed #ddd}}.row span{{width:150px;color:#64748b}}small{{color:#64748b;word-break:break-all}}</style></head><body><div class='card'><h1>🏛️ Land Record Verification</h1><div class='badge'>{title}</div><p>Reference: <b>{data['reference'] or '—'}</b></p>{rows}<p><small>Certification hash: {data['cert_hash']}</small></p><p><small>Certified by: {data['certified_by'] or '—'} · The hash is recomputed from the live record when this page is opened.</small></p></div></body></html>"""
+    ok = data["verified"]
+    title = "VERIFIED — GENUINE & UNALTERED" if ok else "TAMPER CHECK FAILED"
+    bg, fg = ("#dcfce7", "#166534") if ok else ("#fee2e2", "#991b1b")
+    labels = (("Owner", "owner"), ("Survey Number", "survey_number"), ("Khasra", "khasra_number"), ("Khata", "khata_number"), ("Area", "area"), ("Village", "village"), ("Tehsil", "tehsil"), ("District", "district"), ("State", "state"))
+    rows = "".join(f"<div class='row'><span>{label}</span><b>{data.get(key) or '—'}</b></div>" for label, key in labels)
+    html = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Land Record Verification</title><style>body{{font-family:system-ui,Arial;background:#eef2f7;padding:24px;color:#0f172a}}.card{{max-width:680px;margin:auto;background:white;border:1px solid #cbd5e1;border-radius:14px;padding:24px;box-shadow:0 4px 20px #0001}}h1{{font-size:20px}}.badge{{padding:14px;border-radius:10px;background:{bg};color:{fg};font-weight:800}}.row{{display:flex;gap:16px;padding:9px 0;border-bottom:1px dashed #ddd}}.row span{{width:150px;color:#64748b}}small{{color:#64748b;word-break:break-all}}</style></head><body><div class='card'><h1>🏛️ Land Record Verification</h1><div class='badge'>{title}</div><p>Reference: <b>{data['reference'] or '—'}</b></p>{rows}<p><small>Certification hash: {data['cert_hash']}</small></p><p><small>Certified by: {data['certified_by'] or '—'} · The hash is recomputed from the live record when this page is opened.</small></p></div></body></html>"
     return HTMLResponse(html)
 
 
