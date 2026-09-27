@@ -96,10 +96,99 @@
     }catch(e){$('mapCanvas').innerHTML=`<div class="empty">Unable to load parcel mapping: ${esc(e.message)}</div>`;showMessage(e.message);}
   }
   function renderReports(){
-    const norm=v=>String(v||'').trim().toLowerCase().replace(/\\s+/g,' ');
-    const linkedCases=r=>state.cases.filter(c=>{const cs=norm(c.survey_number||c.khasra_number),cv=norm(c.village),rs=norm(r.survey||r.khasra),rv=norm(r.village);return cs&&rs&&cs===rs&&(!cv||!rv||cv===rv);});
-    $('reports').innerHTML='<div class="panel-head"><div><h2>Verification reports</h2><p>Registered cases and manual case references are combined in one Court Cases / Litigation section.</p></div></div><div class="report-grid">'+state.records.map(r=>{const cases=linkedCases(r);return '<article class="report-card"><strong>'+esc(r.survey||r.land_id)+'</strong><span>'+esc(r.village)+' · '+esc(r.current_owner||'—')+'</span><div class="report-court-block" style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-soft,#f8fafc)"><h3 style="margin:0 0 10px;font-size:13px">⚖ Court Cases / Litigation</h3><div class="registered-cases"><b style="font-size:12px">Registered cases</b>'+ (cases.length ? cases.map(c=>'<div style="padding:9px 0;border-top:1px solid var(--border);font-size:12px"><strong>'+esc(c.case_number)+'</strong><br>'+esc(c.case_type||'Case')+' · '+esc(c.court_name||'Court not recorded')+' · '+esc(c.status||'UNKNOWN')+(c.next_hearing_date?' · Next hearing: '+esc(c.next_hearing_date):'')+'</div>').join('') : '<div style="padding:7px 0;font-size:12px;color:var(--muted)">No registered Land Intelligence cases for this parcel.</div>')+'</div><label style="display:block;margin:12px 0 0;font-size:12px;font-weight:600;color:var(--muted)">Manual case number (optional)<input class="report-manual-case" data-report-case="'+esc(r.land_id)+'" placeholder="Enter case number"><small style="display:block;margin-top:4px;font-weight:400">Manual references are included as <b>UNVERIFIED</b> and are not added to the registered case list.</small></label></div><button class="btn small" style="margin-top:10px" data-report="'+esc(r.land_id)+'">Generate report</button></article>';}).join('')+'</div>';
-    document.querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>generateReport(b.dataset.report,document.querySelector('[data-report-case="'+CSS.escape(b.dataset.report)+'"]')?.value||''));
+    const norm=v=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
+    const caseRows=state.cases.map(c=>`
+      <tr>
+        <td><strong>${esc(c.case_number||'—')}</strong><br><small>${esc(c.case_type||'—')}</small></td>
+        <td>${esc(c.survey_number||c.khasra_number||'—')} · ${esc(c.village||'—')}</td>
+        <td>${esc(c.parties||[c.petitioner,c.respondent].filter(Boolean).join(' v. ')||'—')}</td>
+        <td>${esc(c.court_name||'—')}</td>
+        <td>${esc(c.filed_date||'—')}</td>
+        <td>${esc(c.next_hearing_date||'—')}</td>
+        <td>${pill(c.status,String(c.status).toUpperCase()==='ACTIVE'?'danger':'')}</td>
+      </tr>`).join('');
+
+    const landOptions=state.records.map(r=>`
+      <option value="${esc(r.land_id)}">${esc(r.survey||r.khasra||r.land_id)} · ${esc(r.village||'')} · ${esc(r.current_owner||'—')}</option>`).join('');
+
+    const reportCards=state.records.map(r=>{
+      const cases=state.cases.filter(c=>{
+        const cs=norm(c.survey_number||c.khasra_number), cv=norm(c.village);
+        const rs=norm(r.survey||r.khasra), rv=norm(r.village);
+        return cs&&rs&&cs===rs&&(!cv||!rv||cv===rv);
+      });
+      return `<article class="report-card">
+        <strong>${esc(r.survey||r.land_id)}</strong>
+        <span>${esc(r.village)} · ${esc(r.current_owner||'—')}</span>
+        <button class="btn small" style="margin-top:10px" data-report="${esc(r.land_id)}">Generate report</button>
+      </article>`;
+    }).join('');
+
+    $('reports').innerHTML=`
+      <div class="panel-head">
+        <div>
+          <h2>Verification reports</h2>
+          <p>Registered litigation records and optional manual case references are handled in one Court Cases / Litigation section.</p>
+        </div>
+      </div>
+
+      <section class="report-court-block" style="margin:12px 0;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--surface-soft,#f8fafc)">
+        <h3 style="margin:0 0 5px;font-size:14px">⚖ Court Cases / Litigation</h3>
+        <p style="margin:0 0 10px;font-size:12px;color:var(--muted)">Registered Land Intelligence cases are shown here exactly as the litigation register, including cases that are not currently linked to a displayed parcel.</p>
+
+        <div class="chips" style="margin-bottom:10px">
+          <span class="pill">${state.cases.length} registered case${state.cases.length===1?'':'s'}</span>
+          <span class="pill">${state.cases.filter(c=>String(c.status).toUpperCase()==='ACTIVE').length} active</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Case</th><th>Parcel</th><th>Parties</th><th>Court</th><th>Filed</th><th>Next hearing</th><th>Status</th></tr></thead>
+            <tbody>${caseRows||'<tr><td colspan="7" class="empty">No registered court cases found.</td></tr>'}</tbody>
+          </table>
+        </div>
+
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+          <label style="display:block;font-size:12px;font-weight:600;color:var(--muted)">
+            Land record for report
+            <select id="reportLand" style="display:block;width:100%;max-width:520px;margin-top:5px">
+              <option value="">Select land record</option>
+              ${landOptions}
+            </select>
+          </label>
+          <label style="display:block;margin-top:10px;font-size:12px;font-weight:600;color:var(--muted)">
+            Manual case number (optional)
+            <input id="reportManualCase" class="report-manual-case" placeholder="Enter case number" style="display:block;width:100%;max-width:520px;margin-top:5px">
+            <small style="display:block;margin-top:4px;font-weight:400">Manual references are included as <b>UNVERIFIED</b> and are not added to the registered case list.</small>
+          </label>
+          <button class="btn small" id="reportGenerateUnified" style="margin-top:10px">Generate report</button>
+          <div id="reportUnifiedResult" style="margin-top:8px"></div>
+        </div>
+      </section>
+
+      <div class="panel-head" style="margin-top:18px">
+        <div>
+          <h3>Land verification reports</h3>
+          <p>Select a land record above to include its registered litigation plus any optional manual reference.</p>
+        </div>
+      </div>
+      <div class="report-grid">${reportCards||'<div class="empty">No land records found.</div>'}</div>`;
+
+    const unifiedGenerate=$('reportGenerateUnified');
+    if(unifiedGenerate) unifiedGenerate.onclick=async()=>{
+      const id=$('reportLand')?.value||'';
+      const manual=$('reportManualCase')?.value||'';
+      const result=$('reportUnifiedResult');
+      if(!id){ result.innerHTML='<div class="empty">Select a land record first.</div>'; return; }
+      await generateReport(id,manual);
+    };
+    document.querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>{
+      const id=b.dataset.report;
+      const select=$('reportLand');
+      if(select) select.value=id;
+      $('reportManualCase')?.focus();
+      window.scrollTo({top:0,behavior:'smooth'});
+    });
   }
   async function openLand(id){try{const d=await api(`/api/land-records/${encodeURIComponent(id)}`),p=d.property||{};$('records').innerHTML=`<button class="btn" id="backRecords">← Back to records</button><div class="detail-grid"><article class="detail-card"><h2>${esc(p.survey||d.land_id)}</h2><p>${esc(p.village)} · ${esc(p.district)}</p><div class="owner-box"><b>Current owner</b><strong>${esc(d.current_owner?.owner||'—')}</strong><span>${esc(d.current_owner?.father||'')}</span></div></article><article class="detail-card"><h3>Risk</h3>${pill(d.risk?.verdict||'CLEAR')}<div class="signals">${(d.risk?.flags||[]).map(f=>`<div><b>${esc(f.title)}</b><p>${esc(f.detail)}</p></div>`).join('')||'<p>No adverse signals.</p>'}</div></article></div><div class="detail-grid"><article class="detail-card"><h3>Mutations</h3>${(d.mutations||[]).map(m=>`<p><b>${esc(m.mutation_no)}</b> ${esc(m.previous_owner)} → ${esc(m.new_owner)} · ${pill(m.status)}</p>`).join('')||'<p>None.</p>'}</article><article class="detail-card"><h3>Encumbrances</h3>${(d.encumbrances||[]).map(e=>`<p>${esc(e.lender)} · ${esc(e.reference_no)} · ${pill(e.status)}</p>`).join('')||'<p>None.</p>'}</article></div><article class="detail-card"><h3>⚖ Court cases</h3>${d.litigation?.active_count?'<div class="alert">⚠ Active litigation found for this property</div>':''}${(d.litigation?.cases||[]).map(c=>`<p><b>${esc(c.case_number)}</b> · ${esc(c.title||c.case_type)} · ${pill(c.status,String(c.status).toUpperCase()==='ACTIVE'?'danger':'')}</p>`).join('')||'<p>No registered court cases.</p>'}</article><article class="detail-card"><h3>Timeline</h3>${(d.timeline||[]).map(t=>`<div class="timeline"><b>${esc(t.date||'Current')}</b><span>${esc(t.title)}</span><small>${esc(t.detail)}</small></div>`).join('')}</article>`;$('backRecords').onclick=renderRecords;}catch(e){showMessage(e.message);}}
   async function openCase(id){try{const d=await api(`/api/court-cases/${encodeURIComponent(id)}`);const c=d.court_case;showMessage(`${c.case_number}: ${c.title||c.case_type} · ${c.status} · ${c.court_name||'Court not recorded'}`);}catch(e){showMessage(e.message);}}
