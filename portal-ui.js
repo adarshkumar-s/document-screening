@@ -318,7 +318,12 @@
 
   function wire() {
     rememberLandSelection();
-    ensureLitigationTab();
+    // Litigation is now part of the unified Reports section in land-intel.js.
+    // Do not recreate the legacy standalone Court Cases / Litigation tab here.
+    const legacyTab = document.querySelector('#landIntelWorkspace .li-subtab[data-sub="litigation"]');
+    const legacyPane = document.querySelector('#landIntelWorkspace #liLitigationPane');
+    if (legacyTab) legacyTab.remove();
+    if (legacyPane) legacyPane.remove();
     ensureAdminComparison();
     addMapLinks();
   }
