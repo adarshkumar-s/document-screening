@@ -2215,9 +2215,6 @@ def _render_report_html(payload: Dict[str, Any]):
         ("Risk status", verdict),
         ("Encumbrance status", payload.get("encumbrance_status")),
         ("Mutation status", payload.get("mutation_status")),
-        ("Litigation status", "ACTIVE LITIGATION" if payload.get("litigation_status") == "ACTIVE"
-         else ("Registered / closed" if payload.get("court_case_count") else "None registered")),
-        ("Active court cases", payload.get("active_court_case_count", 0)),
         ("Reviewer", payload.get("reviewer")),
         ("Generated (UTC timestamp)", payload.get("generated_at")),
         ("Audit / reference ID", reference),
