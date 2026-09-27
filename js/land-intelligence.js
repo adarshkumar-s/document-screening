@@ -9,17 +9,46 @@
   async function loadAll() {
     try {
       const q=encodeURIComponent($('q').value.trim()), village=encodeURIComponent($('village').value.trim()), district=encodeURIComponent($('district').value.trim());
-      const [records, mutations, enc, cases] = await Promise.all([
+      const [records, mutations, enc] = await Promise.all([
         api(`/api/land-records?q=${q}&village=${village}&district=${district}&limit=100`),
         api(`/api/mutations?q=${q}&limit=100`),
-        api(`/api/encumbrances?q=${q}&limit=100`),
-        // The litigation register is independent of the parcel search box.
-        // Loading it with q caused registered cases to disappear whenever the
-        // user searched for a different land record. The unified Litigation
-        // section must always restore the complete registered case register.
-        api('/api/court-cases?status=')
+        api(`/api/encumbrances?q=${q}&limit=100`)
       ]);
-      state.records=records.land_records||[]; state.mutations=mutations.mutations||[]; state.encumbrances=enc.encumbrances||[]; state.cases=cases.court_cases||[]; renderMetrics(); renderActive();
+
+      state.records=records.land_records||[];
+      state.mutations=mutations.mutations||[];
+      state.encumbrances=enc.encumbrances||[];
+
+      // The complete litigation register is the source of truth for reviewers
+      // and admins. Some staff roles are intentionally not allowed to request
+      // an unscoped register, however. In that case, recover the registered
+      // cases for the parcels they are already allowed to see instead of
+      // leaving the unified Litigation section empty.
+      try {
+        const cases=await api('/api/court-cases?status=');
+        state.cases=cases.court_cases||[];
+      } catch (registerError) {
+        const byId=new Map();
+        const visible=state.records.filter(r=>String(r.survey||r.khasra||'').trim());
+        await Promise.all(visible.map(async r=>{
+          try {
+            const survey=encodeURIComponent(String(r.survey||r.khasra||'').trim());
+            const villageValue=encodeURIComponent(String(r.village||'').trim());
+            const result=await api(`/api/court-cases?survey=${survey}&village=${villageValue}`);
+            for(const item of (result.court_cases||[])) {
+              if(item?.id) byId.set(String(item.id),item);
+            }
+          } catch (_) {
+            // Preserve the rest of the Land Intelligence page if one parcel
+            // cannot be queried under the current RBAC scope.
+          }
+        }));
+        state.cases=[...byId.values()];
+        if(!state.cases.length && visible.length===0) throw registerError;
+      }
+
+      renderMetrics();
+      renderActive();
     } catch(e){ showMessage(e.message); }
   }
   function renderMetrics(){ const activeEnc=state.encumbrances.filter(x=>String(x.status).toUpperCase()==='ACTIVE').length, activeCases=state.cases.filter(x=>String(x.status).toUpperCase()==='ACTIVE').length, pending=state.mutations.filter(x=>['RECEIVED','UNDER_REVIEW'].includes(String(x.status).toUpperCase())).length; $('metrics').innerHTML=[['Parcels',state.records.length],['Mutations',state.mutations.length],['Active encumbrances',activeEnc],['Active litigation',activeCases],['Pending mutations',pending]].map(x=>`<article class="metric"><span>${esc(x[0])}</span><strong>${esc(x[1])}</strong></article>`).join(''); }
