@@ -44,16 +44,37 @@ jobs:
             echo 'No JavaScript files found; skipping.'
           fi
 
+  container:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build production Docker image
+        run: docker build --pull --tag document-screening:ci .
+
+      - name: Start production container smoke test
+        run: |
+          docker run --detach --name document-screening-ci \
+            --publish 18000:10000 \
+            --env APP_ENV=development \
+            document-screening:ci
+          trap 'docker logs document-screening-ci || true; docker rm -f document-screening-ci || true' EXIT
+          for i in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18000/ >/dev/null; then
+              echo 'Container is serving HTTP.'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'Container did not become ready.'
+          docker logs document-screening-ci
+          exit 1
+
   security:
     runs-on: ubuntu-latest
     steps:
-      # gitleaks-action scans the pull request's commit range
-      # (`<first PR commit>^..<last PR commit>`), so those objects must exist in
-      # the checkout. The actions/checkout default is fetch-depth: 1, which
-      # leaves only the head commit: `git log <first>^..<head>` then fails with
-      # "unknown revision", gitleaks exits 1 (NOT 2, which would mean leaks
-      # found) and the action fails with an unexpected exit code while having
-      # scanned ~0 bytes. Fetch the full history so the real scan actually runs.
       - name: Check out repository
         uses: actions/checkout@v4
         with:
