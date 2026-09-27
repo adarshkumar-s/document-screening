@@ -19,6 +19,12 @@ ocr_runtime_fix.install()
 import ocr_last_resort
 ocr_last_resort.install()
 
+# Final production rescue: retry orientation and, when OCR coverage is weak,
+# inspect the actual document pixels with the configured multimodal model.
+# This is intentionally slower only for difficult scans.
+import ocr_pro_rescue
+ocr_pro_rescue.install()
+
 import ocr_land_bridge
 ocr_land_bridge.install()
 
