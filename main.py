@@ -12,6 +12,12 @@ from server import BASE_DIR, app
 import runtime_patch
 runtime_patch.apply()
 
+# Harden the actual Tesseract invocation after runtime_patch has installed its
+# compatibility hooks. This must run before the document bridge so every OCR
+# request uses the reliable implementation.
+import ocr_runtime_fix
+ocr_runtime_fix.install()
+
 # Install the document-processing bridge before any upload request can resolve
 # server.run_ocr_pipeline. This preserves the existing routes while allowing
 # text PDFs to bypass expensive raster OCR and ensuring OCR text can backfill
