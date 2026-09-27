@@ -3452,7 +3452,7 @@ _ocr_pipeline.ensure_batch_table()
 
 
 @app.get("/")
-def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"))
+def index(): return FileResponse(os.path.join(BASE_DIR, "index.html"), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0"})
 
 if __name__ == "__main__":
     import uvicorn
