@@ -67,8 +67,6 @@ CREATE TABLE IF NOT EXISTS land_court_cases (
 )
 """
 
-# Structured order log (DEMO-LI dataset and the /orders endpoint). Kept beside
-# the register so a case's interim orders travel with it.
 _ORDERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS land_case_orders (
     id TEXT PRIMARY KEY,
@@ -81,8 +79,6 @@ CREATE TABLE IF NOT EXISTS land_case_orders (
 )
 """
 
-#: Columns added after the register first shipped; existing databases are
-#: migrated additively so older rows keep working (mirrors mapping.py).
 _MIGRATION_COLUMNS = (
     ("property_id", "TEXT"),
     ("next_hearing_date", "TEXT"),
@@ -96,17 +92,10 @@ _MIGRATION_COLUMNS = (
     ("related_encumbrance_id", "TEXT"),
 )
 
-
 _schema_ready = False
 
 
 def ensure_schema() -> None:
-    """Create the register schema once per process.
-
-    DDL (CREATE TABLE / CREATE INDEX) must never run inside a user request —
-    CREATE INDEX can block for a long time on a large database. The flag turns
-    every later call, including those inside request paths, into a no-op.
-    """
     global _schema_ready
     if _schema_ready:
         return
@@ -120,7 +109,6 @@ def ensure_schema() -> None:
             db.execute("CREATE INDEX IF NOT EXISTS idx_land_case_orders_case ON land_case_orders(case_id)")
         except Exception:
             pass
-        # Additive migration for registers created before the DEMO-LI merge.
         try:
             existing = {row["name"] for row in db.execute("PRAGMA table_info(land_court_cases)").fetchall()}
             for column, definition in _MIGRATION_COLUMNS:
@@ -144,12 +132,10 @@ def _dict(row: Any) -> Optional[Dict[str, Any]]:
 
 
 CLOSED_STATUSES = ("DECIDED", "SETTLED", "WITHDRAWN")
-DEMO_ID_PREFIX = "DEMO-"  # mirrors the demo-tagging convention used by the
-                          # mutation/encumbrance registers (demo_scenarios.py)
+DEMO_ID_PREFIX = "DEMO-"
 
 
 def _all_cases() -> List[Dict[str, Any]]:
-    """Every registered case, newest filing first (single query)."""
     ensure_schema()
     with get_db() as db:
         rows = db.execute("SELECT * FROM land_court_cases ORDER BY filed_date DESC, created_at DESC").fetchall()
@@ -318,8 +304,7 @@ def create_court_case(req: CourtCaseCreate, user: Dict[str, Any] = Depends(requi
 
 def _case_orders(db: Any, case_id: str) -> List[Dict[str, Any]]:
     try:
-        rows = db.execute("SELECT * FROM land_case_orders WHERE case_id=? ORDER BY COALESCE(order_date,'') ASC, created_at ASC",
-                          (_s(case_id),)).fetchall()
+        rows = db.execute("SELECT * FROM land_case_orders WHERE case_id=? ORDER BY COALESCE(order_date,'') ASC, created_at ASC", (_s(case_id),)).fetchall()
     except Exception:
         return []
     return [dict(row) for row in rows]
@@ -327,13 +312,6 @@ def _case_orders(db: Any, case_id: str) -> List[Dict[str, Any]]:
 
 @router.get("/api/court-cases/{case_id}")
 def get_court_case(case_id: str, user: Dict[str, Any] = Depends(require_roles(*STAFF_ROLES))):
-    """Return case details only to Land Intelligence staff.
-
-    Parcel-scoped viewers use /api/land-records/{land_id}/litigation, which
-    resolves the land record through the existing RBAC-aware resolver. The
-    direct case-id endpoint is intentionally staff-only to prevent IDOR-style
-    enumeration of parties, notes, evidence IDs and court details.
-    """
     ensure_schema()
     with get_db() as db:
         row = db.execute("SELECT * FROM land_court_cases WHERE id=? OR case_number=?", (_s(case_id), _s(case_id))).fetchone()
@@ -344,12 +322,183 @@ def get_court_case(case_id: str, user: Dict[str, Any] = Depends(require_roles(*S
     return {"court_case": case}
 
 
-class CourtCaseClose(BaseModel):
-    status: str = "DECIDED"
-    closed_date: str = ""
-    decision_summary: str = ""
-    notes: str = ""
+@router.post("/api/court-cases/{case_id}/close")
+def close_court_case(case_id: str, req: CourtCaseClose,
+                     user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES))):
+    ensure_schema()
+    status_value = _s(req.status).upper()
+    if status_value not in ("DECIDED", "WITHDRAWN", "SETTLED"):
+        raise HTTPException(422, "Closing status must be DECIDED, WITHDRAWN or SETTLED")
+    with get_db() as db:
+        row = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
+        if not row:
+            raise HTTPException(404, "Court case not found")
+        if _s(row["status"]).upper() != "ACTIVE":
+            raise HTTPException(409, "Only an ACTIVE court case can be closed")
+        db.execute("UPDATE land_court_cases SET status=?, closed_date=?, decision_summary=?, notes=CASE WHEN ?<>'' THEN ? ELSE notes END, updated_at=? WHERE id=?",
+                   (status_value,_s(req.closed_date),_s(req.decision_summary),_s(req.notes),_s(req.notes),time.time(),_s(case_id)))
+    _audit(user, "COURT_CASE_CLOSED", f"Case {row['case_number']} closed as {status_value}")
+    with get_db() as db:
+        updated = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
+    return {"court_case": _dict(updated)}
 
 
-# Initialize schema on import so the first request is not responsible for the migration.
+class CourtCaseUpdate(BaseModel):
+    case_type: Optional[str] = None
+    court_name: Optional[str] = None
+    filed_date: Optional[str] = None
+    parties: Optional[str] = None
+    relief_sought: Optional[str] = None
+    evidence_doc_ids: Optional[List[str]] = None
+    notes: Optional[str] = None
+    petitioner: Optional[str] = None
+    respondent: Optional[str] = None
+    title: Optional[str] = None
+    stage: Optional[str] = None
+    issue_summary: Optional[str] = None
+    next_hearing_date: Optional[str] = None
+    affects_transfer: Optional[bool] = None
+
+
+_UPDATABLE = ("case_type", "court_name", "filed_date", "parties", "relief_sought", "notes",
+              "petitioner", "respondent", "title", "stage", "issue_summary")
+
+
+@router.put("/api/court-cases/{case_id}")
+def update_court_case(case_id: str, req: CourtCaseUpdate,
+                     user: Dict[str, Any] = Depends(require_roles(*STAFF_ROLES))):
+    ensure_schema()
+    with get_db() as db:
+        row = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
+        if not row:
+            raise HTTPException(404, "Court case not found")
+        case = _dict(row)
+        if user.get("role") == ROLE_DATA_OFFICER:
+            if case.get("created_by") != user.get("email"):
+                raise HTTPException(403, "Data Officers can only amend court cases they registered")
+            if _s(case.get("status")).upper() != "ACTIVE":
+                raise HTTPException(409, "A closed court case can only be amended by a reviewer")
+        updates = {key: _s(value) for key, value in req.model_dump().items()
+                   if key in _UPDATABLE and value is not None}
+        if req.case_type is not None:
+            case_type = _s(req.case_type).upper() or "CIVIL"
+            if case_type not in CASE_TYPES:
+                raise HTTPException(422, f"Invalid case type. Use one of {CASE_TYPES}")
+            updates["case_type"] = case_type
+        if req.evidence_doc_ids is not None:
+            _validate_evidence(req.evidence_doc_ids, user)
+            updates["evidence_doc_ids"] = __import__("json").dumps(req.evidence_doc_ids)
+        if req.next_hearing_date is not None:
+            updates["next_hearing_date"] = _s(req.next_hearing_date) or None
+        if req.affects_transfer is not None:
+            updates["affects_transfer"] = 1 if req.affects_transfer else 0
+        if not updates:
+            raise HTTPException(422, "No changes supplied")
+        assignments = ", ".join(f"{column}=?" for column in updates)
+        db.execute(f"UPDATE land_court_cases SET {assignments}, updated_at=? WHERE id=?", (*updates.values(), time.time(), _s(case_id)))
+        changed = ", ".join(sorted(updates))
+    _audit(user, "COURT_CASE_UPDATED", f"Case {case.get('case_number')} amended ({changed})")
+    with get_db() as db:
+        updated = db.execute("SELECT * FROM land_court_cases WHERE id=?", (_s(case_id),)).fetchone()
+    return {"court_case": _dict(updated)}
+
+
+class CaseOrderCreate(BaseModel):
+    order_date: str = ""
+    order_type: str = "ORDER"
+    summary: str
+
+
+CASE_ORDER_TYPES = ("HEARING", "ORDER", "INJUNCTION", "COMMISSION", "DECREE", "DISPOSAL", "WITHDRAWAL", "ADJOURNMENT", "OTHER")
+
+
+@router.post("/api/court-cases/{case_id}/orders")
+def add_case_order(case_id: str, req: CaseOrderCreate,
+                   user: Dict[str, Any] = Depends(require_roles(*REVIEWER_ROLES))):
+    ensure_schema()
+    order_type = _s(req.order_type).upper() or "ORDER"
+    if order_type not in CASE_ORDER_TYPES:
+        raise HTTPException(422, f"Invalid order type. Use one of {CASE_ORDER_TYPES}")
+    summary = _s(req.summary)
+    if not summary:
+        raise HTTPException(422, "An order summary is required")
+    with get_db() as db:
+        row = db.execute("SELECT * FROM land_court_cases WHERE id=? OR case_number=?", (_s(case_id), _s(case_id))).fetchone()
+        if not row:
+            raise HTTPException(404, "Court case not found")
+        db.execute("INSERT INTO land_case_orders (id, case_id, order_date, order_type, summary, created_by, created_at) VALUES (?,?,?,?,?,?,?)",
+                   (uuid.uuid4().hex[:12], row["id"], _s(req.order_date), order_type, summary, user.get("email") or "", time.time()))
+        case = _dict(row)
+        case["orders"] = _case_orders(db, row["id"])
+    _audit(user, "COURT_CASE_ORDER_ADDED", f"Order ({order_type}, {_s(req.order_date) or 'undated'}) added to court case {_s(row['case_number'])}: {summary[:120]}")
+    return {"court_case": case}
+
+
+@router.get("/api/land-records/{land_id}/litigation")
+def land_litigation(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    try:
+        import land_intel
+        land = land_intel._get_land(user, land_id)
+    except Exception:
+        land = None
+    if not land:
+        raise HTTPException(404, "Land record not found")
+    cases = list_cases(land.get("survey") or "", land.get("village") or "")
+    with get_db() as db:
+        for case in cases:
+            case["orders"] = _case_orders(db, _s(case.get("id")))
+    active = [c for c in cases if _s(c.get("status")).upper() == "ACTIVE"]
+    closed = [c for c in cases if _s(c.get("status")).upper() in CLOSED_STATUSES]
+    return {"land_id": land_id, "survey": land.get("survey"), "village": land.get("village"), "active_count": len(active), "closed_count": len(closed), "court_cases": cases, "highest_severity": "HIGH" if active else ("INFO" if closed else "NONE"), "verdict": litigation_verdict_for(cases), "disclaimer": "Litigation status is based only on locally registered cases; it is not a court-certified search."}
+
+
+def litigation_flags(survey: str, village: str, mutations: List[Dict[str, Any]], cases: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    cases = list_cases(survey, village) if cases is None else cases
+    flags: List[Dict[str, Any]] = []
+    active = [c for c in cases if _s(c.get("status")).upper() == "ACTIVE"]
+    closed = [c for c in cases if _s(c.get("status")).upper() in CLOSED_STATUSES]
+    for case in active:
+        parties = _s(case.get("parties")) or " v. ".join(part for part in (_s(case.get("petitioner")), _s(case.get("respondent"))) if part)
+        hearing = _s(case.get("next_hearing_date"))
+        flags.append({"code":"ACTIVE_LITIGATION","severity":"HIGH","title":"Active court case on this land","detail":f"{case.get('case_number') or 'Case'} — {case.get('court_name') or 'court'} ({case.get('case_type') or 'type'})" + (f", {parties}" if parties else "") + (f", next hearing {hearing}" if hearing else "") + ". Pending litigation must be reviewed before transfer.","evidence":[{"type":"court_case","ref":case.get("id"),"label":case.get("case_number")}]})
+        if case.get("affects_transfer"):
+            flags.append({"code":"TRANSFER_STAYED","severity":"HIGH","title":"Court stay/injunction recorded against transfer","detail":f"Case {case.get('case_number') or 'Case'} carries an interim order affecting transfer of this land. Any sale, gift, lease or mutation completion must wait until the order is vacated or the case is decided.","evidence":[{"type":"court_case","ref":case.get("id"),"label":case.get("case_number")}]})
+        filed = _s(case.get("filed_date")); closed_date = _s(case.get("closed_date"))
+        for mutation in mutations or []:
+            deed = _s(mutation.get("deed_date"))
+            if filed and deed and deed >= filed and (not closed_date or deed <= closed_date):
+                flags.append({"code":"TRANSFER_DURING_LITIGATION","severity":"HIGH","title":"Transfer while litigation was pending","detail":f"Mutation {mutation.get('mutation_no') or mutation.get('id')} has deed date {deed} while case {case.get('case_number')} was pending.","evidence":[{"type":"court_case","ref":case.get("id"),"label":case.get("case_number")},{"type":"mutation","ref":mutation.get("id"),"label":mutation.get("mutation_no")}]})
+                break
+    if closed:
+        flags.append({"code":"CLOSED_LITIGATION_ON_RECORD","severity":"INFO","title":"Prior litigation exists on this land","detail":f"{len(closed)} closed court case(s) remain on the record for transparency.","evidence":[{"type":"court_case","ref":c.get("id"),"label":c.get("case_number")} for c in closed[:5]]})
+    return flags
+
+
+@router.get("/api/land-records/{land_id}/litigation-risk")
+def litigation_risk(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    try:
+        import land_intel
+        land = land_intel._get_land(user, land_id)
+    except Exception:
+        land = None
+    if not land:
+        raise HTTPException(404, "Land record not found")
+    _, mutations = land_intel._land_register_rows(land)
+    flags = litigation_flags(land.get("survey") or "", land.get("village") or "", mutations)
+    return {"land_id":land_id,"verdict":"HIGH_RISK" if any(f["severity"]=="HIGH" for f in flags) else ("REVIEW" if flags else "CLEAR"),"flags":flags}
+
+
+@router.get("/litigation")
+def litigation_page(user: Dict[str, Any] = Depends(get_current_user)):
+    return HTMLResponse("""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Land Litigation</title><style>body{font-family:system-ui;margin:0;background:#f4f7fb;color:#0f172a}.wrap{max-width:1100px;margin:auto;padding:24px}.card{background:#fff;border:1px solid #dbe3ee;border-radius:14px;padding:18px;margin:14px 0}.row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}input,select,textarea,button{padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit}button{cursor:pointer;background:#0f3d5e;color:white}.danger{border-left:5px solid #dc2626}.muted{color:#64748b;font-size:13px}@media(max-width:700px){.row{grid-template-columns:1fr}}</style></head><body><div class='wrap'>
+<h1>⚖️ Court Case / Litigation</h1><p class='muted'>Register and review court cases against land parcels. This is an internal register, not a court-certified search.</p>
+<div class='card'><h3>Search land litigation</h3><div class='row'><input id='survey' placeholder='Survey / Khasra'><input id='village' placeholder='Village'><button onclick='load()'>Check</button></div></div>
+<div id='out'></div>
+<script>
+async function load(){const s=document.getElementById('survey').value.trim(),v=document.getElementById('village').value.trim();if(!s){alert('Enter a survey number');return}const r=await fetch('/api/court-cases?survey='+encodeURIComponent(s)+'&village='+encodeURIComponent(v));const d=await r.json();let h='';if(d.active)h+='<div class="card danger"><b>🔴 ACTIVE LITIGATION</b><p>'+d.active+' active case(s) require review.</p></div>';if(!d.court_cases.length)h+='<div class="card">🟢 No court cases registered for this land.</div>';for(const c of d.court_cases){h+='<div class="card"><b>'+esc(c.case_number)+'</b> · '+esc(c.case_type)+' · '+esc(c.status)+'<p>'+esc(c.court_name)+' · filed '+esc(c.filed_date)+'</p><p>'+esc(c.parties)+'</p><p>'+esc(c.relief_sought)+'</p><p>'+esc(c.decision_summary)+'</p></div>'}document.getElementById('out').innerHTML=h}
+function esc(s){return String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}
+(function(){const q=new URLSearchParams(window.location.search);const s=q.get('survey')||'';const v=q.get('village')||'';const c=q.get('case')||'';if(s){document.getElementById('survey').value=s;document.getElementById('village').value=v;load();}if(c){document.getElementById('out').insertAdjacentHTML('afterbegin','<p class="muted">Opened from an SA investigation for case '+esc(c)+'. Only cases registered in this system are shown.</p>');}})();
+</script></div></body></html>""")
+
 ensure_schema()
