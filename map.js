@@ -35,6 +35,9 @@
     locatedParcel: null,
     geocodeRequests: new Map(),
     pinMode: false,
+    boundaryMode: false,
+    boundaryPoints: [],
+    boundaryDraftLayer: null,
     fitted: false,
     mapUserMoved: false,
     // Show mode (Phase: map improvement). Default is 'selected record' so the
@@ -574,7 +577,7 @@
       <div class="selected-actions"><button class="btn secondary" type="button" data-selected-open>Open document</button><button class="btn ghost" type="button" data-selected-history>View history</button>${recordCoordinate(record) || recordGeometry(record) ? '<button class="btn ghost" type="button" data-selected-map>View map</button>' : ''}${!recordCoordinate(record) && !recordGeometry(record) && (record.village || record.district) ? '<button class="btn ghost" type="button" data-selected-resolve>Resolve village location</button>' : ''}</div>
       <div class="location-editor ${canEdit ? '' : 'read-only'}">
         <div class="editor-head"><strong>Exact location editing</strong><span>${canEdit ? 'Verification Officer / Administrator' : 'Read-only for this role'}</span></div>
-        ${canEdit ? `<div class="pin-fields"><label>Latitude<input id="pinLatitude" inputmode="decimal" value="${exact ? esc(exact.lat) : ''}" placeholder="e.g. 28.6139"></label><label>Longitude<input id="pinLongitude" inputmode="decimal" value="${exact ? esc(exact.lon) : ''}" placeholder="e.g. 77.2090"></label></div><label>Verification note<input id="pinReason" maxlength="500" value="${esc(record.location_reason || '')}" placeholder="Why is this exact location being set or cleared?"></label><div class="editor-actions"><button class="btn secondary" type="button" data-save-pin>Save exact location</button><button class="btn ghost" type="button" data-place-pin>Choose on map</button>${exact ? '<button class="btn danger" type="button" data-clear-pin>Clear exact location</button>' : ''}</div><small class="editor-help">Saving writes mapping-only coordinates and an audit event. It does not alter OCR or document fields.</small>` : '<p class="editor-help">Exact coordinates can only be set or cleared by an authorised Verification Officer or Administrator. Server-side role checks remain enforced.</p>'}
+        ${canEdit ? `<div class="pin-fields"><label>Latitude<input id="pinLatitude" inputmode="decimal" value="${exact ? esc(exact.lat) : ''}" placeholder="e.g. 28.6139"></label><label>Longitude<input id="pinLongitude" inputmode="decimal" value="${exact ? esc(exact.lon) : ''}" placeholder="e.g. 77.2090"></label></div><label>Verification note<input id="pinReason" maxlength="500" value="${esc(record.location_reason || '')}" placeholder="Why is this exact location being set or cleared?"></label><div class="editor-actions"><button class="btn secondary" type="button" data-save-pin>Save exact location</button><button class="btn ghost" type="button" data-place-pin>Choose on map</button>${exact ? '<button class="btn danger" type="button" data-clear-pin>Clear exact location</button>' : ''}</div><small class="editor-help">Saving writes mapping-only coordinates and an audit event. It does not alter OCR or document fields.</small><div class="boundary-editor"><strong>Plot boundary</strong><div class="editor-actions">${state.boundaryMode ? `<button class="btn secondary" type="button" data-finish-boundary>Save boundary (${state.boundaryPoints.length} corners)</button><button class="btn ghost" type="button" data-cancel-boundary>Cancel</button>` : '<button class="btn ghost" type="button" data-start-boundary>Trace boundary on map</button>'}</div><small class="editor-help">Click at least three corners on the map. The saved shape is a mapping-only screening aid, not a legal boundary.</small></div>` : '<p class="editor-help">Exact locations and traced boundaries can only be edited by an authorised Verification Officer or Administrator. Server-side role checks remain enforced.</p>'}
       </div>`;
     panel.querySelector('[data-selected-open]')?.addEventListener('click', () => openDocument(record.id));
     panel.querySelector('[data-selected-history]')?.addEventListener('click', () => openHistory(record.id));
@@ -589,6 +592,9 @@
     });
     panel.querySelector('[data-save-pin]')?.addEventListener('click', () => savePinFromFields(record));
     panel.querySelector('[data-clear-pin]')?.addEventListener('click', () => clearDocumentPin(record));
+    panel.querySelector('[data-start-boundary]')?.addEventListener('click', () => startBoundaryDigitizing(record));
+    panel.querySelector('[data-finish-boundary]')?.addEventListener('click', () => finishBoundaryDigitizing(record));
+    panel.querySelector('[data-cancel-boundary]')?.addEventListener('click', () => cancelBoundaryDigitizing());
   }
 
   function renderRecordList() {
@@ -732,6 +738,7 @@
         state.map = window.L.map('map', { zoomControl: true, preferCanvas: true, worldCopyJump: true }).setView([22.5, 80.2], 5);
         state.markers = window.L.layerGroup().addTo(state.map);
         state.referenceMapLayer = window.L.layerGroup().addTo(state.map);
+        state.boundaryDraftLayer = window.L.layerGroup().addTo(state.map);
         state.map.on('click', handleMapClick);
         state.map.on('dragstart', () => { state.mapUserMoved = true; });
         state.mapReady = true;
@@ -788,23 +795,25 @@
   }
 
   function recordGeometry(record) {
-    return record?.reference_geometry || record?.reference_property?.geometry || null;
+    return record?.geometry || record?.reference_geometry || record?.reference_property?.geometry || null;
   }
 
   function drawReferenceGeometry(record, emphasized = false) {
     const geometry = recordGeometry(record);
     if (!geometry) return null;
     try {
+      const isDocumentBoundary = !!record.geometry;
+      const geometryColor = isDocumentBoundary ? '#15803d' : '#6366f1';
       const layer = window.L.geoJSON(geometry, {
-        style: { color: emphasized ? '#1d4ed8' : '#6366f1', weight: emphasized ? 4 : 2,
-          fillOpacity: .16, dashArray: '7 5' },
+        style: { color: emphasized ? '#1d4ed8' : geometryColor, weight: emphasized ? 4 : 2,
+          fillOpacity: .16, dashArray: isDocumentBoundary ? null : '7 5' },
         pointToLayer: (_, point) => window.L.circleMarker(point, { radius: 8, color: '#6366f1' }),
       });
       if (!layer.getBounds().isValid()) return null;
       layer.bindPopup(`<div class="popup-title">${esc(record.owner || record.survey || record.id)}</div>
-        <div class="popup-detail"><strong>REFERENCE GEOMETRY</strong><br>Survey: ${esc(record.survey || '—')}<br>
-        Village: ${esc(record.village || '—')}<br>Source: ${esc(record.reference_property?.geometry_source || 'Stored reference geometry')}<br>
-        Reference only; not an authoritative cadastral boundary or verified document pin.</div>`);
+        <div class="popup-detail"><strong>${esc(record.geometry ? 'DOCUMENT PLOT BOUNDARY' : 'REFERENCE GEOMETRY')}</strong><br>Survey: ${esc(record.survey || '—')}<br>
+        Village: ${esc(record.village || '—')}<br>Source: ${esc(record.geometry_source || record.reference_property?.geometry_source || 'Stored reference geometry')}<br>
+        Boundary is for screening and orientation only; it is not an authoritative cadastral boundary or verified title.</div>`);
       layer.on('click', () => {
         if (recordById(record.id)) selectRecord(record.id);
       });
@@ -975,6 +984,7 @@
   async function selectRecord(id) {
     const record = recordById(id);
     if (!record) return;
+    if (state.boundaryMode && String(state.selectedId) !== String(record.id)) cancelBoundaryDigitizing(false);
     state.selectedId = record.id;
     state.locatedParcel = null;
     renderRecordList();
@@ -1064,6 +1074,11 @@
   }
 
   function handleMapClick(event) {
+    if (state.boundaryMode) {
+      state.boundaryPoints.push([Number(event.latlng.lat.toFixed(7)), Number(event.latlng.lng.toFixed(7))]);
+      redrawBoundaryDraft();
+      return;
+    }
     if (!state.pinMode) return;
     if (!roleCanPin()) {
       setNotice('<strong>Exact pins require a Verification Officer or Administrator.</strong> The map remains read-only for this role.', 'warn');
@@ -1084,6 +1099,72 @@
     if ($('pinLatitude')) $('pinLatitude').value = latitude;
     if ($('pinLongitude')) $('pinLongitude').value = longitude;
     setDocumentPin(selected, latitude, longitude, reason);
+  }
+
+  async function startBoundaryDigitizing(record) {
+    if (!roleCanPin()) return;
+    await switchView('map');
+    if (!state.mapReady || !state.map) {
+      setNotice('<strong>Map is not ready.</strong> Try again after the map has loaded.', 'warn');
+      return;
+    }
+    if (!focusRecord(record) && (record.village || record.district)) await resolveRecordLocation(record);
+    state.pinMode = false;
+    $('mapPinMode').checked = false;
+    $('pinHint').classList.add('hidden');
+    state.boundaryMode = true;
+    state.boundaryPoints = [];
+    state.boundaryDraftLayer?.clearLayers();
+    state.map.getContainer().style.cursor = 'crosshair';
+    renderSelectedRecord();
+    setNotice(`<strong>Trace a plot boundary for ${esc(record.filename || `record #${record.id}`)}.</strong> Click each corner in order, then save after at least three points.`, 'info');
+  }
+
+  function redrawBoundaryDraft() {
+    if (!state.boundaryDraftLayer || !window.L) return;
+    state.boundaryDraftLayer.clearLayers();
+    state.boundaryPoints.forEach((point, index) => {
+      window.L.circleMarker(point, { radius: 5, color: '#14532d', fillColor: '#22c55e', fillOpacity: 1 })
+        .bindTooltip(String(index + 1)).addTo(state.boundaryDraftLayer);
+    });
+    if (state.boundaryPoints.length > 1) {
+      const points = state.boundaryPoints.slice();
+      if (points.length >= 3) points.push(points[0]);
+      window.L.polyline(points, { color: '#16a34a', weight: 3, dashArray: '7 5' }).addTo(state.boundaryDraftLayer);
+    }
+    renderSelectedRecord();
+  }
+
+  function cancelBoundaryDigitizing(render = true) {
+    state.boundaryMode = false;
+    state.boundaryPoints = [];
+    state.boundaryDraftLayer?.clearLayers();
+    if (state.map) state.map.getContainer().style.cursor = '';
+    if (render) renderSelectedRecord();
+  }
+
+  async function finishBoundaryDigitizing(record) {
+    if (state.boundaryPoints.length < 3) {
+      setNotice('<strong>Boundary needs at least three corners.</strong> Click more points on the map before saving.', 'warn');
+      return;
+    }
+    const reason = $('pinReason')?.value.trim() || '';
+    if (!window.confirm(`Save this ${state.boundaryPoints.length}-corner mapping boundary for ${record.filename || `record #${record.id}`}?\n\nIt will be marked as a screening reference only and does not establish legal title or a cadastral boundary.`)) return;
+    try {
+      const result = await api(`/api/map/records/${encodeURIComponent(record.id)}/boundary`, {
+        method: 'PUT', body: JSON.stringify({ points: state.boundaryPoints, reason }),
+      });
+      record.geometry = result.geometry;
+      record.geometry_source = result.geometry_source;
+      cancelBoundaryDigitizing(false);
+      renderRecordList();
+      renderMarkers();
+      focusRecord(record);
+      renderSelectedRecord();
+      setNotice('<strong>Boundary saved.</strong> Mapping geometry was recorded separately from OCR/document fields and logged for audit.', 'info');
+    } catch (error) {
+      setNotice(`<strong>Boundary was not saved.</strong> ${esc(error.message)}`, 'error');
+    }
   }
 
   async function savePinFromFields(record) {

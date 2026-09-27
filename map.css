@@ -266,6 +266,7 @@ label select:focus, label input:focus { border-color: #3182b7; box-shadow: 0 0 0
 .btn.danger { color: #a12c2c; border-color: #e2b6b6; background: #fff6f6; }
 .btn.danger:hover { border-color: #c86d6d; background: #ffeded; }
 .editor-help { display: block; margin-top: 6px; color: #6b7d89; font-size: 8px; line-height: 1.4; }
+.boundary-editor { border-top: 1px solid #d6e1e8; margin-top: 10px; padding-top: 8px; display: grid; gap: 4px; }
 .location-inline { color: #87500e; font-weight: 800; }
 .verified-text { color: #176346; }
 @media (max-width: 850px) {

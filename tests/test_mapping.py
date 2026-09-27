@@ -79,6 +79,56 @@ def test_map_assets_are_explicit_and_portal_navigation_is_visible():
     assert client.get("/api/demo-land/health").status_code == 404
 
 
+def test_map_uses_labelled_ocr_corner_fields_for_document_geometry():
+    doc_id = "MAP-OCR-GEOMETRY-" + uuid.uuid4().hex[:8]
+    _insert_document(doc_id)
+    coordinates = [
+        "23.17642 N, 80.01231 E", "23.17642 N, 80.01331 E",
+        "23.17742 N, 80.01331 E", "23.17742 N, 80.01231 E",
+    ]
+    with server.get_db() as db:
+        row = db.execute("SELECT fields FROM documents WHERE id=?", (doc_id,)).fetchone()
+        fields = json.loads(row["fields"])
+        fields.update({f"coordinate_{index + 1}": {"value": value, "confidence": 0.8}
+                       for index, value in enumerate(coordinates)})
+        db.execute("UPDATE documents SET fields=? WHERE id=?", (json.dumps(fields), doc_id))
+    headers = _make_user("VERIFICATION_OFFICER")
+    record = next(item for item in client.get("/api/map/records", headers=headers).json()["records"] if item["id"] == doc_id)
+    assert record["geometry"]["type"] == "Polygon"
+    assert record["geometry_source"] == "OCR-extracted printed coordinates"
+    assert record["geometry"]["coordinates"][0][0] == [80.01231, 23.17642]
+
+
+def test_reviewer_can_save_mapping_only_digitized_boundary():
+    doc_id = "MAP-BOUNDARY-" + uuid.uuid4().hex[:8]
+    _insert_document(doc_id)
+    headers = _make_user("VERIFICATION_OFFICER")
+    response = client.put(
+        f"/api/map/records/{doc_id}/boundary",
+        headers=headers,
+        json={"points": [[23.1, 80.1], [23.1, 80.2], [23.2, 80.2]], "reason": "Checked against source sheet"},
+    )
+    assert response.status_code == 200
+    assert response.json()["geometry"]["type"] == "Polygon"
+    with server.get_db() as db:
+        row = db.execute("SELECT map_geometry, map_geometry_source FROM documents WHERE id=?", (doc_id,)).fetchone()
+    assert json.loads(row["map_geometry"])["coordinates"][0][0] == [80.1, 23.1]
+    assert row["map_geometry_source"] == "Officer-digitized boundary"
+    record = next(item for item in client.get("/api/map/records", headers=headers).json()["records"] if item["id"] == doc_id)
+    assert record["geometry_source"] == "Officer-digitized boundary"
+
+
+def test_reviewer_boundary_requires_three_distinct_corners():
+    doc_id = "MAP-BOUNDARY-BAD-" + uuid.uuid4().hex[:8]
+    _insert_document(doc_id)
+    headers = _make_user("VERIFICATION_OFFICER")
+    response = client.put(
+        f"/api/map/records/{doc_id}/boundary", headers=headers,
+        json={"points": [[23.1, 80.1], [23.1, 80.1], [23.1, 80.1]]},
+    )
+    assert response.status_code == 400
+
+
 def test_map_records_are_document_grounded_and_role_filtered():
     _insert_document("MAP-RECORD-1", lat=28.62, lon=77.10)
     headers = _make_user("VERIFICATION_OFFICER")

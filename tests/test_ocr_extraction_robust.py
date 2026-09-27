@@ -24,6 +24,29 @@ import server
 # field extraction: separator-optional labels
 # ---------------------------------------------------------------------------
 
+def test_printed_plot_corners_extract_as_mapping_evidence():
+    text = ("Owner Name: Ram Sharma\n"
+            "Coordinate 1: 23.17642 N, 80.01231 E\n"
+            "Coordinate 2: 23.17642 N, 80.01331 E\n"
+            "Coordinate 3: 23.17742 N, 80.01331 E\n"
+            "Coordinate 4: 23.17742 N, 80.01231 E")
+    fields = server.extract_fields_from_ocr(text, "corners.png")["fields"]
+    assert fields["coordinate_1"]["value"] == "23.17642 N, 80.01231 E"
+    geometry, source = mapping._document_boundary(fields)
+    assert source == "OCR-extracted printed coordinates"
+    assert geometry["type"] == "Polygon"
+    assert geometry["coordinates"][0][0] == [80.01231, 23.17642]
+    assert geometry["coordinates"][0][-1] == geometry["coordinates"][0][0]
+
+
+def test_bad_or_incomplete_printed_coordinates_do_not_create_a_boundary():
+    text = "Coordinate 1: 23.17642 N, 80.01231 E\nCoordinate 2: unreadable\nCoordinate 3: 92.0 N, 181.0 E"
+    fields = server.extract_fields_from_ocr(text, "corners.png")["fields"]
+    geometry, source = mapping._document_boundary(fields)
+    assert geometry is None
+    assert source == ""
+
+
 def test_flat_ocr_text_without_colons_extracts_fields():
     text = ("Owner Name Ram Sharma Father Name Mohan Lal Village Shantiban "
             "District Rampur Survey No 131 Khasra Number 45/2 Area 2.5 Acre")

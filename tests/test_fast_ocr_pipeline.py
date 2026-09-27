@@ -5,6 +5,7 @@ architecture. The fast pipeline shares the canonical parcel resolver and Land
 Intelligence context with the rest of the system; it does not introduce a second
 mapping or worker system.
 """
+import asyncio
 import io
 import os
 import time
@@ -79,13 +80,16 @@ def test_pdf_text_layer_bypasses_tesseract_when_embedded_text_present(monkeypatc
 
     # Spy on run_guided_ocr to ensure it is NOT called for text PDFs.
     called = {"n": 0}
-    orig = server.run_guided_ocr
+    # Production installs runtime_patch's OCR adapter over the base guided
+    # helper, so observe the public OCR stage rather than an implementation
+    # detail that is no longer called directly.
+    orig = ocr_pipeline.run_fast_ocr
 
     def spy(*a, **kw):
         called["n"] += 1
         return orig(*a, **kw)
 
-    monkeypatch.setattr(server, "run_guided_ocr", spy)
+    monkeypatch.setattr(ocr_pipeline, "run_fast_ocr", spy)
 
     r = client.post("/api/process?mode=ocr_only", headers=headers,
                     files={"file": ("text-doc.pdf", pdf_bytes, "application/pdf")})
@@ -96,19 +100,59 @@ def test_pdf_text_layer_bypasses_tesseract_when_embedded_text_present(monkeypatc
     assert "Test Owner" in (j["fields"].get("owner_name", {}).get("value", "") or "")
 
 
+def test_scanned_pdf_ocr_reads_every_page(monkeypatch):
+    import types
+
+    class FakePage:
+        def render(self, scale):
+            return types.SimpleNamespace(to_pil=lambda: object())
+
+    class FakePdf(list):
+        pass
+
+    fake_pdf = FakePdf([FakePage(), FakePage(), FakePage()])
+    fake_server = types.SimpleNamespace(
+        HAS_PDFIUM=True,
+        pdfium=types.SimpleNamespace(PdfDocument=lambda content: fake_pdf),
+        extract_fields_from_ocr=server.extract_fields_from_ocr,
+    )
+    monkeypatch.setattr(ocr_pipeline, "get_server", lambda: fake_server)
+    monkeypatch.setattr(ocr_pipeline, "cache_lookup", lambda *args: None)
+    monkeypatch.setattr(ocr_pipeline, "extract_pdf_embedded_text", lambda content: (False, "", 3))
+    calls = []
+
+    def recognize(image, lang):
+        page_number = len(calls) + 1
+        calls.append(page_number)
+        text = (f"Survey No: {100 + page_number}" if page_number == 3
+                else f"Owner Name: Page {page_number} Owner")
+        return {"text": text, "confidence": 0.9, "word_count": 8, "detected_language": "eng"}
+
+    monkeypatch.setattr(ocr_pipeline, "run_fast_ocr", recognize)
+    result = asyncio.run(ocr_pipeline.run_fast_ocr_pipeline(b"fake-pdf", "packet.pdf"))
+    assert calls == [1, 2, 3]
+    assert result["pages"] == 3
+    assert "[Page 3]" in result["ocr_text"]
+    assert result["fields"]["survey_number"]["value"] == "103"
+    assert result["pipeline_meta"]["pages_processed"] == 3
+
+
 def test_image_requires_ocr(monkeypatch, tmp_path):
     server.DB_PATH = str(tmp_path / "image-ocr.db")
     server.init_db()
     client = TestClient(server.app)
     headers = login(client)
     called = {"n": 0}
-    orig = server.run_guided_ocr
+    # Production installs runtime_patch's OCR adapter over the base guided
+    # helper, so observe the public OCR stage rather than an implementation
+    # detail that is no longer called directly.
+    orig = ocr_pipeline.run_fast_ocr
 
     def spy(*a, **kw):
         called["n"] += 1
         return orig(*a, **kw)
 
-    monkeypatch.setattr(server, "run_guided_ocr", spy)
+    monkeypatch.setattr(ocr_pipeline, "run_fast_ocr", spy)
     png = _make_png()
     r = client.post("/api/process?mode=ocr_only", headers=headers, files={"file": ("img.png", png, "image/png")})
     assert r.status_code == 200
