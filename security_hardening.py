@@ -92,14 +92,16 @@ def install(app) -> None:
                 chunk = message.get("body", b"") or b""
                 received += len(chunk)
                 if received > MAX_REQUEST_BYTES:
-                    # ASGI receive cannot safely return a normal HTTP response
-                    # once the downstream parser is consuming the body. Stop
-                    # the stream; Content-Length handles normal oversized uploads.
                     raise RuntimeError("Request body exceeds the 25 MiB limit")
             return message
 
         request._receive = limited_receive
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        except RuntimeError as exc:
+            if str(exc) == "Request body exceeds the 25 MiB limit":
+                return JSONResponse({"detail": "Request body exceeds the 25 MiB limit."}, status_code=413)
+            raise
 
 
 __all__ = ["install", "MAX_REQUEST_BYTES"]
