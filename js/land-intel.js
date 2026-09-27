@@ -924,10 +924,27 @@
   // SUB-TAB: REPORTS (Phase 11)
   // =========================================================================
   async function loadReports() {
-    const lands = await api('/api/land-records?limit=100');
+    const [lands, cases] = await Promise.all([
+      api('/api/land-records?limit=100'),
+      api('/api/court-cases?limit=100')
+    ]);
     S.lands = lands.land_records || [];
     S.landsTotal = lands.total || 0;
+    S.courtCases = cases.court_cases || [];
     renderReports();
+  }
+
+  function reportCasesForLand(landId) {
+    const land = (S.lands || []).find((item) => String(item.land_id) === String(landId));
+    if (!land) return [];
+    const norm = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const survey = norm(land.survey || land.khasra);
+    const village = norm(land.village);
+    return (S.courtCases || []).filter((item) => {
+      const cs = norm(item.survey_number || item.khasra_number);
+      const cv = norm(item.village);
+      return cs && survey && cs === survey && (!cv || !village || cv === village);
+    });
   }
 
   function renderReports() {
@@ -940,11 +957,31 @@
         <p class="li-sub">${esc(t('reportNote'))}</p>
         <div class="li-toolbar">
           <select id="liReportLand" style="max-width:420px"><option value="">— select land record —</option>${options}</select>
-          <input id="liReportManualCase" type="text" placeholder="Manual case number (optional)" aria-label="Manual case number" style="max-width:300px">
-          <button class="btn saffron" id="liReportGenerate" style="padding:5px 14px;font-size:12px">${esc(t('generateReport'))}</button>
+        </div>
+        <div id="liReportLitigation" class="li-ctx-panel" style="margin-top:12px;background:#f8fafc;border:1px solid var(--gov-border);border-radius:8px;padding:12px">
+          <div style="font-size:13px;font-weight:800;color:var(--gov-navy)">⚖ Court Cases / Litigation</div>
+          <div class="li-sub" style="margin-top:4px">Registered Land Intelligence cases and an optional manual case reference are handled together here.</div>
+          <div id="liReportRegisteredCases" style="margin-top:10px"></div>
+          <label style="display:block;margin-top:10px;font-size:12px;font-weight:700">Manual case number (optional)
+            <input id="liReportManualCase" type="text" placeholder="Enter case number" aria-label="Manual case number" style="display:block;width:100%;max-width:420px;margin-top:5px">
+            <span class="li-sub" style="display:block;margin-top:4px">Manual references are included as <b>UNVERIFIED</b>; they are not treated as registered Land Intelligence cases.</span>
+          </label>
+          <button class="btn saffron" id="liReportGenerate" style="margin-top:10px;padding:5px 14px;font-size:12px">${esc(t('generateReport'))}</button>
         </div>
         <div id="liReportResult" class="hidden"></div>
       </div>`;
+    const updateReportCases = () => {
+      const landId = $('liReportLand').value;
+      const cases = reportCasesForLand(landId);
+      $('liReportRegisteredCases').innerHTML = cases.length
+        ? cases.map((item) => `<div style="padding:7px 0;border-bottom:1px solid var(--gov-border)">
+            <b class="mono">${esc(item.case_number)}</b> · ${esc(item.case_type || 'Case')} · ${esc(item.court_name || 'Court not recorded')}
+            <div class="li-sub">${esc(item.petitioner || '')} v. ${esc(item.respondent || '')} · ${esc(item.status || 'REGISTERED')}</div>
+          </div>`).join('')
+        : '<div class="li-sub">No registered Land Intelligence cases linked to this parcel.</div>';
+    };
+    $('liReportLand').addEventListener('change', updateReportCases);
+    updateReportCases();
     $('liReportGenerate').addEventListener('click', async () => {
       const landId = $('liReportLand').value;
       if (!landId) { alert('Select a land record first.'); return; }
@@ -1091,7 +1128,6 @@
       ['records', t('records')],
       ['mutations', t('mutations')],
       ['encumbrances', t('encumbrances')],
-      ['courts', t('courtCases')],
       ['risk', t('riskReview')],
       ['reports', t('reports')],
     ];
@@ -1111,7 +1147,6 @@
         <div id="liDetailPane" class="${showingDetail ? '' : 'hidden'}"></div>
         <div id="liMutationsPane" class="${S.sub === 'mutations' ? '' : 'hidden'}"></div>
         <div id="liEncumbrancesPane" class="${S.sub === 'encumbrances' ? '' : 'hidden'}"></div>
-        <div id="liCourtsPane" class="${S.sub === 'courts' ? '' : 'hidden'}"></div>
         <div id="liRiskPane" class="${S.sub === 'risk' ? '' : 'hidden'}"></div>
         <div id="liReportsPane" class="${S.sub === 'reports' ? '' : 'hidden'}"></div>
       </div>`;
@@ -1120,7 +1155,6 @@
     if (S.sub === 'records') loadLands().catch(alertError);
     if (S.sub === 'mutations') { S.openMutation ? renderMutationReview() : loadMutations().catch(alertError); }
     if (S.sub === 'encumbrances') loadEncumbrances().catch(alertError);
-    if (S.sub === 'courts') loadCourtCases().catch(alertError);
     if (S.sub === 'risk') loadRisk().catch(alertError);
     if (S.sub === 'reports') loadReports().catch(alertError);
   }
