@@ -14,6 +14,48 @@ def _rowdict(row):
         except Exception: return {}
 
 
+def _install_audit_count_compat():
+    """Keep the audit endpoint compatible with SQLite and RealDictCursor.
+
+    `/api/audit` historically reads COUNT(*) with row[0]. SQLite rows support
+    positional indexing, but production PostgreSQL uses psycopg2 RealDictRow,
+    which is deliberately dictionary-only. That turns every audit request into
+    a 500 before the page rows are returned. Normalize only this count cursor so
+    the existing endpoint contract remains unchanged without changing the DB
+    abstraction used by the rest of the application.
+    """
+    import server
+
+    original_execute = getattr(server.DBConnection, "_audit_compat_original_execute", None)
+    if original_execute is not None:
+        return
+    original_execute = server.DBConnection.execute
+
+    class _AuditCountCursorCompat:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def fetchone(self):
+            row = self._cursor.fetchone()
+            if isinstance(row, dict):
+                return (next(iter(row.values())),) if row else (0,)
+            return row
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    def execute_compat(self, query, params=()):
+        cursor = original_execute(self, query, params)
+        if self.is_pg and isinstance(query, str) and re.match(
+            r"^\s*SELECT\s+COUNT\(\*\)\s+FROM\s+audit\b", query, re.I
+        ):
+            return _AuditCountCursorCompat(cursor)
+        return cursor
+
+    server.DBConnection._audit_compat_original_execute = original_execute
+    server.DBConnection.execute = execute_compat
+
+
 def _seed_demo_once_if_requested():
     if os.getenv("SEED_DEMO_LI_ON_STARTUP", "").strip().lower() != "true":
         return
@@ -128,4 +170,5 @@ def apply():
         return {"text":text,"confidence":round(avg,3),"word_count":len(words),"detected_language":server.detect_primary_script(text) or "eng","tesseract_language":primary,"method":method,"strategy":{"lang":primary,"psm":6}}
     mod.run_fast_ocr=fast_ocr
     mod.cache_store=cache_store
+    _install_audit_count_compat()
     _seed_demo_once_if_requested(); _backfill_demo_parcels()
