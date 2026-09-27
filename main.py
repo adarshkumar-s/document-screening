@@ -14,6 +14,11 @@ runtime_patch.apply()
 import ocr_runtime_fix
 ocr_runtime_fix.install()
 
+# Last resort: only after all structured OCR variants fail, use the slower
+# text-rendering path. This deliberately trades latency for extraction recall.
+import ocr_last_resort
+ocr_last_resort.install()
+
 import ocr_land_bridge
 ocr_land_bridge.install()
 
