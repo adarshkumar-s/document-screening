@@ -269,8 +269,10 @@ def get_court_cases(survey: str = Query(""), village: str = Query(""),
                    q: str = Query(""), user: Dict[str, Any] = Depends(get_current_user)):
     ensure_schema()
     if not survey:
-        # Staff may use this as a register search; viewers must scope to a land parcel.
-        if user.get("role") not in REVIEWER_ROLES:
+        # The registered litigation register was historically visible to
+        # authenticated Land Intelligence staff. Keep that behavior for all
+        # staff roles while viewers remain restricted to parcel-scoped lookup.
+        if user.get("role") not in STAFF_ROLES:
             raise HTTPException(400, "survey number is required")
         items = _all_cases()
     else:
