@@ -112,40 +112,68 @@
     pane.classList.remove('hidden');
 
     const requestId = ++litigationRequest;
-    if (selectedLandId) {
-      pane.innerHTML = '<div class="li-card"><b>Loading litigation…</b></div>';
-      try {
-        const data = await api('/api/land-records/' + encodeURIComponent(selectedLandId) + '/litigation');
-        if (requestId !== litigationRequest) return;
-        renderLitigationLand(pane, data);
-      } catch (e) {
-        pane.innerHTML = `<div class="errorbox">${esc(e.message)}</div>`;
-      }
-      return;
-    }
+    pane.innerHTML = '<div class="li-card"><b>Loading Court Cases / Litigation…</b></div>';
 
-    pane.innerHTML = `
-      <div class="li-card">
-        <h4>⚖️ Court Cases / Litigation</h4>
-        <p class="li-sub">Select a land record first, or search by Survey/Khasra number.</p>
-        <div class="li-toolbar">
-          <input id="liLitSurvey" placeholder="Survey / Khasra" style="max-width:220px">
-          <input id="liLitVillage" placeholder="Village" style="max-width:180px">
-          <button class="btn saffron" id="liLitSearchBtn">Check Litigation</button>
-        </div>
-        <div id="liLitSearchResult"></div>
-      </div>`;
-    document.getElementById('liLitSearchBtn').onclick = async () => {
-      const survey = document.getElementById('liLitSurvey').value.trim();
-      const village = document.getElementById('liLitVillage').value.trim();
-      if (!survey) { alert('Enter a Survey / Khasra number.'); return; }
-      const result = document.getElementById('liLitSearchResult');
-      result.innerHTML = '<p class="li-sub">Loading…</p>';
-      try {
-        const data = await api('/api/court-cases?survey=' + encodeURIComponent(survey) + '&village=' + encodeURIComponent(village));
-        renderLitigationCases(result, data.court_cases || [], survey, village);
-      } catch (e) { result.innerHTML = `<div class="errorbox">${esc(e.message)}</div>`; }
-    };
+    try {
+      // Always load the complete registered register. This is intentionally
+      // independent of the currently selected land record so old registered
+      // cases cannot disappear merely because no parcel is selected.
+      const data = await api('/api/court-cases?status=&limit=100');
+      if (requestId !== litigationRequest) return;
+      const cases = data.court_cases || [];
+      const selectedCases = selectedLandId
+        ? cases.filter(c => String(c.land_id || '') === String(selectedLandId))
+        : [];
+
+      pane.innerHTML = `
+        <div class="li-card">
+          <h4>⚖️ Court Cases / Litigation</h4>
+          <p class="li-sub">Registered Land Intelligence cases are shown below. Manual references are optional and are never treated as registered cases.</p>
+
+          <div class="li-toolbar" style="margin-top:10px">
+            <input id="liLitSurvey" placeholder="Search Survey / Khasra" style="max-width:220px">
+            <input id="liLitVillage" placeholder="Village" style="max-width:180px">
+            <button class="btn ghost" id="liLitSearchBtn">Search Register</button>
+          </div>
+
+          <div id="liLitRegistered" style="margin-top:12px">
+            <div style="font-size:12px;font-weight:800">Registered cases (${cases.length})</div>
+            <div id="liLitRegisteredList">${renderCaseList(cases)}</div>
+          </div>
+
+          ${selectedCases.length ? `
+            <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--gov-border)">
+              <div style="font-size:12px;font-weight:800">Cases linked to selected land</div>
+              ${renderCaseList(selectedCases)}
+            </div>` : ''}
+
+          <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--gov-border)">
+            <div style="font-size:12px;font-weight:800">Manual case number (optional)</div>
+            <input id="liLitManualCase" type="text" placeholder="Enter case number" style="display:block;width:100%;max-width:420px;margin-top:6px">
+            <div class="li-sub" style="margin-top:5px"><b>UNVERIFIED</b> — this reference is not added to or counted as the registered Land Intelligence case register.</div>
+          </div>
+        </div>`;
+
+      const search = document.getElementById('liLitSearchBtn');
+      if (search) search.onclick = async () => {
+        const survey = document.getElementById('liLitSurvey').value.trim();
+        const village = document.getElementById('liLitVillage').value.trim();
+        const result = document.getElementById('liLitRegisteredList');
+        result.innerHTML = '<p class="li-sub">Loading…</p>';
+        try {
+          const q = '/api/court-cases?status=&limit=100'
+            + (survey ? '&survey=' + encodeURIComponent(survey) : '')
+            + (village ? '&village=' + encodeURIComponent(village) : '');
+          const filtered = await api(q);
+          result.innerHTML = renderCaseList(filtered.court_cases || []);
+        } catch (e) {
+          result.innerHTML = `<div class="errorbox">${esc(e.message)}</div>`;
+        }
+      };
+    } catch (e) {
+      if (requestId !== litigationRequest) return;
+      pane.innerHTML = `<div class="errorbox">${esc(e.message)}</div>`;
+    }
   }
 
   function renderLitigationLand(pane, data) {
@@ -318,12 +346,10 @@
 
   function wire() {
     rememberLandSelection();
-    // Litigation is now part of the unified Reports section in land-intel.js.
-    // Do not recreate the legacy standalone Court Cases / Litigation tab here.
-    const legacyTab = document.querySelector('#landIntelWorkspace .li-subtab[data-sub="litigation"]');
-    const legacyPane = document.querySelector('#landIntelWorkspace #liLitigationPane');
-    if (legacyTab) legacyTab.remove();
-    if (legacyPane) legacyPane.remove();
+    // Keep exactly one Court Cases / Litigation section in the portal.
+    // It is rendered here as the unified litigation register with optional
+    // manual case reference; do not create a second litigation tab elsewhere.
+    ensureLitigationTab();
     ensureAdminComparison();
     addMapLinks();
   }
