@@ -38,14 +38,11 @@ def install() -> None:
         words = float(result.get("word_count", 0) or 0)
         conf = float(result.get("confidence", 0) or 0)
         text = str(result.get("text") or "")
-        # Confidence is normalized to 0..1 by the OCR runtime. Word count keeps
-        # a short accidental recognition from winning solely on confidence.
         return conf * 0.7 + min(words / 100.0, 1.0) * 0.3 + min(len(text) / 2000.0, 0.15)
 
     def _rotate_rescue(image: Image.Image, requested_lang: str) -> Dict[str, Any]:
         base = original_run_fast(image, requested_lang)
         best = base
-        # Orientation rescue is only expensive when the normal result is weak.
         if _quality(base) >= 0.42 and int(base.get("word_count", 0) or 0) >= 8:
             return base
         source = ImageOps.exif_transpose(image).convert("L")
@@ -74,8 +71,6 @@ def install() -> None:
         confidence = float(result.get("confidence", 0) or 0)
         if os.getenv("OCR_VISION_ALWAYS", "").strip().lower() == "true":
             return True
-        # A land-record form with only a few recognized words is not considered
-        # complete. Trigger the multimodal rescue only in this case.
         return count < 5 or words < 18 or confidence < 0.48 or not str(result.get("ocr_text") or "").strip()
 
     async def _vision_page(image: Image.Image, doc_type: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -130,10 +125,6 @@ def install() -> None:
         if not pages:
             return result
 
-        # A page with no OCR is always rescued. When OCR exists, inspect every
-        # page for low-coverage packets, because land identifiers often occur on
-        # a later page. The default is deliberately comprehensive and can be
-        # lowered with OCR_VISION_MAX_PAGES for constrained deployments.
         vision_fields: Dict[str, Any] = {}
         statuses: List[Dict[str, Any]] = []
         for image in pages:
@@ -145,12 +136,24 @@ def install() -> None:
         merged = _merge_fields(result.get("fields") or {}, vision_fields)
         result["fields"] = merged
         result["original_fields"] = merged
-        # Re-run the canonical validation against the merged evidence.
+
+        # Keep the application's existing validation object authoritative. The
+        # legacy validator used by process_upload returns the verdict/status
+        # shape expected by the database layer. A newer helper may return only
+        # field-level validation details, so never replace a valid verdict with
+        # an incompatible object.
         try:
             import ocr_intelligence
-            result["validation"] = ocr_intelligence.validate_fields(merged)
+            candidate_validation = ocr_intelligence.validate_fields(merged)
+            if isinstance(candidate_validation, dict) and candidate_validation.get("verdict"):
+                result["validation"] = candidate_validation
+            else:
+                existing = result.get("validation")
+                if not isinstance(existing, dict):
+                    result["validation"] = {"verdict": "REVIEW", "issues": [], "warnings": []}
         except Exception:
-            pass
+            if not isinstance(result.get("validation"), dict):
+                result["validation"] = {"verdict": "REVIEW", "issues": [], "warnings": []}
 
         found_conf = [float(v.get("confidence", 0) or 0) for v in merged.values() if isinstance(v, dict) and str(v.get("value") or "").strip()]
         if found_conf:
