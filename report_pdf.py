@@ -199,16 +199,18 @@ def render_verification_report_pdf(report: Dict[str, Any], qr_png: Optional[byte
         active_case_count = int(report.get("active_court_case_count") or 0)
     except (TypeError, ValueError):
         active_case_count = 0
+    manual_case = str(report.get("manual_case_number") or "").strip()
     if active_case_count:
         banner = f"ACTIVE LITIGATION - {active_case_count} active case(s) recorded"
     elif litigation_status != "NONE":
         banner = f"{litigation_status} - no active case"
+    elif manual_case:
+        banner = "MANUAL CASE REFERENCE PROVIDED - verification status shown below"
     else:
         banner = "NO COURT CASES REGISTERED (not a court-certified litigation search)"
     pdf.text(left + 6, 9, banner, bold=True, gray=0.25 if active_case_count else 0.4)
     pdf.y -= 13
     cases: List[Dict[str, Any]] = list(report.get("court_cases") or [])
-    manual_case = str(report.get("manual_case_number") or "").strip()
     if not cases and not manual_case:
         pdf.text(left + 6, 8.5, "- No registered or manually entered case reference for this parcel.", gray=0.4)
         pdf.y -= 12
