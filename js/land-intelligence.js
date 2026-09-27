@@ -10,7 +10,14 @@
     try {
       const q=encodeURIComponent($('q').value.trim()), village=encodeURIComponent($('village').value.trim()), district=encodeURIComponent($('district').value.trim());
       const [records, mutations, enc, cases] = await Promise.all([
-        api(`/api/land-records?q=${q}&village=${village}&district=${district}&limit=100`), api(`/api/mutations?q=${q}&limit=100`), api(`/api/encumbrances?q=${q}&limit=100`), api(`/api/court-cases?q=${q}&status=`)
+        api(`/api/land-records?q=${q}&village=${village}&district=${district}&limit=100`),
+        api(`/api/mutations?q=${q}&limit=100`),
+        api(`/api/encumbrances?q=${q}&limit=100`),
+        // The litigation register is independent of the parcel search box.
+        // Loading it with q caused registered cases to disappear whenever the
+        // user searched for a different land record. The unified Litigation
+        // section must always restore the complete registered case register.
+        api('/api/court-cases?status=')
       ]);
       state.records=records.land_records||[]; state.mutations=mutations.mutations||[]; state.encumbrances=enc.encumbrances||[]; state.cases=cases.court_cases||[]; renderMetrics(); renderActive();
     } catch(e){ showMessage(e.message); }
