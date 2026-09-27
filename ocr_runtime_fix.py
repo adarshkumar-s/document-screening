@@ -1,16 +1,17 @@
-"""Runtime OCR reliability patch.
+"""High-recall runtime OCR engine.
 
-Keeps the canonical OCR pipeline but hardens the actual Tesseract invocation:
-- resolves Tesseract on every process start instead of trusting PATH alone;
-- discovers installed language packs and falls back to English;
-- tries several page-segmentation/image variants when the first pass is blank;
-- preserves line boundaries and word confidence;
-- returns an explicit engine error instead of a silent empty success.
+The previous runtime patch tried a giant multilingual Tesseract language pack
+in one pass. That is slow and, for many Indian scans, materially worse than
+staged language selection. This implementation deliberately spends more CPU
+when the document is ambiguous: probe likely scripts cheaply, then run the
+best candidates at full resolution with several page-segmentation and image
+variants. A result is returned only after the attempts are scored.
 """
 from __future__ import annotations
 
+from typing import Any, Dict, Iterable
 import os
-from typing import Any, Dict
+import re
 
 
 def install() -> None:
@@ -22,19 +23,15 @@ def install() -> None:
         return
 
     server = pipeline.get_server()
-
-    # Re-resolve the executable at runtime. This matters on hosts where the
-    # Python package is installed but the binary is injected by the image/host.
     try:
         cmd = server.locate_tesseract()
         if cmd:
             pytesseract.pytesseract.tesseract_cmd = cmd
-            # Reset the server's cached availability after assigning the path.
             server._TESSERACT_OK = None
     except Exception:
         pass
 
-    def _installed_languages() -> set[str]:
+    def installed() -> set[str]:
         try:
             if not server.tesseract_available():
                 return set()
@@ -42,20 +39,19 @@ def install() -> None:
         except Exception:
             return set()
 
-    def _candidates(requested: str) -> list[str]:
+    def requested_candidates(requested: str) -> list[str]:
+        have = installed()
         requested = (requested or "auto").strip().lower()
-        supported = {str(x.get("code")) for x in getattr(server, "SUPPORTED_LANGUAGES", [])}
-        installed = _installed_languages()
-        if requested != "auto" and requested in supported:
-            return [requested] if not installed or requested in installed else ["eng"]
-        if installed:
-            combo = [c for c in ("hin", "eng", "tel", "tam", "ben", "mar", "guj", "pan", "kan", "ori", "urd") if c in installed]
-            if "eng" not in combo and "eng" in installed:
-                combo.insert(0, "eng")
-            return ["+".join(combo)] if combo else (["eng"] if "eng" in installed else [])
-        return ["eng"]
+        if requested != "auto":
+            if requested in have:
+                return [requested] + (["eng"] if requested != "eng" and "eng" in have else [])
+            return ["eng"] if "eng" in have else []
+        # This is intentionally small for the probe. The full pass can add
+        # candidates once a script is detected from the probe output.
+        preferred = ["eng", "hin", "ben", "tel", "tam", "mar", "guj", "pan", "kan", "ori", "urd"]
+        return [x for x in preferred if x in have]
 
-    def _build(data: Dict[str, Any]):
+    def build(data: Dict[str, Any]):
         texts = data.get("text", []) if data else []
         confs = data.get("conf", []) if data else []
         blocks = data.get("block_num") or [0] * len(texts)
@@ -83,92 +79,144 @@ def install() -> None:
                 grouped[key] = []
                 order.append(key)
             grouped[key].append(word)
-        text = "\n".join(" ".join(grouped[k]) for k in order)
-        return text, words, (sum(scores) / len(scores) if scores else 0.0)
+        return "\n".join(" ".join(grouped[k]) for k in order), words, (sum(scores) / len(scores) if scores else 0.0)
 
-    def _recognize(image, language: str, psm: int):
+    def recognize(image, language: str, psm: int, timeout: int = 45):
         try:
             return pytesseract.image_to_data(
                 image,
                 lang=language,
                 config=f"--oem 3 --psm {psm} -c preserve_interword_spaces=1",
                 output_type=pytesseract.Output.DICT,
-                timeout=25,
+                timeout=timeout,
             ), None
         except Exception as exc:
             return None, f"{type(exc).__name__}: {exc}"
 
+    def normalise_script(text: str) -> str:
+        # Prefer the application's script detector, but never let detection
+        # failure prevent OCR from completing.
+        try:
+            return server.detect_primary_script(text) or "eng"
+        except Exception:
+            return "eng"
+
+    def score(text: str, words: list[str], confidence: float, language: str, requested: str) -> float:
+        if not words:
+            return 0.0
+        # Confidence matters, but raw word count alone should not win because
+        # a wrong language can hallucinate many tiny tokens.
+        useful = sum(1 for w in words if len(re.sub(r"\W", "", w, flags=re.UNICODE)) >= 2)
+        script = normalise_script(text)
+        script_bonus = 0.12 if requested == "auto" and script == language else 0.0
+        if language == "eng" and script == "eng":
+            script_bonus += 0.05
+        return confidence * 0.62 + min(useful / 80.0, 1.0) * 0.38 + script_bonus
+
+    def variants(src):
+        normal = ImageOps.autocontrast(src, cutoff=0.5)
+        normal = ImageEnhance.Contrast(normal).enhance(1.18)
+        normal = ImageEnhance.Sharpness(normal).enhance(1.4)
+        # Keep variants cheap. The source project uses the same principle:
+        # preprocessing is a ladder, not one destructive transformation.
+        threshold = normal.point(lambda p: 255 if p > 175 else 0)
+        denoised = normal.filter(ImageFilter.MedianFilter(size=3))
+        return [(normal, "enhanced"), (denoised, "denoised"), (threshold, "threshold")]
+
     def robust_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
-        candidates = _candidates(requested_lang)
+        have = installed()
         if not server.tesseract_available():
             return {
                 "text": "", "confidence": 0.0, "word_count": 0,
                 "detected_language": "eng", "method": "tesseract_unavailable",
                 "engine_error": "Tesseract executable is unavailable. Set TESSERACT_CMD or deploy the repository Dockerfile.",
             }
+        candidates = requested_candidates(requested_lang)
         if not candidates:
-            return {"text": "", "confidence": 0.0, "word_count": 0,
-                    "detected_language": "eng", "method": "tesseract_no_languages",
-                    "engine_error": "Tesseract is installed but no usable language packs were found."}
+            return {
+                "text": "", "confidence": 0.0, "word_count": 0,
+                "detected_language": "eng", "method": "tesseract_no_languages",
+                "engine_error": "Tesseract is installed but no usable language packs were found.",
+            }
 
         src = ImageOps.exif_transpose(image).convert("L")
-        if max(src.size) > 3200:
-            scale = 3200.0 / max(src.size)
+        longest = max(src.size)
+        if longest > 5000:
+            scale = 5000.0 / longest
             src = src.resize((max(1, int(src.width * scale)), max(1, int(src.height * scale))))
-        elif max(src.size) < 1400:
-            scale = 1400.0 / max(src.size)
+        elif longest < 1600:
+            scale = 1600.0 / max(1, longest)
             src = src.resize((max(1, int(src.width * scale)), max(1, int(src.height * scale))))
 
-        normal = ImageOps.autocontrast(src, cutoff=0.5)
-        normal = ImageEnhance.Contrast(normal).enhance(1.15)
-        normal = ImageEnhance.Sharpness(normal).enhance(1.35)
-        variants = [
-            (normal, "enhanced"),
-            (normal.filter(ImageFilter.MedianFilter(size=3)), "denoised"),
-            (normal.point(lambda p: 255 if p > 180 else 0), "threshold"),
-        ]
-        attempts = []
-        errors = []
-        # Try the selected language first, then English if it is installed.
-        langs = list(candidates)
-        if "eng" in _installed_languages() and "eng" not in langs:
-            langs.append("eng")
+        requested = (requested_lang or "auto").strip().lower()
+        errors: list[str] = []
+        probe_scores = []
+        base_probe = ImageOps.autocontrast(src, cutoff=0.5)
 
-        for variant, variant_name in variants:
-            for language in langs:
-                for psm in (6, 11, 3):
-                    data, error = _recognize(variant, language, psm)
-                    if error:
-                        errors.append(error)
+        # Explicit language: do not waste time guessing. Auto language uses a
+        # small one-pass-per-language probe; this is slower than a huge combined
+        # Tesseract language call but considerably more reliable on mixed scripts.
+        if requested == "auto":
+            probe_image = base_probe
+            if max(probe_image.size) > 1200:
+                s = 1200.0 / max(probe_image.size)
+                probe_image = probe_image.resize((max(1, int(probe_image.width * s)), max(1, int(probe_image.height * s))))
+            for lang in candidates:
+                data, err = recognize(probe_image, lang, 6, timeout=18)
+                if err:
+                    errors.append(f"{lang}: {err}")
+                    continue
+                text, words, conf = build(data)
+                probe_scores.append((score(text, words, conf, lang, requested), lang, text, len(words), conf))
+            probe_scores.sort(reverse=True)
+            # Always keep English as a fallback, then the two strongest script
+            # candidates. This avoids the old 10-language mega-pass.
+            selected = []
+            if "eng" in have:
+                selected.append("eng")
+            for _, lang, _, _, _ in probe_scores:
+                if lang not in selected:
+                    selected.append(lang)
+                if len(selected) >= 3:
+                    break
+            candidates = selected or candidates[:3]
+
+        best = None
+        for variant, variant_name in variants(src):
+            for language in candidates:
+                # For auto, run a few layout modes. For an explicit language,
+                # psm 6 + 11 is usually enough; psm 3 is the final sparse-page
+                # fallback.
+                psms = (6, 11, 3)
+                for psm in psms:
+                    data, err = recognize(variant, language, psm)
+                    if err:
+                        errors.append(f"{language}/psm{psm}: {err}")
                         continue
-                    text, words, confidence = _build(data)
-                    attempts.append((len(words), confidence, text, language, psm, variant_name))
-                    if len(words) >= 4 and confidence >= 0.30:
-                        best = attempts[-1]
-                        return {
-                            "text": best[2], "confidence": round(best[1], 3),
-                            "word_count": best[0], "detected_language": server.detect_primary_script(best[2]) or "eng",
-                            "tesseract_language": best[3], "method": f"tesseract_{best[5]}_psm{best[4]}",
-                            "strategy": {"lang": best[3], "psm": best[4], "variant": best[5]},
-                        }
+                    text, words, conf = build(data)
+                    if not words:
+                        continue
+                    quality = score(text, words, conf, language, requested)
+                    candidate = (quality, len(words), conf, text, language, psm, variant_name)
+                    if best is None or candidate[:3] > best[:3]:
+                        best = candidate
 
-        if attempts:
-            best = max(attempts, key=lambda item: (item[0], item[1]))
-            if best[0] > 0:
-                return {
-                    "text": best[2], "confidence": round(best[1], 3), "word_count": best[0],
-                    "detected_language": server.detect_primary_script(best[2]) or "eng",
-                    "tesseract_language": best[3], "method": f"tesseract_{best[5]}_psm{best[4]}",
-                    "strategy": {"lang": best[3], "psm": best[4], "variant": best[5]},
-                }
+        if best is None:
+            return {
+                "text": "", "confidence": 0.0, "word_count": 0,
+                "detected_language": "eng", "method": "tesseract_blank",
+                "engine_error": errors[-1] if errors else "Tesseract returned no recognized words",
+                "strategy": {"languages": candidates, "variants": ["enhanced", "denoised", "threshold"], "psms": [6, 11, 3]},
+            }
+        _, count, conf, text, language, psm, variant_name = best
         return {
-            "text": "", "confidence": 0.0, "word_count": 0, "detected_language": "eng",
-            "method": "tesseract_blank", "engine_error": errors[-1] if errors else "Tesseract returned no recognized words",
-            "strategy": {"languages": langs, "variants": [v[1] for v in variants], "psms": [6, 11, 3]},
+            "text": text, "confidence": round(conf, 3), "word_count": count,
+            "detected_language": normalise_script(text),
+            "tesseract_language": language,
+            "method": f"tesseract_{variant_name}_psm{psm}",
+            "strategy": {"lang": language, "psm": psm, "variant": variant_name, "probe": probe_scores[:5]},
         }
 
     pipeline.run_fast_ocr = robust_ocr
     pipeline._OCR_RUNTIME_RELIABILITY_INSTALLED = True
-
-    print("[OCR] runtime reliability patch installed; Tesseract:",
-          getattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract"))
+    print("[OCR] high-recall staged runtime installed; Tesseract:", getattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract"))
