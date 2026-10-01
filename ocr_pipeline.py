@@ -539,6 +539,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     intermediate_image = None
     engine_error: Optional[str] = None
     pages_ocrd = 1
+    ocr_quality: Dict[str, Any] = {"score": 0.0, "issues": []}
+    ocr_orientation: Dict[str, Any] = {"rotation": 0, "confidence": 0.0, "script": None}
 
     if ext == ".pdf":
         if not srv.HAS_PDFIUM:
@@ -581,6 +583,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
                     page_errors.append(str(page_result["engine_error"]))
                 if page_result.get("detected_language") and page_text:
                     detected_lang = page_result["detected_language"]
+                if page_result.get("method") or page_result.get("engine"):
+                    ocr_method = page_result.get("method") or page_result.get("engine") or ocr_method
             ocr_text = "\n\n".join(page_texts)
             confidence = sum(page_confidences) / len(page_confidences) if page_confidences else 0.0
             word_count = page_words
@@ -603,6 +607,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
         engine_error = ocr_res.get("engine_error")
         ocr_quality = ocr_res.get("quality") or ocr_quality
         ocr_orientation = ocr_res.get("orientation") or ocr_orientation
+        ocr_method = ocr_res.get("method") or ocr_res.get("engine") or ocr_method
+        ocr_orientation = ocr_res.get("orientation") or ocr_orientation
 
     # Deterministic field extraction. Reuse the canonical, tested extractor
     # (server.extract_fields_from_ocr) so the fast pipeline produces EXACTLY the
@@ -618,8 +624,6 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     if ocr_quality.get("score", 1.0) < 0.45:
         validation.setdefault("issues", []).append({"severity":"warning","field":"ocr_quality","msg":"Document image quality is poor; re-scan or verify extracted fields manually."})
         if validation.get("verdict") != "rejected": validation["verdict"]="review"
-    ocr_quality = {"score": 0.0, "issues": []}
-    ocr_orientation = {"rotation": 0, "confidence": 0.0, "script": None}
     low_confidence_fields = []
     for field_name, field_value in enriched_fields.items():
         if not isinstance(field_value, dict) or not str(field_value.get("value") or "").strip():
