@@ -223,6 +223,13 @@ class CourtCaseClose(BaseModel):
     notes: str = ""
 
 
+def _case_visible_to_user(case: Dict[str, Any], user: Dict[str, Any]) -> bool:
+    role = user.get("role")
+    if role in {ROLE_VERIFICATION_OFFICER, ROLE_ADMIN}:
+        return True
+    return role == ROLE_DATA_OFFICER and _s(case.get("created_by")) == _s(user.get("email"))
+
+
 def _validate_evidence(ids: List[str], user: Dict[str, Any]) -> None:
     if not ids:
         return
@@ -318,6 +325,8 @@ def get_court_case(case_id: str, user: Dict[str, Any] = Depends(require_roles(*S
         if not row:
             raise HTTPException(404, "Court case not found")
         case = _dict(row)
+        if not _case_visible_to_user(case, user):
+            raise HTTPException(403, "You do not have access to this court case.")
         case["orders"] = _case_orders(db, case["id"])
     return {"court_case": case}
 
