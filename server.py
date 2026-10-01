@@ -769,10 +769,51 @@ def run_targeted_ocr(image: Image.Image, lang_code: str = "auto", strategy: Opti
     return result["text"], result["detected_language"]
 
 
+
+def _ocr_image_quality(image: Image.Image) -> Dict[str, Any]:
+    """Cheap deterministic scan-quality diagnostics before OCR."""
+    gray = ImageOps.exif_transpose(image).convert("L")
+    w, h = gray.size
+    import statistics
+    sample = gray.resize((min(800, w), max(1, int(h * min(800, w) / max(1, w)))))
+    hist = sample.histogram()
+    total = max(1, sum(hist))
+    mean = sum(i * hist[i] for i in range(256)) / total
+    variance = sum(((i - mean) ** 2) * hist[i] for i in range(256)) / total
+    contrast = min(1.0, (variance ** 0.5) / 64.0)
+    dark = sum(hist[:35]) / total
+    bright = sum(hist[225:]) / total
+    clipped = min(1.0, dark + bright)
+    resolution = min(1.0, max(0.0, min(w, h) / 1400.0))
+    quality = max(0.0, min(1.0, 0.45 * contrast + 0.35 * resolution + 0.20 * (1.0 - max(0.0, clipped - 0.55))))
+    issues=[]
+    if min(w,h) < 900: issues.append("LOW_RESOLUTION")
+    if contrast < 0.35: issues.append("LOW_CONTRAST")
+    if clipped > 0.65: issues.append("EXTREME_LIGHT_DARK_CLIPPING")
+    return {"score": round(quality,3), "width":w, "height":h, "contrast":round(contrast,3), "clipping":round(clipped,3), "issues":issues}
+
+def _ocr_orientation(image: Image.Image) -> Dict[str, Any]:
+    """Use Tesseract OSD when available; failure is non-fatal."""
+    if not HAS_TESSERACT or pytesseract is None:
+        return {"rotation":0, "confidence":0.0, "script":None}
+    try:
+        osd = pytesseract.image_to_osd(ImageOps.exif_transpose(image).convert("L"), config="--psm 0")
+        orient = re.search(r"Orientation in degrees:\s*(\d+)", osd)
+        conf = re.search(r"Orientation confidence:\s*([\d.]+)", osd)
+        script = re.search(r"Script:\s*(.+)", osd)
+        return {"rotation":int(orient.group(1)) if orient else 0,
+                "confidence":float(conf.group(1))/10.0 if conf else 0.0,
+                "script":script.group(1).strip() if script else None}
+    except Exception:
+        return {"rotation":0, "confidence":0.0, "script":None}
+
 def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, Any]:
     """Run Tesseract with AI-selected settings and return genuine word confidence."""
+    quality = _ocr_image_quality(image)
+    orientation = strategy.get("orientation") or _ocr_orientation(image)
+    rotation = int(orientation.get("rotation", 0) or 0) if float(orientation.get("confidence", 0) or 0) >= 0.55 else int(strategy.get("rotation", 0) or 0)
     img = ImageOps.exif_transpose(image).convert("L")
-    img = _rotate_image(img, strategy.get("rotation", 0))
+    img = _rotate_image(img, rotation)
 
     if img.width < 1200:
         scale = 1500.0 / float(max(1, img.width))
@@ -875,6 +916,8 @@ def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, An
     detected = detect_primary_script(text)
     return {
         "text": text,
+        "quality": quality,
+        "orientation": {**orientation, "applied_rotation": rotation},
         "confidence": round(avg_conf, 3),
         "tokens": tokens,
         "detected_language": detected,
