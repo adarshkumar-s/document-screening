@@ -1320,7 +1320,7 @@ def map_set_document_location(
         previous = (row["lat"], row["lon"])
         if raw_lat is None:
             db.execute(
-                "UPDATE documents SET lat=NULL, lon=NULL, updated_at=? WHERE id=?",
+                "UPDATE documents SET lat=NULL, lon=NULL, location_accuracy_m=NULL, location_source=NULL, location_verified_by=NULL, location_verified_at=NULL, updated_at=? WHERE id=?",
                 (changed_at, doc_id),
             )
             detail = "Document GIS pin cleared; previous coordinates were (%s, %s)." % previous
