@@ -231,6 +231,19 @@ def cache_lookup(chash: str, user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         metadata = json.loads(row["metadata_json"] or "{}")
     except Exception:
         metadata = {}
+    # Never reuse an empty/sparse OCR result. Earlier deployments could cache
+    # a failed Tesseract pass; returning it here bypasses every newer OCR
+    # recovery layer and makes the UI look permanently blank on re-upload.
+    cached_text = str(row["ocr_text"] or row["cleaned_text"] or "").strip()
+    cached_words = int(row["word_count"] or 0)
+    cached_conf = float(row["confidence"] or 0)
+    cached_fields = sum(
+        1 for value in fields.values()
+        if isinstance(value, dict) and str(value.get("value") or "").strip()
+    )
+    if cached_words < 3 or not cached_text or (cached_fields == 0 and cached_conf < 0.20):
+        return None
+
     if metadata.get("ocr_engine_error") and get_server().tesseract_available():
         # Cached while the OCR engine was broken and the engine works NOW:
         # treat as a miss so the document is re-processed for real.
