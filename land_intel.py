@@ -1588,6 +1588,38 @@ def risk_review(
 
 
 @land_router.get("/{land_id}")
+
+def _investigation_pipeline_status(land, documents, state, risk, timeline):
+    stages = [
+        ("INGEST", bool(documents), "Source documents linked"),
+        ("UNDERSTAND", bool(documents) and any(d.get("confidence") is not None for d in documents), "OCR/extraction evidence available"),
+        ("NORMALIZE", bool(land.get("survey") or land.get("khasra") or land.get("village")), "Parcel identifiers normalized"),
+        ("IDENTIFY_PARCEL", bool(land.get("land_id")), "Controlled parcel resolved"),
+        ("BUILD_TITLE_CHAIN", bool(land.get("current_owner") or state["mutations"]), "Ownership evidence assembled"),
+        ("CROSS_VALIDATE", bool(state["mutations"] or state["encumbrances"] or state["court_cases"]), "Registers cross-checked"),
+        ("SPATIAL_VERIFY", bool(land.get("reference_record_id")), "Map evidence linked"),
+        ("DETECT_RISK", True, "Deterministic risk engine evaluated"),
+        ("EXPLAIN_WITH_EVIDENCE", bool(risk.get("why")), "Risk explanation generated"),
+        ("HUMAN_REVIEW", str(risk.get("verdict") or "CLEAR").upper() == "CLEAR", "Review gate is " + ("not raised" if str(risk.get("verdict") or "CLEAR").upper() == "CLEAR" else "required")),
+        ("DECISION_REPORT", False, "Final reviewer decision/report remains an explicit action"),
+        ("AUDIT_TRAIL", True, "Audit-capable workflow"),
+    ]
+    return [{"key":k,"status":"COMPLETE" if done else ("ACTIVE" if i==next((j for j,x in enumerate(stages) if not x[1]),len(stages)-1) else "WAITING"),"evidence":note} for i,(k,done,note) in enumerate(stages)]
+
+def _evidence_chain(land, documents, state, risk, timeline):
+    chain=[]
+    for d in documents:
+        chain.append({"source_type":"DOCUMENT","source_id":d.get("id"),"finding_type":"SOURCE","finding":"Screened document linked to parcel"})
+    for m in state["mutations"]:
+        chain.append({"source_type":"MUTATION","source_id":m.get("id"),"finding_type":"REGISTER","finding":m.get("status") or "Mutation record"})
+    for e in state["encumbrances"]:
+        chain.append({"source_type":"ENCUMBRANCE","source_id":e.get("id"),"finding_type":"REGISTER","finding":e.get("status") or "Encumbrance record"})
+    for case in state["court_cases"]:
+        chain.append({"source_type":"COURT_CASE","source_id":case.get("id"),"finding_type":"REGISTER","finding":case.get("status") or "Court case record"})
+    for flag in risk.get("flags") or []:
+        chain.append({"source_type":"DERIVED","source_id":flag.get("code"),"finding_type":"RISK_SIGNAL","finding":flag.get("title"),"evidence":flag.get("evidence") or []})
+    return chain
+
 def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     land = _get_land(user, land_id)
     if not land:
@@ -1610,8 +1642,12 @@ def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_
         "disclaimer": "Litigation status reflects only cases registered in this system; it is not a "
                       "court-certified encumbrance/title search.",
     }
+    pipeline_status = _investigation_pipeline_status(land, documents, state, risk, build_timeline(land, state["encumbrances"], state["mutations"], state["court_cases"], risk=risk))
+    evidence_chain = _evidence_chain(land, documents, state, risk, [])
+    completeness = sum(1 for stage in pipeline_status if stage["status"] == "COMPLETE")
     detail = {
         "land_id": land["land_id"],
+        "investigation": {"pipeline": pipeline_status, "evidence_chain": evidence_chain, "completeness": {"complete": completeness, "total": len(pipeline_status), "percent": round(completeness / len(pipeline_status) * 100)}, "decision_gate": "HUMAN_REVIEW_REQUIRED" if str(risk.get("verdict") or "CLEAR").upper() != "CLEAR" else "NO_DETERMINISTIC_GATE"},
         "property": {
             "survey": land.get("survey"),
             "khasra": land.get("khasra"),
