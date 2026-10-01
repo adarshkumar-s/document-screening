@@ -1472,6 +1472,7 @@ def _refresh_review_findings(user: Dict[str, Any]) -> List[Dict[str, Any]]:
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (fid, property_id, None, "OPEN", finding["finding_type"], finding["severity"], finding["title"],
                  _json(finding), user.get("email") or user.get("full_name") or "system", now, now))
+            finding["finding_id"] = fid
     return findings
 
 
