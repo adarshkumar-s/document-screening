@@ -1795,9 +1795,6 @@ def map_set_document_location(
     return result
 
 
-@map_router.put("/records/{doc_id}/boundary")
-
-
 def _ring_geometry_checks(points):
     if len(points) < 4 or points[0] != points[-1]:
         return False, "Boundary ring must be closed."
@@ -1818,6 +1815,7 @@ def _ring_geometry_checks(points):
                 return False, "Boundary edges cross; draw a simple polygon."
     return True, ""
 
+@map_router.put("/records/{doc_id}/boundary")
 def map_set_document_boundary(
     doc_id: str,
     payload: Dict[str, Any],
@@ -1865,6 +1863,116 @@ def map_set_document_boundary(
     log_audit(actor, "boundary_set", detail, doc_id)
     return {"ok": True, "geometry": geometry, "geometry_source": "Officer-digitized boundary", "updated_at": changed_at}
 
+
+
+def _boundary_area_m2(points: Sequence[Sequence[float]]) -> float:
+    if len(points) < 4:
+        return 0.0
+    lat0 = sum(float(p[1]) for p in points[:-1]) / max(1, len(points) - 1)
+    mlat = 111320.0
+    mlon = 111320.0 * max(0.05, abs(__import__("math").cos(__import__("math").radians(lat0))))
+    area2 = 0.0
+    for i in range(len(points) - 1):
+        x1, y1 = float(points[i][0]) * mlon, float(points[i][1]) * mlat
+        x2, y2 = float(points[i + 1][0]) * mlon, float(points[i + 1][1]) * mlat
+        area2 += x1 * y2 - x2 * y1
+    return abs(area2) / 2.0
+
+def _area_m2_from_record(row: Any) -> Optional[float]:
+    fields = _parse_json(row["fields"] if "fields" in row.keys() else None, {}) or {}
+    raw = _field_value(fields, "area")
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(sq\.?\s*ft|sqft|ft2|acre|acres|hectare|hectares|ha|m2|sq\.?\s*m|sqm)?", raw.casefold())
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = (match.group(2) or "").replace(" ", "").replace(".", "")
+    if unit in {"acre","acres"}: return value * 4046.8564224
+    if unit in {"hectare","hectares","ha"}: return value * 10000.0
+    if unit in {"sqft","ft2","sqft"}: return value * 0.09290304
+    return value
+
+@map_router.post("/records/{doc_id}/boundary/estimate")
+def map_estimate_document_boundary(
+    doc_id: str,
+    user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
+):
+    """Create a clearly labelled screening estimate from recorded area + location."""
+    import math
+    with get_db() as db:
+        row = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    area_m2 = _area_m2_from_record(row)
+    if not area_m2 or area_m2 <= 0:
+        raise HTTPException(status_code=400, detail="A numeric recorded area is required to estimate a boundary.")
+    lat = row["lat"] if "lat" in row.keys() else None
+    lon = row["lon"] if "lon" in row.keys() else None
+    if lat is None or lon is None:
+        raise HTTPException(status_code=400, detail="Set an exact map location before estimating a boundary.")
+    side = math.sqrt(area_m2)
+    dlat = side / 111320.0 / 2.0
+    dlon = side / (111320.0 * max(0.05, abs(math.cos(math.radians(float(lat))))) * 2.0)
+    ring = [[float(lon)-dlon, float(lat)-dlat], [float(lon)+dlon, float(lat)-dlat],
+            [float(lon)+dlon, float(lat)+dlat], [float(lon)-dlon, float(lat)+dlat],
+            [float(lon)-dlon, float(lat)-dlat]]
+    geometry = {"type":"Polygon","coordinates":[ring]}
+    now = _now()
+    actor = user.get("full_name", user.get("email", "user"))
+    with get_db() as db:
+        db.execute("UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='ESTIMATED_BOUNDARY', map_geometry_updated_at=?, updated_at=? WHERE id=?",
+                   (_json(geometry), "Area-based estimate (screening only)", now, now, doc_id))
+    log_audit(actor, "boundary_estimated", f"Area-based screening boundary estimated from {area_m2:.2f} m².", doc_id)
+    return {"ok":True,"geometry":geometry,"geometry_source":"Area-based estimate (screening only)","source":"estimated","area_m2":round(area_m2,2),"updated_at":now}
+
+@map_router.post("/records/{doc_id}/boundary/import")
+def map_import_document_boundary(
+    doc_id: str,
+    payload: Dict[str, Any],
+    user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
+):
+    geo = payload.get("geojson")
+    if not isinstance(geo, dict):
+        raise HTTPException(status_code=400, detail="GeoJSON object is required.")
+    geom = geo.get("geometry") if geo.get("type") == "Feature" else geo
+    if not isinstance(geom, dict) or geom.get("type") != "Polygon":
+        raise HTTPException(status_code=400, detail="Only GeoJSON Polygon geometry is supported.")
+    coords = geom.get("coordinates")
+    if not isinstance(coords, list) or not coords or not isinstance(coords[0], list):
+        raise HTTPException(status_code=400, detail="Polygon coordinates are required.")
+    ring = []
+    for point in coords[0]:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            raise HTTPException(status_code=400, detail="Invalid GeoJSON coordinate.")
+        lon, lat = float(point[0]), float(point[1])
+        ring.append([round(lon,7), round(lat,7)])
+    if len(ring) < 4:
+        raise HTTPException(status_code=400, detail="Polygon needs at least three corners.")
+    if ring[0] != ring[-1]: ring.append(ring[0])
+    valid, error = _ring_geometry_checks(ring)
+    if not valid: raise HTTPException(status_code=400, detail=error)
+    geometry={"type":"Polygon","coordinates":[ring]}
+    now=_now(); actor=user.get("full_name",user.get("email","user"))
+    with get_db() as db:
+        if not db.execute("SELECT id FROM documents WHERE id=?", (doc_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Record not found.")
+        db.execute("UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='IMPORTED_BOUNDARY', map_geometry_updated_at=?, updated_at=? WHERE id=?",
+                   (_json(geometry), "Imported survey GeoJSON", now, now, doc_id))
+    log_audit(actor,"boundary_imported",f"Imported survey polygon with {len(ring)-1} corners.",doc_id)
+    return {"ok":True,"geometry":geometry,"geometry_source":"Imported survey GeoJSON","source":"imported","updated_at":now}
+
+@map_router.post("/records/{doc_id}/boundary/clear")
+def map_clear_document_boundary(
+    doc_id: str,
+    user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
+):
+    now=_now(); actor=user.get("full_name",user.get("email","user"))
+    with get_db() as db:
+        if not db.execute("SELECT id FROM documents WHERE id=?", (doc_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Record not found.")
+        db.execute("UPDATE documents SET map_geometry=NULL, map_geometry_source=NULL, map_geometry_status=NULL, map_geometry_updated_at=NULL, updated_at=? WHERE id=?",
+                   (now, doc_id))
+    log_audit(actor,"boundary_cleared","Mapping boundary cleared.",doc_id)
+    return {"ok":True}
 
 def _public_geocode_result(value: Dict[str, Any]) -> Dict[str, Any]:
     return {key: item for key, item in value.items() if not key.startswith("_")}
