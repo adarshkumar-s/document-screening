@@ -1057,6 +1057,35 @@ _MAP_RECORD_COLUMNS = (
 )
 
 
+
+def _map_reference_property_fallback(records: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Attach a reference parcel only when survey + village identify one property."""
+    if not records:
+        return {}
+    keys=[]
+    for record in records:
+        survey=_land_number(record.get("survey"))
+        village=_normalise(record.get("village"))
+        if survey and village:
+            keys.append((survey.casefold(), village))
+    if not keys:
+        return {}
+    result={}
+    with get_db() as db:
+        rows=db.execute("SELECT * FROM properties WHERE survey_number IS NOT NULL AND village IS NOT NULL").fetchall()
+    grouped={}
+    wanted=set(keys)
+    for row in rows:
+        key=(_land_number(row["survey_number"]).casefold(), _normalise(row["village"]))
+        if key in wanted:
+            grouped.setdefault(key, []).append(row)
+    for record in records:
+        key=(_land_number(record.get("survey")).casefold(), _normalise(record.get("village")))
+        matches=grouped.get(key, [])
+        if len(matches)==1:
+            result[str(record["id"])]=_property_dict(matches[0])
+    return result
+
 def _map_visible_records(user: Dict[str, Any], *, limit: int = 1000, offset: int = 0,
                         q: str = "", district: str = "", tehsil: str = "", village: str = "",
                         status: str = "", location: str = "", bbox: Optional[Tuple[float, float, float, float]] = None) -> List[Dict[str, Any]]:
@@ -1104,6 +1133,7 @@ def _map_visible_records(user: Dict[str, Any], *, limit: int = 1000, offset: int
     document_ids = [str(record["id"]) for record in records]
     audit_context = _map_location_audit_context(document_ids)
     property_context = _map_property_context(document_ids)
+    fallback_context = _map_reference_property_fallback(records)
     for record in records:
         audit_item = audit_context.get(str(record["id"]))
         has_coordinates = record.get("lat") is not None and record.get("lon") is not None
@@ -1119,7 +1149,7 @@ def _map_visible_records(user: Dict[str, Any], *, limit: int = 1000, offset: int
                     "verified_by": record["location_verified_by"],
                     "verified_at": record["location_verified_at"],
                 })
-        property_item = property_context.get(str(record["id"]))
+        property_item = property_context.get(str(record["id"])) or fallback_context.get(str(record["id"]))
         if not property_item:
             record["reference_geometry"] = None
             record["reference_property"] = None
