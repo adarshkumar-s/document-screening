@@ -906,6 +906,9 @@ def _document_boundary(fields: Dict[str, Any], stored: Any = None) -> Tuple[Opti
         return None, ""
     if points[0] != points[-1]:
         points.append(points[0])
+    valid, _ = _ring_geometry_checks(points)
+    if not valid:
+        return None, ""
     return {"type": "Polygon", "coordinates": [points]}, "OCR-extracted printed coordinates"
 
 
@@ -1179,6 +1182,10 @@ def map_records(
     status: str = Query("", max_length=80),
     location: str = Query("", max_length=40),
     limit: int = Query(5000, ge=1, le=10000),
+    min_lat: Optional[float] = Query(None, ge=-90, le=90),
+    min_lon: Optional[float] = Query(None, ge=-180, le=180),
+    max_lat: Optional[float] = Query(None, ge=-90, le=90),
+    max_lon: Optional[float] = Query(None, ge=-180, le=180),
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Return Portfolio-style document map records with server-side filters.
@@ -1188,7 +1195,12 @@ def map_records(
     village level. The summary metadata lets a future client render a map
     dashboard without downloading a second dataset.
     """
-    all_records = _map_visible_records(user, limit=limit, q=q, district=district, tehsil=tehsil, village=village, status=status, location=location)
+    bbox = None
+    if None not in (min_lat, min_lon, max_lat, max_lon):
+        if min_lat > max_lat or min_lon > max_lon:
+            raise HTTPException(status_code=400, detail="Invalid map bounding box.")
+        bbox = (min_lat, min_lon, max_lat, max_lon)
+    all_records = _map_visible_records(user, limit=limit, q=q, district=district, tehsil=tehsil, village=village, status=status, location=location, bbox=bbox)
     filtered = [record for record in all_records if _map_record_matches(
         record, q=_normalise(q), district=district, tehsil=tehsil, village=village,
         status=status, location=location)]
@@ -1202,6 +1214,29 @@ def map_records(
             "filters": {"q": q, "district": district, "tehsil": tehsil, "village": village, "status": status, "location": location},
         },
     }
+
+
+@map_router.get("/conflicts")
+def map_conflicts(user: Dict[str, Any] = Depends(get_current_user)):
+    """Return conservative spatial screening signals, never legal conclusions."""
+    records = _map_visible_records(user, limit=5000)
+    conflicts = []
+    seen = {}
+    for record in records:
+        point = coordinatePair(record.get("lat"), record.get("lon")) if False else None
+    for record in records:
+        lat, lon = record.get("lat"), record.get("lon")
+        if lat is None or lon is None:
+            continue
+        key = (round(float(lat), 6), round(float(lon), 6))
+        if key in seen:
+            conflicts.append({"type": "DUPLICATE_EXACT_LOCATION", "severity": "WARNING",
+                              "record_ids": [seen[key], str(record["id"])],
+                              "reason": "Multiple records share the same persisted exact location; verify whether this is intentional."})
+        else:
+            seen[key] = str(record["id"])
+    return {"conflicts": conflicts, "count": len(conflicts),
+            "disclaimer": "Spatial conflicts are screening signals only and do not establish boundary, title, possession, or legal status."}
 
 
 @map_router.get("/summary")
