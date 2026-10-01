@@ -488,6 +488,17 @@ def _ensure_tables() -> None:
             )"""
         )
 
+        # Mapping lookup indexes keep parcel/reference queries off full-table scans.
+        for index_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_properties_village ON properties(village)",
+            "CREATE INDEX IF NOT EXISTS idx_properties_village_taluka ON properties(village, taluka)",
+            "CREATE INDEX IF NOT EXISTS idx_properties_village_taluka_district ON properties(village, taluka, district)",
+            "CREATE INDEX IF NOT EXISTS idx_properties_survey ON properties(survey_number)",
+            "CREATE INDEX IF NOT EXISTS idx_property_documents_document ON property_documents(document_id)",
+            "CREATE INDEX IF NOT EXISTS idx_property_documents_property ON property_documents(property_id)",
+        ):
+            db.execute(index_sql)
+
         now = _now()
         for seed in _SYNTHETIC_PROPERTIES:
             geometry = _json(seed["geometry"])
@@ -560,7 +571,23 @@ def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     with get_db() as db:
-        rows = db.execute("SELECT * FROM properties ORDER BY property_id").fetchall()
+        clauses: List[str] = []
+        params: List[Any] = []
+        for field_name in LAND_IDENTIFIER_FIELDS:
+            value = supplied.get(field_name)
+            if value:
+                key = _land_number(value).casefold()
+                sibling = _SIBLING_IDENTIFIER_COLUMNS.get(field_name, ())
+                cols = [field_name, *sibling]
+                clauses.append("(" + " OR ".join([f"LOWER(REPLACE(COALESCE({col}, ''), ' ', ''))=?" for col in cols]) + ")")
+                params.extend([key] * len(cols))
+        for field_name, column in (("village", "village"), ("taluka", "taluka"), ("district", "district")):
+            value = supplied.get(field_name)
+            if value:
+                clauses.append(f"LOWER(TRIM(COALESCE({column}, ''))) = ?")
+                params.append(_normalise(value))
+        where = " WHERE " + " OR ".join(clauses) if clauses else ""
+        rows = db.execute("SELECT * FROM properties" + where + " ORDER BY property_id LIMIT 2000", tuple(params)).fetchall()
 
     candidates: List[Dict[str, Any]] = []
     for row in rows:
@@ -619,13 +646,17 @@ def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     best = candidates[0]
+    ambiguous = len(candidates) > 1 and best["score"] < 0.99 and (best["score"] - candidates[1]["score"]) < 0.12
+    status = "AMBIGUOUS_MATCH" if ambiguous else best["status"]
+    confidence = min(best["confidence"], 0.60) if ambiguous else best["confidence"]
+    reasons = [*best["reasons"], "Multiple controlled parcels are similarly plausible; human parcel selection is required."] if ambiguous else best["reasons"]
     all_conflicts = list(best.get("conflicting_fields") or [])
     return {
-        "status": best["status"],
-        "confidence": best["confidence"],
+        "status": status,
+        "confidence": confidence,
         "matches": candidates[:10],
         "conflicting_fields": all_conflicts,
-        "reasons": best["reasons"],
+        "reasons": reasons,
     }
 
 
@@ -1014,11 +1045,47 @@ _MAP_RECORD_COLUMNS = (
 )
 
 
-def _map_visible_records(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _map_visible_records(user: Dict[str, Any], *, limit: int = 1000, offset: int = 0,
+                        q: str = "", district: str = "", tehsil: str = "", village: str = "",
+                        status: str = "", location: str = "", bbox: Optional[Tuple[float, float, float, float]] = None) -> List[Dict[str, Any]]:
     ensure_schema()
+    limit = max(1, min(int(limit), 5000))
+    offset = max(0, int(offset))
     with get_db() as db:
+        conditions: List[str] = []
+        params: List[Any] = []
+        role = user.get("role")
+        if role == ROLE_VIEWER:
+            conditions.append("UPPER(status) IN ('APPROVED','VERIFIED','AUTO_APPROVED')")
+        elif role == ROLE_DATA_OFFICER:
+            conditions.append("uploaded_by = ?")
+            params.append(user.get("email"))
+        if status:
+            conditions.append("UPPER(status) = UPPER(?)")
+            params.append(status)
+        if q:
+            like = f"%{q.casefold()}%"
+            conditions.append("(LOWER(filename) LIKE ? OR LOWER(doc_type) LIKE ? OR LOWER(id) LIKE ? OR LOWER(COALESCE(fields,'')) LIKE ?)")
+            params.extend([like, like, like, like])
+        for value in (village, tehsil, district):
+            if value:
+                like = f"%{value.casefold()}%"
+                conditions.append("LOWER(COALESCE(fields,'')) LIKE ?")
+                params.append(like)
+        if location == "EXACT_PIN":
+            conditions.append("lat IS NOT NULL AND lon IS NOT NULL")
+        elif location == "UNRESOLVED":
+            conditions.append("lat IS NULL AND lon IS NULL AND LOWER(COALESCE(fields,'')) NOT LIKE '%village%'")
+        elif location == "VILLAGE_LEVEL":
+            conditions.append("lat IS NULL AND lon IS NULL AND LOWER(COALESCE(fields,'')) LIKE '%village%'")
+        if bbox:
+            min_lat, min_lon, max_lat, max_lon = bbox
+            conditions.append("lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?")
+            params.extend([min_lat, max_lat, min_lon, max_lon])
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = db.execute(
-            f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents ORDER BY created_at DESC LIMIT 10000"
+            f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            tuple(params + [limit, offset]),
         ).fetchall()
     visible = [row for row in rows if _map_document_visible(row, user)]
     records = [_map_document_item(row) for row in visible]
@@ -1118,12 +1185,12 @@ def map_records(
     village level. The summary metadata lets a future client render a map
     dashboard without downloading a second dataset.
     """
-    all_records = _map_visible_records(user)
+    all_records = _map_visible_records(user, limit=limit, q=q, district=district, tehsil=tehsil, village=village, status=status, location=location)
     filtered = [record for record in all_records if _map_record_matches(
         record, q=_normalise(q), district=district, tehsil=tehsil, village=village,
         status=status, location=location)]
     return {
-        "records": filtered[:limit],
+        "records": filtered,
         "total": len(filtered),
         "metadata": {
             "authoritative": False,
@@ -1157,8 +1224,21 @@ def map_properties(
     as legal cadastral boundaries or as a substitute for a document pin.
     """
     ensure_schema()
+    where_parts: List[str] = []
+    params: List[Any] = []
+    for column, value in (("village", village), ("taluka", tehsil), ("district", district)):
+        if value:
+            where_parts.append(f"LOWER(TRIM(COALESCE({column}, ''))) = ?")
+            params.append(_normalise(value))
+    if survey:
+        where_parts.append("LOWER(REPLACE(COALESCE(survey_number,''), ' ', '')) LIKE ?")
+        params.append(f"%{_land_number(survey).casefold()}%")
+    where = " WHERE " + " AND ".join(where_parts) if where_parts else ""
     with get_db() as db:
-        rows = db.execute("SELECT * FROM properties ORDER BY village, survey_number, property_id LIMIT 5000").fetchall()
+        rows = db.execute(
+            "SELECT * FROM properties" + where + " ORDER BY village, survey_number, property_id LIMIT ?",
+            tuple(params + [limit]),
+        ).fetchall()
     filtered = []
     for row in rows:
         if village and _normalise(row["village"]) != _normalise(village):
