@@ -951,6 +951,11 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
         "khata": _field_value(fields, "khata_number"),
         "plot": _field_value(fields, "plot_number"),
         "area": _field_value(fields, "area"),
+        "north_boundary": _field_value(fields, "north_boundary"),
+        "south_boundary": _field_value(fields, "south_boundary"),
+        "east_boundary": _field_value(fields, "east_boundary"),
+        "west_boundary": _field_value(fields, "west_boundary"),
+        "boundary_completeness": float((_field_value(fields, "boundary_completeness") or 0) or 0),
         "village": village,
         "tehsil": _field_value(fields, "tehsil", "taluka"),
         "district": _field_value(fields, "district"),
@@ -1351,33 +1356,86 @@ def _point_in_geometry(lat: float, lon: float, geometry: Optional[Dict[str, Any]
     return any(_point_in_ring((lon, lat), ring) for ring in rings)
 
 
+def _recorded_area_m2(value: Any) -> Optional[float]:
+    raw = str(value or "").strip().casefold()
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(sq\.?\s*ft|sqft|ft2|acre|acres|hectare|hectares|ha|m2|sq\.?\s*m|sqm)?", raw)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "").replace(" ", "").replace(".", "")
+    if unit in {"acre", "acres"}: return number * 4046.8564224
+    if unit in {"hectare", "hectares", "ha"}: return number * 10000.0
+    if unit in {"sqft", "ft2"}: return number * 0.09290304
+    return number
+
+def _geometry_area_m2(geometry: Optional[Dict[str, Any]]) -> Optional[float]:
+    rings = _geo_points(geometry)
+    if not rings:
+        return None
+    # Use local projected metres rather than raw degree² so the comparison is meaningful.
+    return round(sum(_boundary_area_m2([[p[0], p[1]] for p in ring]) for ring in rings), 2)
+
 def _reference_comparison(record: Dict[str, Any]) -> Dict[str, Any]:
     reference = record.get("reference_geometry")
     boundary = record.get("geometry")
+    recorded_area = _recorded_area_m2(record.get("area"))
+    boundary_area = _geometry_area_m2(boundary)
+    reference_area = _geometry_area_m2(reference)
     result: Dict[str, Any] = {
-        "available": bool(reference and boundary),
+        "available": bool(reference or boundary),
         "screening_only": True,
-        "boundary_area": None,
-        "reference_area": None,
-        "area_difference_percent": None,
+        "recorded_area_m2": recorded_area,
+        "boundary_area_m2": boundary_area,
+        "reference_area_m2": reference_area,
+        "recorded_vs_boundary_difference_percent": None,
+        "recorded_vs_reference_difference_percent": None,
+        "boundary_vs_reference_difference_percent": None,
+        "area_status": "UNAVAILABLE",
         "bbox_overlap_ratio": None,
         "pin_inside_boundary": None,
         "pin_inside_reference": None,
         "outside_reference": None,
+        "boundary_evidence": {
+            "north": record.get("north_boundary") or None,
+            "south": record.get("south_boundary") or None,
+            "east": record.get("east_boundary") or None,
+            "west": record.get("west_boundary") or None,
+            "completeness": round(float(record.get("boundary_completeness") or 0), 3),
+        },
+        "findings": [],
     }
-    if boundary:
-        rings = _geo_points(boundary)
-        result["boundary_area"] = round(sum(_polygon_area(ring) for ring in rings), 12) if rings else None
-    if reference:
-        rings = _geo_points(reference)
-        result["reference_area"] = round(sum(_polygon_area(ring) for ring in rings), 12) if rings else None
-    if result["boundary_area"] and result["reference_area"]:
-        result["area_difference_percent"] = round(abs(result["boundary_area"] - result["reference_area"]) / result["reference_area"] * 100, 2)
+    if recorded_area and boundary_area:
+        delta = abs(boundary_area - recorded_area) / recorded_area * 100
+        result["recorded_vs_boundary_difference_percent"] = round(delta, 2)
+        result["findings"].append({
+            "type": "AREA_MISMATCH" if delta > 5 else "AREA_ALIGNED",
+            "severity": "review" if delta > 5 else "info",
+            "message": f"Mapped boundary differs from recorded area by {delta:.2f}%.",
+        })
+        result["area_status"] = "REVIEW_REQUIRED" if delta > 5 else "ALIGNED"
+    elif recorded_area and reference_area:
+        delta = abs(reference_area - recorded_area) / recorded_area * 100
+        result["recorded_vs_reference_difference_percent"] = round(delta, 2)
+        result["findings"].append({
+            "type": "REFERENCE_AREA_MISMATCH" if delta > 5 else "REFERENCE_AREA_ALIGNED",
+            "severity": "review" if delta > 5 else "info",
+            "message": f"Reference parcel area differs from the record by {delta:.2f}%.",
+        })
+        result["area_status"] = "REVIEW_REQUIRED" if delta > 5 else "ALIGNED"
+    if boundary_area and reference_area:
+        result["boundary_vs_reference_difference_percent"] = round(abs(boundary_area - reference_area) / reference_area * 100, 2)
         result["bbox_overlap_ratio"] = _bbox_overlap_ratio(boundary, reference)
     if record.get("lat") is not None and record.get("lon") is not None:
         result["pin_inside_boundary"] = _point_in_geometry(float(record["lat"]), float(record["lon"]), boundary)
         result["pin_inside_reference"] = _point_in_geometry(float(record["lat"]), float(record["lon"]), reference)
         result["outside_reference"] = result["pin_inside_reference"] is False if reference else None
+    missing_sides = [side for side in ("north", "south", "east", "west") if not result["boundary_evidence"].get(side)]
+    if missing_sides:
+        result["findings"].append({
+            "type": "INCOMPLETE_BOUNDARY_DESCRIPTION",
+            "severity": "review" if result["boundary_evidence"]["completeness"] > 0 else "info",
+            "message": "Missing cardinal boundary descriptions: " + ", ".join(missing_sides) + ".",
+        })
     return result
 
 
