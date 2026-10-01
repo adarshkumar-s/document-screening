@@ -629,6 +629,21 @@
     renderSelectedRecord();
   }
 
+  async function importBoundaryGeoJSON(recordId, file) {
+    if (!roleCanPin() || !recordId || !file) return;
+    try {
+      const textContent = await file.text();
+      const geojson = JSON.parse(textContent);
+      const result = await api('/api/map/records/' + encodeURIComponent(recordId) + '/boundary/import', {
+        method: 'POST', body: JSON.stringify({ geojson }),
+      });
+      const record = recordById(recordId);
+      if (record) { record.geometry = result.geometry; record.geometry_source = result.geometry_source; }
+      renderRecordList(); renderMarkers(); if (record) { focusRecord(record); renderSelectedRecord(); }
+      setNotice('<strong>Survey boundary imported.</strong> GeoJSON geometry was stored with provenance and audit.', 'info');
+    } catch (error) { setNotice('<strong>Boundary import failed.</strong> ' + esc(error.message), 'warn'); }
+  }
+
   function removeTileLayer() {
     if (state.tileLayer && state.map) state.map.removeLayer(state.tileLayer);
     state.tileLayer = null;
@@ -745,6 +760,17 @@
         state.referenceMapLayer = window.L.layerGroup().addTo(state.map);
         state.boundaryDraftLayer = window.L.layerGroup().addTo(state.map);
         state.map.on('click', handleMapClick);
+        $('boundaryImportBtn')?.addEventListener('click', () => {
+          const record = recordById(state.selectedId);
+          if (!record) { setNotice('<strong>Select a record first.</strong> Then import its survey boundary.', 'warn'); return; }
+          if (!roleCanPin()) { setNotice('<strong>Boundary import requires Verification Officer or Administrator.</strong>', 'warn'); return; }
+          $('boundaryImportInput').value = '';
+          $('boundaryImportInput').click();
+        });
+        $('boundaryImportInput')?.addEventListener('change', (event) => {
+          const file = event.target.files?.[0];
+          if (file) importBoundaryGeoJSON(state.selectedId, file);
+        });
         state.map.on('dragstart', () => { state.mapUserMoved = true; });
         state.mapReady = true;
         state.tileSource = loadTileSource();
