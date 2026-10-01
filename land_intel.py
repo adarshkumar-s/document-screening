@@ -2190,6 +2190,10 @@ def generate_land_verification_report(req: ReportCreate, user: Dict[str, Any] = 
             "manual_case_number": _text(req.manual_case_number),
             "manual_case_source": "Manual entry — not verified against the Land Intelligence register" if _text(req.manual_case_number) else None,
             "risk_why": risk["why"],
+            "investigation": {
+                "pipeline": _investigation_pipeline_status(land, [_document_reference(record) for record in land.get("records") or []], state, risk, []),
+                "evidence_chain": _evidence_chain(land, [_document_reference(record) for record in land.get("records") or []], state, risk, []),
+            },
             "timeline": build_timeline(land, state["encumbrances"], state["mutations"],
                                        state["court_cases"], risk=risk),
             "mutations": [{"mutation_no": item.get("mutation_no"), "status": item.get("status")} for item in state["mutations"]],
@@ -2317,6 +2321,8 @@ def _render_report_html(payload: Dict[str, Any]):
 <table>
   {''.join(f'<tr><td class="k">{esc(label)}</td><td>{esc(value)}</td></tr>' for label, value in rows)}
 </table>
+<h3 style="color:#1e3a8a;font-size:14px;">Investigation pipeline</h3>
+<ul>"+"</ul>
 <h3 style="color:#1e3a8a;font-size:14px;">Risk signals</h3>
 <ul>{flag_items}</ul>
 {litigation_section}
