@@ -825,6 +825,44 @@
     }
   }
 
+  function renderMarkerClusters(records) {
+    const buckets = new Map();
+    const zoom = state.map?.getZoom?.() || 5;
+    const cell = Math.max(0.08, 40 / Math.pow(2, zoom));
+    records.forEach((record) => {
+      const coordinate = recordCoordinate(record);
+      if (!coordinate) return;
+      const key = `${Math.floor(coordinate.lat / cell)}:${Math.floor(coordinate.lon / cell)}`;
+      if (!buckets.has(key)) buckets.set(key, { records: [], lat: 0, lon: 0 });
+      const bucket = buckets.get(key);
+      bucket.records.push(record);
+      bucket.lat += coordinate.lat;
+      bucket.lon += coordinate.lon;
+    });
+    buckets.forEach((bucket) => {
+      if (bucket.records.length === 1) {
+        const record = bucket.records[0];
+        const marker = markerFor(record);
+        if (marker) {
+          marker.addTo(state.markers);
+          state.markerById.set(String(record.id), marker);
+        }
+        return;
+      }
+      const lat = bucket.lat / bucket.records.length;
+      const lon = bucket.lon / bucket.records.length;
+      const bounds = window.L.latLngBounds(bucket.records.map((r) => {
+        const p = recordCoordinate(r); return [p.lat, p.lon];
+      }));
+      const marker = window.L.marker([lat, lon], {
+        icon: window.L.divIcon({ className: 'map-cluster', html: `<span>${bucket.records.length}</span>`, iconSize: [42,42] })
+      });
+      marker.bindPopup(`<div class="popup-title">${bucket.records.length} records</div><div class="popup-detail">Zoom in to inspect individual document locations.</div>`);
+      marker.on('click', () => state.map.fitBounds(bounds, { padding: [40,40], maxZoom: Math.min(17, zoom + 3) }));
+      marker.addTo(state.markers);
+    });
+  }
+
   function renderMarkers() {
     if (!state.markers) return;
     state.markers.clearLayers();
@@ -832,9 +870,15 @@
     state.referenceMapLayer.clearLayers();
     state.geometryById.clear();
     const { records, emphasizedId } = showModeRecords();
+    const cluster = state.showMode === 'all' && records.length > 100;
     records.forEach((record) => {
-      const shape = drawReferenceGeometry(record, String(record.id) === emphasizedId);
-      if (shape) state.geometryById.set(String(record.id), shape);
+      if (!cluster || String(record.id) === emphasizedId) {
+        const shape = drawReferenceGeometry(record, String(record.id) === emphasizedId);
+        if (shape) state.geometryById.set(String(record.id), shape);
+      }
+    });
+    if (cluster) renderMarkerClusters(records);
+    else records.forEach((record) => {
       const marker = markerFor(record, { emphasized: String(record.id) === emphasizedId });
       if (!marker) return;
       marker.addTo(state.markers);
