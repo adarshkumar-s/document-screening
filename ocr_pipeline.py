@@ -35,6 +35,8 @@ import inspect
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+OCR_PIPELINE_VERSION = "2026.10.hybrid-v3"
+
 # Re-use server imports lazily via get_server() so this module can be imported
 # early without circular imports.
 _SERVER_LOCK = threading.Lock()
@@ -244,9 +246,12 @@ def cache_lookup(chash: str, user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if cached_words < 3 or not cached_text or (cached_fields == 0 and cached_conf < 0.20):
         return None
 
+    if metadata.get("ocr_pipeline_version") != OCR_PIPELINE_VERSION:
+        return None
     if metadata.get("ocr_engine_error") and get_server().tesseract_available():
-        # Cached while the OCR engine was broken and the engine works NOW:
-        # treat as a miss so the document is re-processed for real.
+        return None
+    # Never let a zero-field cache entry bypass newer extraction stages.
+    if cached_fields == 0:
         return None
     return {
         "content_hash": chash,
@@ -484,6 +489,105 @@ Rules:
 
 
 # ---------------------------------------------------------------------------
+# Hybrid structured extraction / vision rescue
+# ---------------------------------------------------------------------------
+
+def _field_value_count(fields: Dict[str, Any]) -> int:
+    return sum(
+        1 for value in (fields or {}).values()
+        if isinstance(value, dict) and str(value.get("value") or "").strip()
+    )
+
+
+def _merge_extracted_fields(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        import ocr_intelligence
+        return ocr_intelligence._merge(primary or {}, secondary or {})
+    except Exception:
+        merged = dict(primary or {})
+        for key, value in (secondary or {}).items():
+            if not isinstance(value, dict) or not str(value.get("value") or "").strip():
+                continue
+            current = merged.get(key) or {}
+            if not str(current.get("value") or "").strip() or float(value.get("confidence", 0) or 0) > float(current.get("confidence", 0) or 0):
+                merged[key] = dict(value)
+        return merged
+
+
+async def _hybrid_extract_fields(
+    ocr_text: str,
+    deterministic_fields: Dict[str, Any],
+    *,
+    doc_type: str,
+    image_pages: Optional[List[Image.Image]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Local OCR -> label extraction -> AI text -> vision rescue."""
+    fields = deterministic_fields
+    meta: Dict[str, Any] = {
+        "version": OCR_PIPELINE_VERSION,
+        "fields_before": _field_value_count(fields),
+        "text_extraction": {"status": "not_needed"},
+        "vision_extraction": {"status": "not_needed"},
+    }
+    client = getattr(get_server(), "ai_client", None)
+
+    try:
+        import ocr_intelligence
+        if ocr_text.strip() and _field_value_count(fields) < 8 and client:
+            ai_fields, ai_meta = await asyncio.to_thread(
+                ocr_intelligence.extract_fields_with_ai,
+                ocr_text,
+                doc_type or "Land Record",
+                fields,
+            )
+            fields = _merge_extracted_fields(fields, ai_fields)
+            meta["text_extraction"] = ai_meta
+    except Exception as exc:
+        meta["text_extraction"] = {"status": "error", "error": type(exc).__name__}
+
+    required = ("owner_name", "survey_number", "khasra_number", "village", "district", "area")
+    missing_required = sum(
+        1 for key in required
+        if not str((fields.get(key) or {}).get("value") or "").strip()
+    )
+    need_vision = (
+        not ocr_text.strip()
+        or _field_value_count(fields) < 4
+        or missing_required >= 3
+    )
+
+    if need_vision and image_pages and client:
+        try:
+            import ocr_intelligence
+            vision_fields: Dict[str, Any] = {}
+            page_results: List[Dict[str, Any]] = []
+            max_pages = min(len(image_pages), int(os.getenv("OCR_VISION_MAX_PAGES", "5")))
+            for page in image_pages[:max_pages]:
+                page_fields, page_meta = await asyncio.to_thread(
+                    ocr_intelligence.extract_fields_from_image_with_vision,
+                    page,
+                    doc_type or "Land Record",
+                )
+                page_results.append(page_meta)
+                vision_fields = _merge_extracted_fields(vision_fields, page_fields)
+            fields = _merge_extracted_fields(fields, vision_fields)
+            meta["vision_extraction"] = {
+                "status": "completed",
+                "pages_inspected": max_pages,
+                "page_results": page_results,
+                "fields_found": _field_value_count(vision_fields),
+            }
+        except Exception as exc:
+            meta["vision_extraction"] = {"status": "error", "error": type(exc).__name__}
+    elif need_vision and not client:
+        meta["vision_extraction"] = {"status": "ai_not_configured"}
+
+    meta["fields_final"] = _field_value_count(fields)
+    meta["trigger"] = "low_structured_coverage" if need_vision or meta["text_extraction"].get("status") != "not_needed" else "not_needed"
+    return fields, meta
+
+
+# ---------------------------------------------------------------------------
 # Public fast pipeline
 # ---------------------------------------------------------------------------
 async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto",
@@ -550,6 +654,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     ocr_method = "tesseract"
     pages = 1
     intermediate_image = None
+    vision_pages: List[Image.Image] = []
     engine_error: Optional[str] = None
     pages_ocrd = 1
     ocr_quality: Dict[str, Any] = {"score": 0.0, "issues": []}
@@ -585,6 +690,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
                 image = page.render(scale=2.2).to_pil()
                 if page_index == 0:
                     intermediate_image = image
+                if page_index < int(os.getenv("OCR_VISION_MAX_PAGES", "5")):
+                    vision_pages.append(image)
                 page_result = await asyncio.to_thread(run_fast_ocr, image, lang)
                 page_text = str(page_result.get("text") or "").strip()
                 if page_text:
@@ -612,6 +719,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
         if max(img.width, img.height) > max_side:
             raise ValueError(f"Image exceeds the maximum supported dimension of {max_side}px")
         intermediate_image = img
+        vision_pages = [img]
         ocr_res = await asyncio.to_thread(run_fast_ocr, img, lang)
         ocr_text = ocr_res.get("text", "")
         detected_lang = ocr_res.get("detected_language", "eng")
@@ -630,6 +738,23 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     detected = srv.extract_fields_from_ocr(ocr_text, filename or "upload")
     enriched_fields = detected["fields"]
     validation = detected["validation"]
+
+    # Canonical hybrid recovery. The existing deterministic extractor stays
+    # first; AI text/vision only activates when structured coverage is poor.
+    hybrid_meta = {
+        "version": OCR_PIPELINE_VERSION,
+        "fields_before": _field_value_count(enriched_fields),
+        "fields_final": _field_value_count(enriched_fields),
+        "trigger": "not_needed",
+    }
+    if _field_value_count(enriched_fields) < 8 or not ocr_text.strip():
+        enriched_fields, hybrid_meta = await _hybrid_extract_fields(
+            ocr_text,
+            enriched_fields,
+            doc_type=doc_type_hint or "Land Record",
+            image_pages=vision_pages,
+        )
+        enriched_fields, validation = srv.enrich_and_validate_fields(enriched_fields)
     # Preserve OCR provenance at field level: reviewers can trace a value back
     # to the token(s) and bounding boxes that produced it.
     if ext != ".pdf" and 'ocr_res' in locals():
@@ -689,7 +814,11 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     if doc_id:
         cache_store(chash, user or {}, doc_id, filename, lang,
                     ocr_result_meta, enriched_fields, validation, pages,
-                    metadata={"ocr_engine_error": engine_error} if engine_error else {})
+                    metadata={
+                        "ocr_pipeline_version": OCR_PIPELINE_VERSION,
+                        "ocr_engine_error": engine_error,
+                        "hybrid_extraction": hybrid_meta,
+                    })
 
     engine_limited = bool(engine_error) and not ocr_text.strip()
     return {
@@ -715,6 +844,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
                             "Fast deterministic OCR; AI enhancement, parcel matching and Land Intelligence run asynchronously."),
             "cache_hit": False,
             "ocr_method": ocr_method,
+            "hybrid_extraction": hybrid_meta,
         },
         "ocr_text": ocr_text,
         "cleaned_ocr_text": ocr_text,
@@ -728,6 +858,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             "pages_processed": pages_ocrd,
             "pages_omitted": max(0, pages - pages_ocrd) if ext == ".pdf" else 0,
             "ocr_engine": "unavailable" if engine_limited else ("pdf_text_layer" if ocr_method == "pdf_text_layer" else "tesseract"),
+            "ocr_pipeline_version": OCR_PIPELINE_VERSION,
+            "hybrid_extraction": hybrid_meta,
             "ocr_quality": ocr_quality,
             "ocr_orientation": ocr_orientation,
             **({"ocr_engine_error": engine_error} if engine_limited else {}),
