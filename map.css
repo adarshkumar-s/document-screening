@@ -306,3 +306,21 @@ label select:focus, label input:focus { border-color: #3182b7; box-shadow: 0 0 0
 /* Reference shapes are never styled as verified reviewer pins. */
 .record-badge.reference { color: #4338ca; background: #eef2ff; border-color: #c7d2fe; }
 .reference-dot { background: #6366f1; }
+
+
+.map-cluster {
+  background: transparent;
+  border: 0;
+}
+.map-cluster span {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 2px solid #1d4ed8;
+  background: rgba(255,255,255,.94);
+  color: #1e3a8a;
+  font-weight: 800;
+  box-shadow: 0 2px 8px rgba(0,0,0,.22);
+}
