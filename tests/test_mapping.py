@@ -290,3 +290,43 @@ def test_mapping_compatibility_helpers_remain_available_to_ai_governance():
     assert {"location_status", "location_base_latitude", "location_base_longitude"} <= columns
     assert callable(mapping.analyze_ownership_history)
     assert callable(mapping._resolve)
+
+
+def test_boundary_rejects_self_intersection_and_tracks_accuracy():
+    doc_id = "MAP-BOUNDARY-SELF-" + uuid.uuid4().hex[:8]
+    _insert_document(doc_id)
+    headers = _make_user("VERIFICATION_OFFICER")
+    crossing = client.put(
+        f"/api/map/records/{doc_id}/boundary", headers=headers,
+        json={"points": [[23.1,80.1],[23.2,80.2],[23.1,80.2],[23.2,80.1]]},
+    )
+    assert crossing.status_code == 400
+    saved = client.put(
+        f"/api/map/records/{doc_id}/location", headers=headers,
+        json={"lat": 28.621, "lon": 77.101, "accuracy_m": 8.5},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["accuracy_m"] == 8.5
+    record = next(item for item in client.get("/api/map/records", headers=headers).json()["records"] if item["id"] == doc_id)
+    assert record["location_accuracy_m"] == 8.5
+
+
+def test_map_viewport_filters_exact_pins():
+    doc_id = "MAP-BBOX-" + uuid.uuid4().hex[:8]
+    _insert_document(doc_id, lat=28.62, lon=77.10)
+    headers = _make_user("VERIFICATION_OFFICER")
+    inside = client.get("/api/map/records?min_lat=28.6&min_lon=77.0&max_lat=28.7&max_lon=77.2", headers=headers)
+    assert inside.status_code == 200
+    assert any(item["id"] == doc_id for item in inside.json()["records"])
+    outside = client.get("/api/map/records?min_lat=30&min_lon=80&max_lat=31&max_lon=81", headers=headers)
+    assert outside.status_code == 200
+    assert all(item["id"] != doc_id for item in outside.json()["records"])
+
+
+def test_spatial_conflict_endpoint_flags_duplicate_exact_locations():
+    _insert_document("MAP-CONFLICT-A", lat=28.64, lon=77.12)
+    _insert_document("MAP-CONFLICT-B", lat=28.64, lon=77.12)
+    headers = _make_user("VERIFICATION_OFFICER")
+    response = client.get("/api/map/conflicts", headers=headers)
+    assert response.status_code == 200
+    assert any(set(item["record_ids"]) == {"MAP-CONFLICT-A", "MAP-CONFLICT-B"} for item in response.json()["conflicts"])
