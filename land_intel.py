@@ -2322,7 +2322,7 @@ def _render_report_html(payload: Dict[str, Any]):
   {''.join(f'<tr><td class="k">{esc(label)}</td><td>{esc(value)}</td></tr>' for label, value in rows)}
 </table>
 <h3 style="color:#1e3a8a;font-size:14px;">Investigation pipeline</h3>
-<ul>"+"</ul>
+<ul>{''.join(f"<li><b>{esc(stage.get('status'))}</b> — {esc(stage.get('key'))}: {esc(stage.get('evidence'))}</li>" for stage in (payload.get('investigation', {}).get('pipeline') or [])) or "<li>No pipeline stages recorded</li>"}</ul>
 <h3 style="color:#1e3a8a;font-size:14px;">Risk signals</h3>
 <ul>{flag_items}</ul>
 {litigation_section}
