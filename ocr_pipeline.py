@@ -526,6 +526,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             pages_ocrd = min(pages, _MAX_OCR_PDF_PAGES)
             page_texts: List[str] = []
             page_confidences: List[float] = []
+            page_qualities: List[float] = []
             page_words = 0
             page_errors: List[str] = []
             for page_index in range(min(pages, _MAX_OCR_PDF_PAGES)):
@@ -538,6 +539,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
                 if page_text:
                     page_texts.append(f"[Page {page_index + 1}]\n{page_text}")
                 page_confidences.append(float(page_result.get("confidence", 0.0) or 0.0))
+                if page_result.get("quality"): page_qualities.append(float((page_result.get("quality") or {}).get("score", 0.0) or 0.0))
                 page_words += int(page_result.get("word_count", 0) or 0)
                 if page_result.get("engine_error"):
                     page_errors.append(str(page_result["engine_error"]))
@@ -547,6 +549,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             confidence = sum(page_confidences) / len(page_confidences) if page_confidences else 0.0
             word_count = page_words
             engine_error = "; ".join(dict.fromkeys(page_errors)) or None
+            if page_qualities: ocr_quality = {"score": round(sum(page_qualities)/len(page_qualities),3), "issues": ["ONE_OR_MORE_PAGES_LOW_QUALITY"] if min(page_qualities) < 0.45 else []}
     else:
         # Image path
         from PIL import Image
@@ -627,6 +630,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
         "confidence": confidence,
         "word_count": word_count,
         "method": ocr_method,
+        "ocr_passes": int(ocr_result_meta.get("ocr_passes", 1)) if "ocr_result_meta" in locals() else 1,
     }
 
     if doc_id:
