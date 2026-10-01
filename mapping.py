@@ -1223,8 +1223,6 @@ def map_conflicts(user: Dict[str, Any] = Depends(get_current_user)):
     conflicts = []
     seen = {}
     for record in records:
-        point = coordinatePair(record.get("lat"), record.get("lon")) if False else None
-    for record in records:
         lat, lon = record.get("lat"), record.get("lon")
         if lat is None or lon is None:
             continue
