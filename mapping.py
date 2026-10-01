@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import difflib
 import io
+import os
 import json
 import re
 import time
@@ -40,7 +41,8 @@ from server import (
 map_router = APIRouter(prefix="/api/map", tags=["Document Map"])
 document_history_router = APIRouter(prefix="/api", tags=["Document History"])
 
-MAP_NOMINATIM_USER_AGENT = "Document-Screening-Portfolio-Map/1.0"
+MAP_NOMINATIM_USER_AGENT = os.getenv("MAP_GEOCODER_USER_AGENT", "Document-Screening-Portfolio-Map/1.0 (+https://github.com/adarshkumar-s/document-screening)")
+MAP_GEOCODER_URL = os.getenv("MAP_GEOCODER_URL", "https://nominatim.openstreetmap.org/search")
 MAP_GEOCODE_TTL_SECONDS = 7 * 24 * 60 * 60
 _map_geocode_cache: Dict[str, Dict[str, Any]] = {}
 _map_last_geocode_request = 0.0
@@ -957,6 +959,7 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
         "location_label": "VERIFIED LOCATION" if location_status == "EXACT_PIN" else ("APPROXIMATE — VILLAGE LOCATION" if location_status == "VILLAGE_LEVEL" else "LOCATION NOT AVAILABLE"),
         "location_source": location_source,
         "location_confidence": float(persisted_confidence) if persisted_confidence is not None else None,
+        "location_accuracy_m": row["location_accuracy_m"] if "location_accuracy_m" in row.keys() else None,
         "location_verified_by": verified_by if has_exact_pin else None,
         "location_verified_at": verified_at if has_exact_pin else None,
         "location_reason": row["location_reason"] if "location_reason" in row.keys() else None,
@@ -1296,6 +1299,15 @@ def map_set_document_location(
     """Set or clear an exact document pin with an audit event."""
     raw_lat = payload.get("lat", payload.get("latitude"))
     raw_lon = payload.get("lon", payload.get("longitude"))
+    raw_accuracy = payload.get("accuracy_m")
+    accuracy_m = None
+    if raw_accuracy not in (None, ""):
+        try:
+            accuracy_m = float(raw_accuracy)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="accuracy_m must be a non-negative number.")
+        if accuracy_m < 0 or accuracy_m > 100000:
+            raise HTTPException(status_code=400, detail="accuracy_m must be between 0 and 100000 metres.")
     reason = str(payload.get("reason") or "").strip()[:500]
     if (raw_lat is None) != (raw_lon is None):
         raise HTTPException(status_code=400, detail="lat and lon must be supplied together (or both be null).")
@@ -1330,15 +1342,15 @@ def map_set_document_location(
             if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
                 raise HTTPException(status_code=400, detail="lat must be -90..90 and lon -180..180.")
             db.execute(
-                "UPDATE documents SET lat=?, lon=?, updated_at=? WHERE id=?",
-                (latitude, longitude, changed_at, doc_id),
+                "UPDATE documents SET lat=?, lon=?, location_accuracy_m=?, updated_at=? WHERE id=?",
+                (latitude, longitude, accuracy_m, changed_at, doc_id),
             )
             detail = "Document GIS pin changed from (%s, %s) to (%.6f, %.6f)." % (previous[0], previous[1], latitude, longitude)
             if reason:
                 detail += " Reason: %s" % reason
             action = "location_set"
             result = {
-                "ok": True, "lat": latitude, "lon": longitude,
+                "ok": True, "lat": latitude, "lon": longitude, "accuracy_m": accuracy_m,
                 "location_status": "VERIFIED_LOCATION",
                 "location_source": "Authorised reviewer pin",
                 "location_verified_by": actor,
@@ -1505,7 +1517,7 @@ def _map_geocode_query(query: str, *, state: str = "", district: str = "") -> Di
     params = urllib.parse.urlencode({"format": "jsonv2", "limit": 5, "addressdetails": 1,
                                      "q": query, "countrycodes": "in"})
     request_obj = urllib.request.Request(
-        "https://nominatim.openstreetmap.org/search?" + params,
+        MAP_GEOCODER_URL + "?" + params,
         headers={"User-Agent": MAP_NOMINATIM_USER_AGENT, "Accept": "application/json"},
     )
     try:
