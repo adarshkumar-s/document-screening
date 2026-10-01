@@ -675,7 +675,8 @@ FIELD_KEYS = (
     "owner_name", "father_name", "survey_number", "khasra_number",
     "khata_number", "plot_number", "area", "village", "tehsil",
     "district", "state", "document_date", "land_class", "ownership_type",
-    "mutation_no", "registration_no", "khatauni_year"
+    "mutation_no", "registration_no", "khatauni_year",
+    "north_boundary", "south_boundary", "east_boundary", "west_boundary"
 )
 
 def clean_ocr_image(image: Image.Image) -> Image.Image:
@@ -2098,6 +2099,10 @@ _P1_PATTERNS = {
     "khatauni_year": r"(?:khatauni\s*year|record\s*year|year|वर्ष)",
     "mutation_no": r"(?:mutation(?:\s*case)?\s*(?:no\.?|number|num\.?|#)?|नामांतरण\s*(?:नं\.?|नंबर)?)",
     "registration_no": r"(?:registration(?:\s*(?:no\.?|number|num\.?|#))?|पंजीकरण\s*(?:नं\.?|नंबर)?)",
+    "north_boundary": r"(?:north(?:ern)?\s*(?:boundary|side)|north|उत्तर(?:ी)?\s*(?:सीमा|तरफ))",
+    "south_boundary": r"(?:south(?:ern)?\s*(?:boundary|side)|south|दक्षिण(?:ी)?\s*(?:सीमा|तरफ))",
+    "east_boundary": r"(?:east(?:ern)?\s*(?:boundary|side)|east|पूर्व(?:ी)?\s*(?:सीमा|तरफ))",
+    "west_boundary": r"(?:west(?:ern)?\s*(?:boundary|side)|west|पश्चिम(?:ी)?\s*(?:सीमा|तरफ))",
 }
 
 
@@ -2197,8 +2202,14 @@ def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
                 fields["khatauni_year"] = {"value": m.group(1), "confidence": 0.6}
 
     enriched, validation = enrich_and_validate_fields(fields)
-    # Explicitly labelled printed plot corners are additional map evidence, not
-    # document identity fields. Keep them alongside the standard extraction.
+    # Boundary descriptions are high-value cadastral evidence even when no
+    # polygon coordinates exist. Keep them as four-side evidence for mapping
+    # and human verification.
+    boundary_fields = {k: enriched.get(k, {}) for k in ("north_boundary","south_boundary","east_boundary","west_boundary")}
+    boundary_values = [v.get("value","").strip() for v in boundary_fields.values() if isinstance(v, dict) and v.get("value","").strip()]
+    enriched["boundary_completeness"] = {"value": len(boundary_values) / 4.0, "confidence": round(len(boundary_values) / 4.0, 3)}
+    if boundary_values and len(boundary_values) < 4:
+        validation["issues"].append({"severity":"warning","field":"boundary_completeness","msg":f"Only {len(boundary_values)} of 4 cardinal boundary descriptions were extracted; verify the missing sides."})
     enriched.update(_extract_printed_coordinates(text))
     if not enriched.get("owner_name", {}).get("value") and filename:
         validation["issues"].append({
@@ -2207,7 +2218,7 @@ def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
             "msg": "Record-holder name was not extracted from document text; filename is not treated as identity."
         })
     return {
-        "mean_conf": 95,
+        "mean_conf": round(sum(float(v.get("confidence", 0) or 0) for v in enriched.values() if isinstance(v, dict) and v.get("value")) / max(1, sum(1 for v in enriched.values() if isinstance(v, dict) and v.get("value"))), 3),
         "languages": ["English"],
         "pages": 1,
         "detected_language": "eng",
@@ -2218,7 +2229,7 @@ def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
         "ocr_text": text,
         "cleaned_ocr_text": text,
         "original_fields": enriched,
-        "pipeline_meta": {"mode": "DETERMINISTIC_TESTABLE_OCR"},
+        "pipeline_meta": {"mode": "DETERMINISTIC_TESTABLE_OCR", "confidence_method": "field_extraction_plus_validation", "boundary_completeness": enriched.get("boundary_completeness", {}).get("value", 0)},
         "escalated": False,
         "filename": os.path.basename(filename or "upload"),
     }
