@@ -413,16 +413,20 @@ def run_fast_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
     strategy = {
         "lang": candidates[0],
         "lang_candidates": candidates,
-        "psm": 3,
+        "psm": 6,
         "rotation": 0,
-        "enhance": True,
+        "detect_orientation": False,
+        "enhance": False,
         "denoise": False,
+        "timeout": float(os.getenv("OCR_TIMEOUT_SECONDS", "8")),
     }
     ocr_res = srv.run_guided_ocr(image, strategy)
-    if float(ocr_res.get("confidence", 0.0) or 0.0) < 0.68 or int(ocr_res.get("word_count", 0) or 0) < 12:
+    if float(ocr_res.get("confidence", 0.0) or 0.0) < 0.55 or int(ocr_res.get("word_count", 0) or 0) < 8:
         retry = dict(strategy)
-        retry["psm"] = 6
+        retry["psm"] = 3
         retry["denoise"] = True
+        retry["detect_orientation"] = True
+        retry["enhance"] = True
         retry["lang_candidates"] = candidates[:3]
         retry_res = srv.run_guided_ocr(image, retry)
         if (float(retry_res.get("confidence", 0.0) or 0.0) > float(ocr_res.get("confidence", 0.0) or 0.0)
