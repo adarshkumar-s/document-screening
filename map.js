@@ -1268,15 +1268,15 @@
 
   async function downloadMapExport(path, filename, label) {
     try {
-      const response = await fetch(path, { headers: token() ? { Authorization: \`Bearer \${token()}\` } : {}, credentials: 'same-origin' });
+      const response = await fetch(path, { headers: token() ? { Authorization: `Bearer ${token()}` } : {}, credentials: 'same-origin' });
       if (!response.ok) throw new Error('Export is not available for this session.');
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url; link.download = filename;
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
-      setNotice(\`<strong>\${esc(label)} exported.</strong> The export contains only records visible to your role and is labelled as screening/reference data.\`, 'info');
-    } catch (error) { setNotice(\`<strong>Export failed.</strong> \${esc(error.message)}\`, 'warn'); }
+      setNotice(`<strong>${esc(label)} exported.</strong> The export contains only records visible to your role and is labelled as screening/reference data.`, 'info');
+    } catch (error) { setNotice(`<strong>Export failed.</strong> ${esc(error.message)}`, 'warn'); }
   }
 
   async function openReviewQueue() {
@@ -1288,79 +1288,79 @@
       const data = await api('/api/map/review-queue');
       const findings = Array.isArray(data.findings) ? data.findings : [];
       $('reviewQueueSummary').innerHTML = findings.length
-        ? \`<strong>\${findings.length} screening signal\${findings.length === 1 ? '' : 's'}.</strong> These require human verification and are not legal conclusions.\`
+        ? `<strong>${findings.length} screening signal${findings.length === 1 ? '' : 's'}.</strong> These require human verification and are not legal conclusions.`
         : '<strong>No current spatial screening signals.</strong> This does not establish that the records are legally correct.';
-      $('reviewQueueList').innerHTML = findings.length ? findings.map((finding) => \`
+      $('reviewQueueList').innerHTML = findings.length ? findings.map((finding) => `
         <div class="history-item">
-          <div class="history-year">\${esc(finding.severity || 'INFO')}</div>
-          <div><div class="history-file">\${esc(finding.title || finding.finding_type || 'Review signal')}</div>
-          <div class="history-owner">\${esc(finding.reason || 'Human verification required.')}</div>
-          <span class="history-status">\${esc(finding.finding_type || '')}</span></div>
-          <div class="history-actions">\${(finding.evidence || []).slice(0,1).map((id) => \`<button type="button" data-review-select="\${esc(id)}">Open</button>\`).join('')}<button type="button" data-review-id="\${esc(finding.id || '')}" data-review-status="RESOLVED">Resolve</button><button type="button" data-review-id="\${esc(finding.id || '')}" data-review-status="DISMISSED">Dismiss</button></div>
-        </div>\`).join('') : '<div class="empty-state">No open findings.</div>';
+          <div class="history-year">${esc(finding.severity || 'INFO')}</div>
+          <div><div class="history-file">${esc(finding.title || finding.finding_type || 'Review signal')}</div>
+          <div class="history-owner">${esc(finding.reason || 'Human verification required.')}</div>
+          <span class="history-status">${esc(finding.finding_type || '')}</span></div>
+          <div class="history-actions">${(finding.evidence || []).slice(0,1).map((id) => `<button type="button" data-review-select="${esc(id)}">Open</button>`).join('')}<button type="button" data-review-id="${esc(finding.id || '')}" data-review-status="RESOLVED">Resolve</button><button type="button" data-review-id="${esc(finding.id || '')}" data-review-status="DISMISSED">Dismiss</button></div>
+        </div>`).join('') : '<div class="empty-state">No open findings.</div>';
       $('reviewQueuePanel').classList.remove('hidden');
       $('reviewQueuePanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    } catch (error) { setNotice(\`<strong>Review queue unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+    } catch (error) { setNotice(`<strong>Review queue unavailable.</strong> ${esc(error.message)}`, 'warn'); }
   }
 
   async function resolveReviewFinding(id, status) {
     if (!id) return;
-    const note = window.prompt(\`Optional note for \${status.toLowerCase()}:\`, '') || '';
+    const note = window.prompt(`Optional note for ${status.toLowerCase()}:`, '') || '';
     try {
-      await api(\`/api/map/review-queue/\${encodeURIComponent(id)}/resolve\`, { method: 'POST', body: JSON.stringify({ status, note }) });
+      await api(`/api/map/review-queue/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ status, note }) });
       await openReviewQueue();
-      setNotice(\`<strong>Review signal updated.</strong> \${esc(status)} recorded in the audit trail.\`, 'info');
-    } catch (error) { setNotice(\`<strong>Review signal was not updated.</strong> \${esc(error.message)}\`, 'warn'); }
+      setNotice(`<strong>Review signal updated.</strong> ${esc(status)} recorded in the audit trail.`, 'info');
+    } catch (error) { setNotice(`<strong>Review signal was not updated.</strong> ${esc(error.message)}`, 'warn'); }
   }
 
   async function openSpatialLayers(record) {
     try {
-      const data = await api(\`/api/map/records/\${encodeURIComponent(record.id)}/layers\`);
+      const data = await api(`/api/map/records/${encodeURIComponent(record.id)}/layers`);
       const active = Array.isArray(data.court_cases) ? data.court_cases.filter((item) => String(item.status || '').toUpperCase() === 'ACTIVE').length : 0;
       const cases = Array.isArray(data.court_cases) ? data.court_cases : [];
       const timeline = Array.isArray(data.property_timeline) ? data.property_timeline : [];
       const litigation = data.litigation_verdict || 'CLEAR';
-      const courtHtml = cases.length ? cases.map((item) => \`<div class="history-chain"><strong>\${esc(item.case_number || 'Court case')}</strong> · \${esc(item.status || '')} · \${esc(item.court_name || '')}</div>\`).join('') : '<span class="muted">No linked court cases found for this survey/village.</span>';
-      const timelineHtml = timeline.length ? timeline.slice(-8).map((item) => \`<div class="history-chain"><strong>\${esc(item.event_type || 'Event')}</strong> · \${esc(item.description || '')}</div>\`).join('') : '<span class="muted">No parcel timeline events are linked.</span>';
+      const courtHtml = cases.length ? cases.map((item) => `<div class="history-chain"><strong>${esc(item.case_number || 'Court case')}</strong> · ${esc(item.status || '')} · ${esc(item.court_name || '')}</div>`).join('') : '<span class="muted">No linked court cases found for this survey/village.</span>';
+      const timelineHtml = timeline.length ? timeline.slice(-8).map((item) => `<div class="history-chain"><strong>${esc(item.event_type || 'Event')}</strong> · ${esc(item.description || '')}</div>`).join('') : '<span class="muted">No parcel timeline events are linked.</span>';
       const panel = $('selectedRecordPanel');
-      panel.insertAdjacentHTML('beforeend', \`<div class="reference-record-note"><strong>Spatial & land layers</strong><span>Litigation: \${esc(litigation)} · active cases: \${active}</span><small>\${courtHtml}</small><small>Parcel timeline:<br>\${timelineHtml}</small></div>\`);
-    } catch (error) { setNotice(\`<strong>Layer data unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+      panel.insertAdjacentHTML('beforeend', `<div class="reference-record-note"><strong>Spatial & land layers</strong><span>Litigation: ${esc(litigation)} · active cases: ${active}</span><small>${courtHtml}</small><small>Parcel timeline:<br>${timelineHtml}</small></div>`);
+    } catch (error) { setNotice(`<strong>Layer data unavailable.</strong> ${esc(error.message)}`, 'warn'); }
   }
 
   async function loadSpatialChecks(record) {
     try {
-      const data = await api(\`/api/map/records/\${encodeURIComponent(record.id)}/spatial-checks\`);
+      const data = await api(`/api/map/records/${encodeURIComponent(record.id)}/spatial-checks`);
       const comparison = data.comparison || {};
       const parts = [];
       if (comparison.pin_inside_boundary === false) parts.push('Pin is outside saved boundary');
       if (comparison.outside_reference === true) parts.push('Pin is outside reference geometry');
-      if (comparison.area_difference_percent != null) parts.push(\`boundary/reference area difference \${comparison.area_difference_percent}%\`);
-      if (parts.length) setNotice(\`<strong>Spatial review signal.</strong> \${esc(parts.join(' · '))}. Reference comparisons are screening-only.\`, 'warn');
+      if (comparison.area_difference_percent != null) parts.push(`boundary/reference area difference ${comparison.area_difference_percent}%`);
+      if (parts.length) setNotice(`<strong>Spatial review signal.</strong> ${esc(parts.join(' · '))}. Reference comparisons are screening-only.`, 'warn');
       else setNotice('<strong>Spatial checks complete.</strong> No current geometry inconsistency signal was returned.', 'info');
-    } catch (error) { setNotice(\`<strong>Spatial checks unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+    } catch (error) { setNotice(`<strong>Spatial checks unavailable.</strong> ${esc(error.message)}`, 'warn'); }
   }
 
 
   async function loadParcelCandidates(record) {
     if (!roleCanPin()) { setNotice('<strong>Parcel candidate review is restricted.</strong> Verification Officer or Administrator only.', 'warn'); return; }
     try {
-      const data = await api(\`/api/map/records/\${encodeURIComponent(record.id)}/parcel-candidates\`);
+      const data = await api(`/api/map/records/${encodeURIComponent(record.id)}/parcel-candidates`);
       const candidates = Array.isArray(data.candidates) ? data.candidates : [];
       const html = candidates.length ? candidates.map((candidate) => {
         const p = candidate.property || {};
-        return \`<div class="reference-record-note"><strong>\${esc(p.parcel_id || p.property_id || 'Parcel')}</strong><span>Score \${esc(candidate.score)} · \${esc(candidate.status || '')}</span><small>\${esc((candidate.matched_fields || []).join(', ') || 'No strong field match')}</small><button class="btn ghost" type="button" data-select-parcel="\${esc(p.property_id || '')}">Select this parcel</button></div>\`;
+        return `<div class="reference-record-note"><strong>${esc(p.parcel_id || p.property_id || 'Parcel')}</strong><span>Score ${esc(candidate.score)} · ${esc(candidate.status || '')}</span><small>${esc((candidate.matched_fields || []).join(', ') || 'No strong field match')}</small><button class="btn ghost" type="button" data-select-parcel="${esc(p.property_id || '')}">Select this parcel</button></div>`;
       }).join('') : '<div class="empty-state">No controlled parcel candidates were found.</div>';
       const panel = $('selectedRecordPanel');
-      panel.insertAdjacentHTML('beforeend', \`<div id="parcelCandidateBox"><strong>Parcel candidates</strong><p class="muted">Human selection is required when multiple controlled parcels are similarly plausible.</p>\${html}</div>\`);
+      panel.insertAdjacentHTML('beforeend', `<div id="parcelCandidateBox"><strong>Parcel candidates</strong><p class="muted">Human selection is required when multiple controlled parcels are similarly plausible.</p>${html}</div>`);
       panel.querySelectorAll('[data-select-parcel]').forEach((button) => button.addEventListener('click', async () => {
         const reason = window.prompt('Why was this parcel selected? (optional)', '') || '';
         try {
-          await api(\`/api/map/records/\${encodeURIComponent(record.id)}/parcel-selection\`, { method: 'PUT', body: JSON.stringify({ property_id: button.dataset.selectParcel, reason }) });
+          await api(`/api/map/records/${encodeURIComponent(record.id)}/parcel-selection`, { method: 'PUT', body: JSON.stringify({ property_id: button.dataset.selectParcel, reason }) });
           setNotice('<strong>Parcel selection saved.</strong> The document-to-parcel link and provenance were updated.', 'info');
           await loadRecords();
-        } catch (error) { setNotice(\`<strong>Parcel selection failed.</strong> \${esc(error.message)}\`, 'warn'); }
+        } catch (error) { setNotice(`<strong>Parcel selection failed.</strong> ${esc(error.message)}`, 'warn'); }
       }));
-    } catch (error) { setNotice(\`<strong>Parcel candidates unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+    } catch (error) { setNotice(`<strong>Parcel candidates unavailable.</strong> ${esc(error.message)}`, 'warn'); }
   }
 
   async function exportMapCsv() {
