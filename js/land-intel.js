@@ -1199,6 +1199,23 @@
       </div>`;
   }
 
+  function renderInvestigationHero() {
+    return `
+      <section class="li-investigation-hero" aria-labelledby="liInvestigationTitle">
+        <div class="li-investigation-main">
+          <div class="li-eyebrow">EVIDENCE-FIRST PARCEL VERIFICATION</div>
+          <h3 id="liInvestigationTitle">Parcel Investigation</h3>
+          <p>Follow one parcel through documents, ownership, mutation, encumbrance, litigation, map evidence and human verification.</p>
+          <div class="li-flow"><span>📄 Documents</span><b>→</b><span>🧭 Parcel identity</span><b>→</b><span>🔎 Cross-checks</span><b>→</b><span>⚠ Risk evidence</span><b>→</b><span>👤 Review decision</span></div>
+        </div>
+        <div class="li-investigation-actions">
+          <label class="li-mini-label" for="liInvestigationId">Parcel / land ID</label>
+          <div class="li-investigation-search"><input id="liInvestigationId" placeholder="e.g. LI-COURT-003" aria-label="Parcel or land ID"><button type="button" class="btn saffron" id="liInvestigateBtn">Investigate</button></div>
+          <div class="li-demo-links"><button type="button" class="btn ghost" data-li-demo="LI-COURT-003">⚖ Complex litigation</button><button type="button" class="btn ghost" data-li-demo="LI-RISK-003">🏦 Compound risk</button></div>
+        </div>
+      </section>`;
+  }
+
   function switchSub(sub) {
     S.sub = sub;
     renderPanes();
@@ -1216,6 +1233,7 @@
     ];
     const showingDetail = S.sub === 'records' && S.detail;
     root.innerHTML = `
+      ${renderInvestigationHero()}
       <div class="card">
         <div class="card-header">
           <div>
@@ -1486,6 +1504,13 @@
       switchStaffTab('landintel');
       S.sub = 'records';
       openLandDetail(landId).catch(alertError);
+    },
+    openDemoScenario(landId) {
+      switchStaffTab('landintel');
+      S.sub = 'records';
+      S.selectedLand = landId;
+      renderPanes();
+      window.setTimeout(() => openLandDetail(landId).catch(alertError), 60);
     },
     openMutation(mutationId) {
       // Deep link target for SA Investigation evidence ([Open Mutation]).
