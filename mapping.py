@@ -1684,7 +1684,7 @@ def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
     writer = csv.DictWriter(output, fieldnames=(
         "id", "filename", "doc_type", "status", "owner", "survey", "khasra", "khata", "plot",
         "area", "village", "tehsil", "district", "state", "year", "lat", "lon",
-        "location_status", "location_state", "location_label", "location_source", "location_confidence",
+        "location_status", "location_state", "location_label", "location_source", "location_source_detail", "location_accuracy_m", "location_reason", "location_confidence",
         "location_verified_by", "location_verified_at", "location_audit_available", "review_required"), extrasaction="ignore")
     writer.writeheader()
     writer.writerows(_map_visible_records(user))
