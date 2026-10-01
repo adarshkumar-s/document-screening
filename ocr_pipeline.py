@@ -253,6 +253,7 @@ def cache_lookup(chash: str, user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "word_count": int(row["word_count"] or 0),
         "metadata": metadata,
         "cache_hit": True,
+        "ocr_engine_error": metadata.get("ocr_engine_error"),
     }
 
 
