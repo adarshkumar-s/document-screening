@@ -2202,6 +2202,22 @@ def extract_fields_from_ocr(text: str, filename: str = "") -> Dict[str, Any]:
                 fields["khatauni_year"] = {"value": m.group(1), "confidence": 0.6}
 
     enriched, validation = enrich_and_validate_fields(fields)
+    # Explainable confidence: combine extraction confidence with validation
+    # signals instead of exposing a single opaque OCR number.
+    for field_name, field in enriched.items():
+        if not isinstance(field, dict) or not field.get("value") or field_name == "boundary_completeness":
+            continue
+        base = float(field.get("confidence", 0) or 0)
+        evidence = []
+        if base >= 0.9: evidence.append("strong_label_match")
+        elif base >= 0.7: evidence.append("label_match")
+        else: evidence.append("fuzzy_or_fallback_match")
+        value = str(field.get("value") or "")
+        if field_name in ("survey_number","khasra_number","khata_number","plot_number") and re.search(r"\d", value):
+            evidence.append("numeric_identity_pattern")
+        if field_name in ("document_date","khatauni_year") and re.search(r"20\d{2}", value):
+            evidence.append("date_pattern")
+        field["confidence_explanation"] = {"score": round(base,3), "evidence": evidence}
     # Boundary descriptions are high-value cadastral evidence even when no
     # polygon coordinates exist. Keep them as four-side evidence for mapping
     # and human verification.
