@@ -357,6 +357,43 @@
     return `<span class="li-evidence mono">${esc(item.label || ref)}</span>`;
   }
 
+
+
+  function renderEvidenceGraph(d) {
+    const docs = (d && d.documents) || [];
+    const mutations = (d && d.mutations) || [];
+    const encs = (d && d.encumbrances) || [];
+    const litCases = (d && d.litigation && d.litigation.cases) || [];
+    const risk = d && d.risk ? d.risk : {};
+    const node = (icon, title, count, cls) => `<div class="li-evidence-node ${cls || ''}"><span class="li-evidence-node-icon">${icon}</span><b>${esc(title)}</b><small>${esc(String(count))} linked</small></div>`;
+    const refs = [];
+    docs.slice(0,3).forEach((x) => refs.push(`📄 ${esc(x.id || x.document_id || x.ref || 'document')}`));
+    mutations.slice(0,2).forEach((x) => refs.push(`🔁 ${esc(x.mutation_no || x.id || 'mutation')}`));
+    encs.slice(0,2).forEach((x) => refs.push(`🏦 ${esc(x.reference || x.id || 'encumbrance')}`));
+    litCases.slice(0,2).forEach((x) => refs.push(`⚖ ${esc(x.case_number || x.id || 'court case')}`));
+    const findingCount = (risk.why || []).filter(Boolean).length;
+    return `
+      <section class="li-evidence-graph li-card">
+        <div class="li-evidence-graph-head">
+          <div><span class="li-eyebrow">EVIDENCE GRAPH</span><h4>Why this investigation reached its current state</h4><p>Risk signals stay connected to the records that produced them.</p></div>
+          <span class="li-chip ${findingCount ? 'li-review' : 'li-clear'}">${findingCount} finding${findingCount === 1 ? '' : 's'}</span>
+        </div>
+        <div class="li-evidence-network">
+          ${node('🧭','Parcel',1,'parcel')}
+          <span class="li-network-arrow">↔</span>
+          ${node('👥','Ownership',d && d.current_owner && d.current_owner.owner ? 1 : 0,'')}
+          ${node('🔁','Mutations',mutations.length,'')}
+          ${node('🏦','Encumbrances',encs.length,'')}
+          ${node('⚖','Litigation',litCases.length,'')}
+          ${node('📄','Documents',docs.length,'')}
+          <span class="li-network-arrow">→</span>
+          ${node('⚠','Findings',findingCount,'finding')}
+        </div>
+        ${refs.length ? `<div class="li-evidence-refs"><b>Evidence currently linked:</b> ${refs.join(' · ')}</div>` : '<div class="li-sub">No linked evidence is available yet; the investigation remains incomplete.</div>'}
+        <div class="li-evidence-graph-foot">A finding is a workflow signal, not a legal conclusion. Human verification remains authoritative.</div>
+      </section>`;
+  }
+
   function renderDetail() {
     const d = S.detail;
     if (!d) return;
@@ -450,6 +487,7 @@
           <div><b>${esc(entry.action)}</b> <span class="li-sub">${esc(entry.username)}</span><div class="li-sub">${esc(entry.detail)}</div></div></li>`).join('') || `<li class="li-empty">${esc(t('noData'))}</li>`}</ul>`;
 
     root.innerHTML = `
+      ${renderPipeline(d)}
       <button class="btn ghost" id="liDetailBack" style="padding:4px 10px;font-size:12px">← ${esc(t('back'))}</button>
       <div class="li-evidence-strip">
         <div><b>${(d.documents || []).length}</b><span>Documents</span></div>
@@ -516,6 +554,7 @@
         <div class="li-card"><h4>${esc(t('documentsSection'))}</h4><ul class="li-history">${documents}</ul></div>
         <div class="li-card"><h4>${esc(t('auditSection'))}</h4>${audit}</div>
       </div>
+      ${renderEvidenceGraph(d)}
       <div id="liRiskExplanation" class="li-card li-explanation hidden"><h4>Why this parcel needs review</h4><ul class="li-flag-list">${(risk.why || []).filter(Boolean).slice(0,5).map((x) => `<li>${esc(x)}</li>`).join('') || '<li>No recorded risk explanation.</li>'}</ul><div class="li-sub">Signals are workflow evidence, not legal conclusions.</div></div>
       <div id="liDueDiligenceResult" class="hidden"></div>`;
 
@@ -1214,21 +1253,73 @@
       </div>`;
   }
 
+  function investigationStages(d) {
+    const risk = d && d.risk ? d.risk : {};
+    const docs = (d && d.documents) || [];
+    const mutations = (d && d.mutations) || [];
+    const encs = (d && d.encumbrances) || [];
+    const lit = d && d.litigation ? d.litigation : {};
+    const timeline = (d && d.timeline) || [];
+    const hasParcel = !!(d && d.property && (d.property.survey || d.property.khasra || d.land_id));
+    const hasOwner = !!(d && d.current_owner && d.current_owner.owner);
+    const hasSpatial = !!(d && d.map && (d.map.url || d.map.lat != null || d.map.lng != null));
+    const hasRisk = !!(risk.verdict || (risk.why && risk.why.length));
+    const review = String(risk.verdict || '').toUpperCase() !== 'CLEAR'
+      || (encs || []).some((x) => String(x.status || '').toUpperCase() === 'ACTIVE')
+      || !!(lit && lit.active_count);
+    return [
+      ['ingest','INGEST','📄',docs.length > 0,'Documents received'],
+      ['understand','UNDERSTAND','🤖',docs.length > 0,'OCR / extraction evidence'],
+      ['normalize','NORMALIZE','🧩',hasOwner || docs.length > 0,'Entities and land fields'],
+      ['parcel','IDENTIFY PARCEL','🧭',hasParcel,'Parcel identity resolved'],
+      ['chain','BUILD TITLE CHAIN','👥',hasOwner || mutations.length > 0,'Ownership + transfers'],
+      ['cross','CROSS-VALIDATE','🔎',mutations.length > 0 || encs.length > 0 || (lit.cases || []).length > 0,'Records reconciled'],
+      ['spatial','SPATIAL VERIFY','🗺',hasSpatial || !!(d && d.map),'Location / boundary evidence'],
+      ['risk','DETECT RISK','⚠',hasRisk,'Signals evaluated'],
+      ['evidence','EXPLAIN WITH EVIDENCE','📑',timeline.length > 0 || docs.length > 0,'Findings linked to records'],
+      ['review','HUMAN REVIEW','👤',review,'Reviewer decision gate'],
+      ['decision','DECISION & REPORT','✅',!!(d && (d.report || d.report_id)) && !review,'Verified outcome'],
+      ['audit','AUDIT TRAIL','🔐',!!(d && d.audit),'Traceable actions'],
+    ].map(([id,label,icon,done,note]) => ({id,label,icon,done:!!done,note}));
+  }
+
+  function renderPipeline(d) {
+    const stages = investigationStages(d);
+    const firstIncomplete = stages.findIndex((s) => !s.done);
+    const active = firstIncomplete < 0 ? stages.length - 1 : Math.max(0, firstIncomplete);
+    return `
+      <section class="li-pipeline" aria-label="Parcel investigation pipeline">
+        <div class="li-pipeline-head">
+          <div><span class="li-eyebrow">INVESTIGATION PIPELINE</span><h4>Evidence → verification → decision</h4></div>
+          <span class="li-pipeline-count">${stages.filter((s) => s.done).length}/${stages.length} stages evidenced</span>
+        </div>
+        <div class="li-pipeline-track">
+          ${stages.map((s,i) => `
+            <div class="li-stage ${s.done ? 'done' : (i === active ? 'active' : '')}" title="${esc(s.note)}">
+              <div class="li-stage-icon">${s.done ? '✓' : s.icon}</div>
+              <div class="li-stage-label">${esc(s.label)}</div>
+              <div class="li-stage-note">${esc(s.done ? s.note : (i === active ? 'Needs evidence / review' : 'Awaiting upstream evidence'))}</div>
+            </div>${i < stages.length - 1 ? '<div class="li-stage-line"></div>' : ''}`).join('')}
+        </div>
+      </section>`;
+  }
+
   function renderInvestigationHero() {
     return `
       <section class="li-investigation-hero" aria-labelledby="liInvestigationTitle">
         <div class="li-investigation-main">
           <div class="li-eyebrow">EVIDENCE-FIRST PARCEL VERIFICATION</div>
           <h3 id="liInvestigationTitle">Parcel Investigation</h3>
-          <p>Follow one parcel through documents, ownership, mutation, encumbrance, litigation, map evidence and human verification.</p>
-          <div class="li-flow"><span>📄 Documents</span><b>→</b><span>🧭 Parcel identity</span><b>→</b><span>🔎 Cross-checks</span><b>→</b><span>⚠ Risk evidence</span><b>→</b><span>👤 Review decision</span></div>
+          <p>Turn fragmented land records into one auditable investigation: identify the parcel, reconcile records, explain conflicts and route unresolved findings to a human reviewer.</p>
+          <div class="li-flow"><span>📄 Ingest</span><b>→</b><span>🧩 Normalize</span><b>→</b><span>🧭 Parcel</span><b>→</b><span>🔎 Cross-check</span><b>→</b><span>📑 Evidence</span><b>→</b><span>👤 Decision</span></div>
         </div>
         <div class="li-investigation-actions">
           <label class="li-mini-label" for="liInvestigationId">Parcel / land ID</label>
           <div class="li-investigation-search"><input id="liInvestigationId" placeholder="e.g. LI-COURT-003" aria-label="Parcel or land ID"><button type="button" class="btn saffron" id="liInvestigateBtn">Investigate</button></div>
           <div class="li-demo-links"><button type="button" class="btn ghost" data-li-demo="LI-COURT-003">⚖ Complex litigation</button><button type="button" class="btn ghost" data-li-demo="LI-RISK-003">🏦 Compound risk</button></div>
         </div>
-      </section>`;
+      </section>
+      <div id="liPipelineHost"></div>`;
   }
 
   function switchSub(sub) {
