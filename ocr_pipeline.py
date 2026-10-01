@@ -57,6 +57,28 @@ def get_server():
 # ---------------------------------------------------------------------------
 # Content helpers
 # ---------------------------------------------------------------------------
+
+def _attach_field_provenance(fields: Dict[str, Any], tokens: List[Dict[str, Any]], ocr_confidence: float) -> Dict[str, Any]:
+    """Attach best-effort OCR token evidence to extracted fields."""
+    clean_tokens=[t for t in (tokens or []) if str(t.get("text") or "").strip()]
+    for name, obj in fields.items():
+        if not isinstance(obj, dict) or not str(obj.get("value") or "").strip():
+            continue
+        value=str(obj["value"]).strip()
+        parts=[p.lower() for p in value.split() if len(p)>1]
+        matched=[]
+        for tok in clean_tokens:
+            tt=str(tok.get("text") or "").strip().lower()
+            if tt and (tt in parts or any(tt in p or p in tt for p in parts)):
+                matched.append(tok)
+        if matched:
+            obj["ocr_evidence"]={
+                "tokens":[{"text":t["text"],"confidence":t.get("confidence",0),"bbox":t.get("bbox")} for t in matched[:12]],
+                "mean_token_confidence":round(sum(float(t.get("confidence",0) or 0) for t in matched)/len(matched),3)
+            }
+            obj["confidence"]=round(min(float(obj.get("confidence",ocr_confidence) or 0),float(obj["ocr_evidence"]["mean_token_confidence"] or 0)),3)
+    return fields
+
 def content_hash(content: bytes) -> str:
     """Return a SHA-256 hex digest of the file bytes — stable content key."""
     return hashlib.sha256(content).hexdigest()
@@ -550,6 +572,13 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     detected = srv.extract_fields_from_ocr(ocr_text, filename or "upload")
     enriched_fields = detected["fields"]
     validation = detected["validation"]
+    # Preserve OCR provenance at field level: reviewers can trace a value back
+    # to the token(s) and bounding boxes that produced it.
+    if ext != ".pdf" and 'ocr_res' in locals():
+        _attach_field_provenance(enriched_fields, ocr_res.get("tokens", []), confidence)
+    if ocr_quality.get("score", 1.0) < 0.45:
+        validation.setdefault("issues", []).append({"severity":"warning","field":"ocr_quality","msg":"Document image quality is poor; re-scan or verify extracted fields manually."})
+        if validation.get("verdict") != "rejected": validation["verdict"]="review"
     ocr_quality = {"score": 0.0, "issues": []}
     ocr_orientation = {"rotation": 0, "confidence": 0.0, "script": None}
     low_confidence_fields = []
@@ -647,7 +676,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             **({"ocr_engine_error": engine_error} if engine_limited else {}),
         },
         "escalated": validation.get("verdict") == "rejected" or engine_limited,
-        "metadata": c_meta,
+        "metadata": {**c_meta, "ocr_quality": ocr_quality, "ocr_orientation": ocr_orientation},
     }
 
 
