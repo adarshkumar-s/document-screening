@@ -394,6 +394,61 @@
       </section>`;
   }
 
+
+  function investigationCompleteness(d) {
+    const docs=(d&&d.documents)||[], muts=(d&&d.mutations)||[], encs=(d&&d.encumbrances)||[];
+    const lit=(d&&d.litigation)||{}, timeline=(d&&d.timeline)||[], risk=(d&&d.risk)||{};
+    const checks=[
+      ['Document evidence',docs.length>0,'At least one source document is linked.'],
+      ['Parcel identity',!!(d&&d.property&&((d.property.survey||d.property.khasra)||d.land_id)),'Parcel identifiers are resolved.'],
+      ['Ownership chain',!!(d&&d.current_owner&&d.current_owner.owner)||muts.length>0,'Current ownership or transfer evidence exists.'],
+      ['Mutation reconciliation',muts.length>0,'Mutation records were checked.'],
+      ['Encumbrance review',encs.length>0,'Encumbrance records were checked.'],
+      ['Litigation review',!!d.litigation,'Litigation register was evaluated.'],
+      ['Spatial verification',!!(d&&d.map),'Map/location evidence is available.'],
+      ['Risk explanation',(risk.why||[]).filter(Boolean).length>0 || String(risk.verdict||'CLEAR')==='CLEAR','Risk outcome has an explanation or is clear.'],
+      ['Timeline',timeline.length>0,'Chronology contains linked events.'],
+      ['Audit trail',!!(d&&d.audit),'Review activity can be traced.'],
+    ];
+    const done=checks.filter(x=>x[1]).length;
+    return {done,total:checks.length,pct:Math.round(done/checks.length*100),checks};
+  }
+
+  function renderCompleteness(d) {
+    const c=investigationCompleteness(d);
+    const unresolved=c.checks.filter(x=>!x[1]);
+    return \`
+      <section class="li-card li-completeness">
+        <div class="li-completeness-head"><div><span class="li-eyebrow">INVESTIGATION COMPLETENESS</span><h4>\${c.pct}% evidence coverage</h4></div><span class="li-completeness-score">\${c.done}/\${c.total}</span></div>
+        <div class="li-completeness-bar"><span style="width:\${c.pct}%"></span></div>
+        <div class="li-completeness-grid">\${c.checks.map(x=>\`<div class="\${x[1]?'complete':'missing'}"><b>\${x[1]?'✓':'⚠'} \${esc(x[0])}</b><small>\${esc(x[2])}</small></div>\`).join('')}</div>
+        \${unresolved.length?\`<div class="li-review-note"><b>Review gap:</b> \${esc(unresolved.map(x=>x[0]).join(', '))}</div>\`:'<div class="li-clear-note">All defined investigation evidence checks are present.</div>'}
+      </section>\`;
+  }
+
+  function renderConflictCenter(d) {
+    const conflicts=[];
+    const muts=(d&&d.mutations)||[], lit=(d&&d.litigation)||{};
+    const owner=String(d&&d.current_owner&&d.current_owner.owner||'').trim().toLowerCase();
+    const last=muts.length?muts[muts.length-1]:null;
+    if(last&&last.new_owner&&owner&&String(last.new_owner).trim().toLowerCase()!==owner) conflicts.push({type:'OWNERSHIP',title:'Current owner differs from latest mutation buyer',detail:\`\${last.new_owner} → \${owner}\`,action:'Verify ownership chain'});
+    if(muts.some(m=>String(m.status||'').toUpperCase()==='COMPLETED'&&String(m.encumbrance_status||'').toUpperCase()==='ACTIVE')) conflicts.push({type:'MUTATION',title:'Completed mutation carries an active encumbrance signal',detail:'Mutation completion and encumbrance state require reconciliation.',action:'Review lender evidence'});
+    return \`
+      <section class="li-card li-conflict-center">
+        <div class="li-conflict-head"><div><span class="li-eyebrow">CONFLICT RESOLUTION</span><h4>\${conflicts.length?'Unresolved findings need a reviewer':'No deterministic record conflict detected'}</h4><p>Detection never silently changes source records.</p></div><span class="li-chip \${conflicts.length?'li-review':'li-clear'}">\${conflicts.length} conflict\${conflicts.length===1?'':'s'}</span></div>
+        \${conflicts.length?\`<div class="li-conflict-list">\${conflicts.map(x=>\`<div class="li-conflict-row"><span class="li-conflict-type">\${esc(x.type)}</span><div><b>\${esc(x.title)}</b><p>\${esc(x.detail)}</p></div><button type="button" class="btn ghost li-conflict-action" data-conflict-action="\${esc(x.action)}">\${esc(x.action)}</button></div>\`).join('')}</div>\`:'<div class="li-clear-note">No deterministic conflict was found from the records currently available. This is not a legal clearance.</div>'}
+      </section>\`;
+  }
+
+  function renderMasterReviewQueue() {
+    const root=$('liReviewPane'); if(!root)return;
+    const rows=(S.lands||[]).filter(x=>String(x.encumbrance_status||'').toUpperCase()==='ACTIVE'||Number(x.active_litigation_count||0)>0||Number(x.pending_mutation_count||0)>0||String(x.risk_verdict||'').toUpperCase()!=='CLEAR');
+    root.innerHTML=\`
+      <div class="li-review-queue-head"><div><span class="li-eyebrow">MASTER REVIEW QUEUE</span><h3>Investigations needing attention</h3><p>One queue for litigation, encumbrance, mutation and risk exceptions.</p></div><span class="li-count">\${rows.length} pending</span></div>
+      <div class="li-review-queue">\${rows.length?rows.map(x=>\`<button type="button" class="li-review-row" data-review-land="\${esc(x.land_id)}"><span class="li-review-severity">\${Number(x.active_litigation_count||0)>0?'🔴':String(x.encumbrance_status||'').toUpperCase()==='ACTIVE'?'🟠':'🟡'}</span><span><b>\${esc(x.land_id)}</b><small>\${dash(x.survey)} · \${dash(x.village)}</small></span><span class="li-review-reasons">\${[Number(x.active_litigation_count||0)>0?'Litigation':'',String(x.encumbrance_status||'').toUpperCase()==='ACTIVE'?'Encumbrance':'',Number(x.pending_mutation_count||0)>0?'Mutation pending':'',String(x.risk_verdict||'').toUpperCase()!=='CLEAR'?'Risk review':''].filter(Boolean).join(' · ')}</span><span>›</span></button>\`).join(''):'<div class="li-empty">No records currently match the review queue filters.</div>'}</div>\`;
+    root.querySelectorAll('[data-review-land]').forEach(b=>b.addEventListener('click',()=>openLandDetail(b.dataset.reviewLand)));
+  }
+
   function renderDetail() {
     const d = S.detail;
     if (!d) return;
@@ -489,6 +544,8 @@
     root.innerHTML = `
       ${renderPipeline(d)}
       <button class="btn ghost" id="liDetailBack" style="padding:4px 10px;font-size:12px">← ${esc(t('back'))}</button>
+      ${renderCompleteness(d)}
+      ${renderConflictCenter(d)}
       <div class="li-evidence-strip">
         <div><b>${(d.documents || []).length}</b><span>Documents</span></div>
         <div><b>${(d.mutations || []).length}</b><span>Mutations</span></div>
@@ -565,6 +622,7 @@
     if (reportBtn) reportBtn.addEventListener('click', () => generateReport(d.land_id));
     const ddBtn = $('liDetailDueDiligence');
     if (ddBtn) ddBtn.addEventListener('click', () => runDueDiligence(d.land_id, ddBtn));
+    root.querySelectorAll('[data-conflict-action]').forEach((btn) => btn.addEventListener('click', () => alert((btn.dataset.conflictAction || 'Review source evidence') + '. Source records are not changed automatically; use the reviewer workflow to resolve the finding.')));
     root.querySelectorAll('[data-evidence]').forEach((btn) => {
       btn.addEventListener('click', () => window.open(`/?open_document=${encodeURIComponent(btn.dataset.evidence)}`, '_blank'));
     });
@@ -1332,6 +1390,7 @@
     if (!root) return;
     const tabs = [
       ['records', t('records')],
+      ['review', 'Review Queue'],
       ['mutations', t('mutations')],
       ['encumbrances', t('encumbrances')],
       ['risk', t('riskReview')],
@@ -1351,6 +1410,7 @@
           ${tabs.map(([key, label]) => `<button type="button" class="li-subtab ${S.sub === key && !showingDetail ? 'active' : ''}" data-sub="${key}">${esc(label)}</button>`).join('')}
         </div>
         <div id="liRecordsPane" class="${S.sub === 'records' && !showingDetail ? '' : 'hidden'}"></div>
+        <div id="liReviewPane" class="${S.sub === 'review' ? '' : 'hidden'}"></div>
         <div id="liDetailPane" class="${showingDetail ? '' : 'hidden'}"></div>
         <div id="liMutationsPane" class="${S.sub === 'mutations' ? '' : 'hidden'}"></div>
         <div id="liEncumbrancesPane" class="${S.sub === 'encumbrances' ? '' : 'hidden'}"></div>
@@ -1360,6 +1420,7 @@
     root.querySelectorAll('.li-subtab').forEach((btn) => btn.addEventListener('click', () => switchSub(btn.dataset.sub)));
     if (S.sub === 'records' && S.detail) { renderDetail(); return; }
     if (S.sub === 'records') loadLands().catch(alertError);
+    if (S.sub === 'review') loadLands().then(renderMasterReviewQueue).catch(alertError);
     if (S.sub === 'mutations') { S.openMutation ? renderMutationReview() : loadMutations().catch(alertError); }
     if (S.sub === 'encumbrances') loadEncumbrances().catch(alertError);
     if (S.sub === 'risk') loadRisk().catch(alertError);
