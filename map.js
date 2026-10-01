@@ -577,7 +577,7 @@
       <div class="selected-actions"><button class="btn ghost" type="button" data-parcel-candidates>Review parcel candidates</button><button class="btn secondary" type="button" data-selected-open>Open document</button><button class="btn ghost" type="button" data-selected-history>View history</button><button class="btn ghost" type="button" data-selected-layers>Land & court layers</button><button class="btn ghost" type="button" data-selected-checks>Spatial checks</button>${recordCoordinate(record) || recordGeometry(record) ? '<button class="btn ghost" type="button" data-selected-map>View map</button>' : ''}${!recordCoordinate(record) && !recordGeometry(record) && (record.village || record.district) ? '<button class="btn ghost" type="button" data-selected-resolve>Resolve village location</button>' : ''}</div>
       <div class="location-editor ${canEdit ? '' : 'read-only'}">
         <div class="editor-head"><strong>Exact location editing</strong><span>${canEdit ? 'Verification Officer / Administrator' : 'Read-only for this role'}</span></div>
-        ${canEdit ? `<div class="pin-fields"><label>Latitude<input id="pinLatitude" inputmode="decimal" value="${exact ? esc(exact.lat) : ''}" placeholder="e.g. 28.6139"></label><label>Longitude<input id="pinLongitude" inputmode="decimal" value="${exact ? esc(exact.lon) : ''}" placeholder="e.g. 77.2090"></label></div><label>Verification note<input id="pinReason" maxlength="500" value="${esc(record.location_reason || '')}" placeholder="Why is this exact location being set or cleared?"></label><div class="editor-actions"><button class="btn secondary" type="button" data-save-pin>Save exact location</button><button class="btn ghost" type="button" data-place-pin>Choose on map</button>${exact ? '<button class="btn danger" type="button" data-clear-pin>Clear exact location</button>' : ''}</div><small class="editor-help">Saving writes mapping-only coordinates and an audit event. It does not alter OCR or document fields.</small><div class="boundary-editor"><strong>Plot boundary</strong><div class="editor-actions">${state.boundaryMode ? `<button class="btn secondary" type="button" data-finish-boundary>Save boundary (${state.boundaryPoints.length} corners)</button><button class="btn ghost" type="button" data-cancel-boundary>Cancel</button>` : '<button class="btn ghost" type="button" data-start-boundary>Trace boundary on map</button>'}</div><small class="editor-help">Click at least three corners on the map. The saved shape is a mapping-only screening aid, not a legal boundary.</small></div>` : '<p class="editor-help">Exact locations and traced boundaries can only be edited by an authorised Verification Officer or Administrator. Server-side role checks remain enforced.</p>'}
+        ${canEdit ? `<div class="pin-fields"><label>Latitude<input id="pinLatitude" inputmode="decimal" value="${exact ? esc(exact.lat) : ''}" placeholder="e.g. 28.6139"></label><label>Longitude<input id="pinLongitude" inputmode="decimal" value="${exact ? esc(exact.lon) : ''}" placeholder="e.g. 77.2090"></label></div><label>Verification note<input id="pinReason" maxlength="500" value="${esc(record.location_reason || '')}" placeholder="Why is this exact location being set or cleared?"></label><div class="editor-actions"><button class="btn secondary" type="button" data-save-pin>Save exact location</button><button class="btn ghost" type="button" data-place-pin>Choose on map</button>${exact ? '<button class="btn danger" type="button" data-clear-pin>Clear exact location</button>' : ''}</div><small class="editor-help">Saving writes mapping-only coordinates and an audit event. It does not alter OCR or document fields.</small><div class="boundary-editor"><strong>Plot boundary</strong><div class="editor-actions">${state.boundaryMode ? `<button class="btn secondary" type="button" data-finish-boundary>Save boundary (${state.boundaryPoints.length} corners)</button><button class="btn ghost" type="button" data-cancel-boundary>Cancel</button>` : '<button class="btn ghost" type="button" data-start-boundary>Trace boundary on map</button>'}</div><div class="editor-actions">${record.geometry ? '<button class="btn ghost" type="button" data-estimate-boundary>Estimate from area</button><button class="btn ghost" type="button" data-clear-boundary>Clear</button>' : ''} </div><small class="editor-help">Click at least three corners on the map. Area estimates are screening-only and are not authoritative cadastral boundaries.</small></div>` : '<p class="editor-help">Exact locations and traced boundaries can only be edited by an authorised Verification Officer or Administrator. Server-side role checks remain enforced.</p>'}
       </div>`;
     panel.querySelector('[data-selected-open]')?.addEventListener('click', () => openDocument(record.id));
     panel.querySelector('[data-selected-history]')?.addEventListener('click', () => openHistory(record.id));
@@ -598,6 +598,8 @@
     panel.querySelector('[data-start-boundary]')?.addEventListener('click', () => startBoundaryDigitizing(record));
     panel.querySelector('[data-finish-boundary]')?.addEventListener('click', () => finishBoundaryDigitizing(record));
     panel.querySelector('[data-cancel-boundary]')?.addEventListener('click', () => cancelBoundaryDigitizing());
+    panel.querySelector('[data-estimate-boundary]')?.addEventListener('click', () => estimateBoundary(record));
+    panel.querySelector('[data-clear-boundary]')?.addEventListener('click', () => clearBoundary(record));
   }
 
   function renderRecordList() {
@@ -1213,6 +1215,25 @@
     } catch (error) {
       setNotice(`<strong>Boundary was not saved.</strong> ${esc(error.message)}`, 'error');
     }
+  }
+
+  async function estimateBoundary(record) {
+    try {
+      const result = await api('/api/map/records/' + encodeURIComponent(record.id) + '/boundary/estimate', { method: 'POST', body: JSON.stringify({}) });
+      record.geometry = result.geometry; record.geometry_source = result.geometry_source;
+      renderRecordList(); renderMarkers(); focusRecord(record); renderSelectedRecord();
+      setNotice('<strong>Boundary estimate created.</strong> Screening-only area estimate.', 'warn');
+    } catch (error) { setNotice('<strong>Boundary estimate failed.</strong> ' + esc(error.message), 'warn'); }
+  }
+
+  async function clearBoundary(record) {
+    if (!window.confirm('Clear the stored boundary for ' + (record.filename || ('record #' + record.id)) + '?')) return;
+    try {
+      await api('/api/map/records/' + encodeURIComponent(record.id) + '/boundary/clear', { method: 'POST', body: JSON.stringify({}) });
+      record.geometry = null; record.geometry_source = null;
+      renderRecordList(); renderMarkers(); renderSelectedRecord();
+      setNotice('<strong>Boundary cleared.</strong>', 'info');
+    } catch (error) { setNotice('<strong>Boundary was not cleared.</strong> ' + esc(error.message), 'warn'); }
   }
 
   async function savePinFromFields(record) {
