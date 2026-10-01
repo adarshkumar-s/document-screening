@@ -1574,7 +1574,7 @@ def map_export_kml(user: Dict[str, Any] = Depends(get_current_user)):
     records = _map_visible_records(user, limit=10000)
     placemarks = []
     for record in records:
-        coordinate = coordinate_pair(record.get("lat"), record.get("lon"))
+        coordinate = (float(record["lat"]), float(record["lon"])) if record.get("lat") is not None and record.get("lon") is not None else None
         geometry = record.get("geometry")
         description = esc_kml(" | ".join(f"{key}: {record.get(key) or ''}" for key in ("survey","village","owner","location_status")))
         if geometry and geometry.get("type") == "Polygon":
