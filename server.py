@@ -809,128 +809,184 @@ def _ocr_orientation(image: Image.Image) -> Dict[str, Any]:
         return {"rotation":0, "confidence":0.0, "script":None}
 
 def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, Any]:
-    """Run Tesseract with AI-selected settings and return genuine word confidence."""
-    quality = _ocr_image_quality(image)
-    # OSD is expensive; only run it when explicitly requested. The normal
-    # upload path stays single-pass/low-latency and uses the supplied rotation.
+    """Run robust local OCR and never silently accept a blank/sparse pass.
+
+    Fast path: one Tesseract pass. If the result is blank/sparse, try a small
+    set of deterministic preprocessing/PSM variants and keep the strongest
+    result. This keeps normal uploads fast while making poor scans recoverable.
+    """
+    base_quality = _ocr_image_quality(image)
     if strategy.get("detect_orientation", False):
         orientation = strategy.get("orientation") or _ocr_orientation(image)
     else:
-        orientation = strategy.get("orientation") or {"rotation": int(strategy.get("rotation", 0) or 0), "confidence": 1.0, "script": None}
+        orientation = strategy.get("orientation") or {
+            "rotation": int(strategy.get("rotation", 0) or 0),
+            "confidence": 1.0,
+            "script": None,
+        }
+
     rotation = int(orientation.get("rotation", 0) or 0)
-    img = ImageOps.exif_transpose(image).convert("L")
-    img = _rotate_image(img, rotation)
+    base = ImageOps.exif_transpose(image).convert("L")
+    base = _rotate_image(base, rotation)
 
-    if img.width < 1100:
-        scale = 1350.0 / float(max(1, img.width))
-        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
-    elif img.width > 2100:
-        scale = 1900.0 / float(img.width)
-        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
-
-    if strategy.get("enhance", False):
-        img = ImageOps.autocontrast(img, cutoff=0.5)
-        img = ImageEnhance.Contrast(img).enhance(1.10)
-    if strategy.get("denoise", False):
-        img = img.filter(ImageFilter.MedianFilter(size=3))
+    if base.width < 1100:
+        scale = 1350.0 / float(max(1, base.width))
+        base = base.resize((int(base.width * scale), int(base.height * scale)), Image.Resampling.LANCZOS)
+    elif base.width > 2100:
+        scale = 1900.0 / float(base.width)
+        base = base.resize((int(base.width * scale), int(base.height * scale)), Image.Resampling.BILINEAR)
 
     psm = int(strategy.get("psm", 6) or 6)
     timeout = float(strategy.get("timeout", os.getenv("OCR_TIMEOUT_SECONDS", "8")) or 8)
     lang_candidates = strategy.get("lang_candidates") or [strategy.get("lang", "hin+eng+tel+tam"), "eng"]
 
-    data = None
-    best_blank_result = None
-    selected_lang = "eng"
-    last_error: Optional[Exception] = None
+    def _run_once(img: Image.Image, candidate: str, mode_psm: int) -> Dict[str, Any]:
+        if not HAS_TESSERACT:
+            raise RuntimeError("Tesseract OCR engine is not installed (python package pytesseract missing)")
+        data = pytesseract.image_to_data(
+            img,
+            lang=candidate,
+            config=f"--oem 1 --psm {mode_psm} -c preserve_interword_spaces=1",
+            output_type=pytesseract.Output.DICT,
+            timeout=timeout,
+        )
+        words: List[str] = []
+        confs: List[float] = []
+        tokens: List[Dict[str, Any]] = []
+        line_words: Dict[Tuple[int, int, int], List[str]] = {}
+        line_order: List[Tuple[int, int, int]] = []
+        raw_texts = data.get("text", [])
+        block_nums = data.get("block_num") or [0] * len(raw_texts)
+        par_nums = data.get("par_num") or [0] * len(raw_texts)
+        line_nums = data.get("line_num") or [0] * len(raw_texts)
+
+        for i, raw_word in enumerate(raw_texts):
+            word = str(raw_word or "").strip()
+            try:
+                raw_conf = float(data.get("conf", ["-1"])[i])
+            except Exception:
+                raw_conf = -1.0
+            if not word or raw_conf < 0:
+                continue
+            conf = round(max(0.0, min(1.0, raw_conf / 100.0)), 3)
+            words.append(word)
+            confs.append(conf)
+            tokens.append({
+                "text": word,
+                "confidence": conf,
+                "bbox": [
+                    int(data.get("left", [0])[i]),
+                    int(data.get("top", [0])[i]),
+                    int(data.get("width", [0])[i]),
+                    int(data.get("height", [0])[i]),
+                ],
+            })
+            try:
+                key = (int(block_nums[i]), int(par_nums[i]), int(line_nums[i]))
+            except Exception:
+                key = (0, 0, len(line_order))
+            if key not in line_words:
+                line_words[key] = []
+                line_order.append(key)
+            line_words[key].append(word)
+
+        text = "\n".join(" ".join(line_words[key]) for key in line_order)
+        avg_conf = float(sum(confs) / len(confs)) if confs else 0.0
+        detected = detect_primary_script(text)
+        return {
+            "text": text,
+            "quality": base_quality,
+            "orientation": {**orientation, "applied_rotation": rotation},
+            "confidence": round(avg_conf, 3),
+            "tokens": tokens,
+            "detected_language": detected,
+            "tesseract_language": candidate,
+            "word_count": len(words),
+            "psm": mode_psm,
+        }
+
+    def _score(result: Dict[str, Any]) -> float:
+        wc = int(result.get("word_count", 0) or 0)
+        conf = float(result.get("confidence", 0.0) or 0.0)
+        text_len = len(str(result.get("text") or "").strip())
+        # Prefer actual words, then confidence, while avoiding long garbage.
+        return min(1.0, (min(wc, 80) / 80.0) * 0.55 + conf * 0.35 + (min(text_len, 1000) / 1000.0) * 0.10)
+
+    best: Optional[Dict[str, Any]] = None
+    best_score = -1.0
+    errors: List[str] = []
+    passes = 0
+
+    # Normal pass first: this is the low-latency path for good scans.
+    primary_psms = [psm]
     for candidate in lang_candidates:
         try:
-            if not HAS_TESSERACT:
-                last_error = RuntimeError("Tesseract OCR engine is not installed (python package pytesseract missing)")
-                break
-            candidate_data = pytesseract.image_to_data(
-                img,
-                lang=candidate,
-                config=f"--oem 1 --psm {psm} -c preserve_interword_spaces=1",
-                output_type=pytesseract.Output.DICT,
-                timeout=timeout,
-            )
-            recognized = any(str(word or "").strip() for word in candidate_data.get("text", []))
-            if recognized:
-                data = candidate_data
-                selected_lang = candidate
-                break
-            if best_blank_result is None:
-                best_blank_result = candidate_data
-                selected_lang = candidate
+            result = _run_once(base, candidate, psm)
+            passes += 1
+            score = _score(result)
+            if score > best_score:
+                best, best_score = result, score
+            if int(result.get("word_count", 0) or 0) >= 8 and float(result.get("confidence", 0.0) or 0.0) >= 0.45:
+                result["ocr_passes"] = passes
+                return result
         except Exception as exc:
-            last_error = exc
-            continue
-    if data is None:
-        data = best_blank_result
+            errors.append(f"{candidate}/psm{psm}: {type(exc).__name__}: {str(exc)[:180]}")
 
-    if data is None:
-        # Distinguish "engine broken/missing" (silent-failure trap) from a blank
-        # page: callers surface engine_error so the user sees WHY no text came
-        # out instead of an empty-but-successful result.
-        detail = str(last_error) if last_error else "OCR engine is unavailable"
-        return {"text": "", "confidence": 0.0, "tokens": [], "detected_language": "English",
-                "word_count": 0, "engine_error": detail}
+    # Rescue local OCR only when the first pass is sparse/blank. Two variants
+    # cover common scans: contrast/denoise and adaptive-ish binary threshold.
+    variants: List[Tuple[str, Image.Image, int]] = []
+    enhanced = ImageOps.autocontrast(base, cutoff=0.5)
+    enhanced = ImageEnhance.Contrast(enhanced).enhance(1.15)
+    if strategy.get("denoise", True):
+        enhanced = enhanced.filter(ImageFilter.MedianFilter(size=3))
+    variants.append(("enhanced", enhanced, 11 if psm in (3, 6) else psm))
 
-    words: List[str] = []
-    confs: List[float] = []
-    tokens: List[Dict[str, Any]] = []
-    # Rebuild line-structured text from the SAME image_to_data pass (no second
-    # Tesseract call): field extraction relies on line boundaries, and joining
-    # every word into one flat line made label values swallow the whole page.
-    line_words: Dict[Tuple[int, int, int], List[str]] = {}
-    line_order: List[Tuple[int, int, int]] = []
-    raw_texts = data.get("text", [])
-    block_nums = data.get("block_num") or [0] * len(raw_texts)
-    par_nums = data.get("par_num") or [0] * len(raw_texts)
-    line_nums = data.get("line_num") or [0] * len(raw_texts)
-    for i, raw_word in enumerate(raw_texts):
-        word = str(raw_word or "").strip()
-        try:
-            raw_conf = float(data.get("conf", ["-1"])[i])
-        except Exception:
-            raw_conf = -1.0
-        if not word or raw_conf < 0:
-            continue
-        confidence = round(max(0.0, min(1.0, raw_conf / 100.0)), 3)
-        words.append(word)
-        confs.append(confidence)
-        tokens.append({
-            "text": word,
-            "confidence": confidence,
-            "bbox": [
-                int(data.get("left", [0])[i]),
-                int(data.get("top", [0])[i]),
-                int(data.get("width", [0])[i]),
-                int(data.get("height", [0])[i]),
-            ],
-        })
-        try:
-            line_key = (int(block_nums[i]), int(par_nums[i]), int(line_nums[i]))
-        except Exception:
-            line_key = (0, 0, len(line_order))
-        if line_key not in line_words:
-            line_words[line_key] = []
-            line_order.append(line_key)
-        line_words[line_key].append(word)
+    # PIL threshold is dependency-free and works well for faded/low-contrast
+    # scans without introducing OpenCV into the production image.
+    try:
+        threshold = enhanced.point(lambda p: 255 if p > 175 else 0)
+        variants.append(("threshold", threshold, 6))
+    except Exception:
+        pass
 
-    text = "\n".join(" ".join(line_words[key]) for key in line_order)
-    avg_conf = float(sum(confs) / len(confs)) if confs else 0.0
-    detected = detect_primary_script(text)
-    return {
-        "text": text,
-        "quality": quality,
-        "orientation": {**orientation, "applied_rotation": rotation},
-        "confidence": round(avg_conf, 3),
-        "tokens": tokens,
-        "detected_language": detected,
-        "tesseract_language": selected_lang,
-        "word_count": len(words),
-    }
+    # A dense-text PSM is a useful rescue for forms where PSM 6 misses labels.
+    if 11 not in primary_psms:
+        variants.append(("dense", enhanced, 11))
+
+    for variant_name, variant_img, variant_psm in variants:
+        for candidate in lang_candidates[:3]:
+            try:
+                result = _run_once(variant_img, candidate, variant_psm)
+                passes += 1
+                result["retry_variant"] = variant_name
+                score = _score(result)
+                if score > best_score:
+                    best, best_score = result, score
+            except Exception as exc:
+                errors.append(f"{variant_name}/{candidate}/psm{variant_psm}: {type(exc).__name__}: {str(exc)[:180]}")
+
+    if best is None:
+        detail = "; ".join(dict.fromkeys(errors)) or "OCR engine is unavailable"
+        return {
+            "text": "",
+            "confidence": 0.0,
+            "tokens": [],
+            "detected_language": "eng",
+            "word_count": 0,
+            "engine_error": detail,
+            "ocr_passes": passes,
+        }
+
+    if int(best.get("word_count", 0) or 0) < 3:
+        best["sparse_ocr"] = True
+        best["retry_reason"] = "ALL_LOCAL_PASSES_SPARSE"
+    elif best.get("retry_variant"):
+        best["retry_reason"] = "PRIMARY_PASS_SPARSE"
+
+    best["ocr_passes"] = passes
+    if errors:
+        best["ocr_warnings"] = list(dict.fromkeys(errors))[:6]
+    return best
 
 def validate_single_field(field_name: str, value: str, confidence: float) -> Tuple[str, str]:
     val = (value or "").strip()
