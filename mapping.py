@@ -1349,6 +1349,28 @@ def map_set_document_location(
 
 
 @map_router.put("/records/{doc_id}/boundary")
+
+
+def _ring_geometry_checks(points):
+    if len(points) < 4 or points[0] != points[-1]:
+        return False, "Boundary ring must be closed."
+    vertices = [(float(p[0]), float(p[1])) for p in points[:-1]]
+    area2 = sum(vertices[i][0]*vertices[(i+1)%len(vertices)][1] - vertices[(i+1)%len(vertices)][0]*vertices[i][1] for i in range(len(vertices)))
+    if abs(area2) < 1e-12:
+        return False, "Boundary area is zero or too small."
+    def orient(a,b,d):
+        return (b[0]-a[0])*(d[1]-a[1])-(b[1]-a[1])*(d[0]-a[0])
+    def crosses(a,b,d,e):
+        o1,o2,o3,o4=orient(a,b,d),orient(a,b,e),orient(d,e,a),orient(d,e,b)
+        return ((o1>0>o2) or (o1<0<o2)) and ((o3>0>o4) or (o3<0<o4))
+    for i in range(len(vertices)):
+        a,b=vertices[i],vertices[(i+1)%len(vertices)]
+        for j in range(i+1,len(vertices)):
+            if j in {i-1,i,i+1,len(vertices)-1}: continue
+            if crosses(a,b,vertices[j],vertices[(j+1)%len(vertices)]):
+                return False, "Boundary edges cross; draw a simple polygon."
+    return True, ""
+
 def map_set_document_boundary(
     doc_id: str,
     payload: Dict[str, Any],
@@ -1375,6 +1397,9 @@ def map_set_document_boundary(
         raise HTTPException(status_code=400, detail="A boundary requires at least three distinct corners.")
     if points[0] != points[-1]:
         points.append(points[0])
+    valid, error = _ring_geometry_checks(points)
+    if not valid:
+        raise HTTPException(status_code=400, detail=error)
     geometry = {"type": "Polygon", "coordinates": [points]}
     geometry_json = _json(geometry)
     actor = user.get("full_name", user.get("email", "user"))
@@ -1384,8 +1409,8 @@ def map_set_document_boundary(
         if not row:
             raise HTTPException(status_code=404, detail="Record not found.")
         db.execute(
-            "UPDATE documents SET map_geometry=?, map_geometry_source=?, updated_at=? WHERE id=?",
-            (geometry_json, "Officer-digitized boundary", changed_at, doc_id),
+            "UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='VERIFIED_BOUNDARY', map_geometry_updated_at=?, updated_at=? WHERE id=?",
+            (geometry_json, "Officer-digitized boundary", changed_at, changed_at, doc_id),
         )
     detail = f"Officer-digitized mapping boundary saved with {len(points) - 1} corners."
     if reason:
