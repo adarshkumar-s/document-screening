@@ -806,6 +806,7 @@
     if (!geometry) return null;
     try {
       const isDocumentBoundary = !!record.geometry;
+      const isReferenceBoundary = !isDocumentBoundary && !!record.reference_geometry;
       const geometryColor = isDocumentBoundary ? '#15803d' : '#6366f1';
       const layer = window.L.geoJSON(geometry, {
         style: { color: emphasized ? '#1d4ed8' : geometryColor, weight: emphasized ? 4 : 2,
@@ -814,8 +815,8 @@
       });
       if (!layer.getBounds().isValid()) return null;
       layer.bindPopup(`<div class="popup-title">${esc(record.owner || record.survey || record.id)}</div>
-        <div class="popup-detail"><strong>${esc(record.geometry ? 'DOCUMENT PLOT BOUNDARY' : 'REFERENCE GEOMETRY')}</strong><br>Survey: ${esc(record.survey || '—')}<br>
-        Village: ${esc(record.village || '—')}<br>Source: ${esc(record.geometry_source || record.reference_property?.geometry_source || 'Stored reference geometry')}<br>
+        <div class="popup-detail"><strong>${esc(record.geometry ? 'DOCUMENT PLOT BOUNDARY' : 'REFERENCE PARCEL BOUNDARY')}</strong><br>Survey: ${esc(record.survey || '—')}<br>
+        Village: ${esc(record.village || '—')}<br>Source: ${esc(record.geometry_source || record.reference_property?.geometry_source || 'Stored parcel geometry')}<br>${isReferenceBoundary ? 'Match: survey + village<br>' : ''}
         Boundary is for screening and orientation only; it is not an authoritative cadastral boundary or verified title.</div>`);
       layer.on('click', () => {
         if (recordById(record.id)) selectRecord(record.id);
