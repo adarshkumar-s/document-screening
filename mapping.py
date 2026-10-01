@@ -1480,7 +1480,10 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
     if query:
         if len(query) > 200:
             raise HTTPException(status_code=400, detail="query too long (max 200 chars)")
-        return _map_geocode_query(query)
+        result = _map_geocode_query(query)
+        log_audit(user.get("full_name", user.get("email", "user")), "geocode_requested",
+                  f"Map geocode requested for place-level query; resolved={bool(result.get('lat') is not None)}.", None)
+        return result
     village, tehsil, district, state = (
         str(payload.get(name) or "").strip() for name in ("village", "tehsil", "district", "state")
     )
@@ -1503,6 +1506,8 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
         attempted.add(query)
         result = _map_geocode_query(query, state=state, district=district)
         if result.get("lat") is not None and result.get("lon") is not None:
+            log_audit(user.get("full_name", user.get("email", "user")), "geocode_resolved",
+                      f"Map place geocode resolved at {level} level; no parcel coordinate was created.", None)
             return {**result, "match_level": level, "approximate": True}
         # An offline provider cannot improve with four more requests.
         if result.get("unavailable"):
