@@ -451,6 +451,18 @@
 
     root.innerHTML = `
       <button class="btn ghost" id="liDetailBack" style="padding:4px 10px;font-size:12px">← ${esc(t('back'))}</button>
+      <div class="li-evidence-strip">
+        <div><b>${(d.documents || []).length}</b><span>Documents</span></div>
+        <div><b>${(d.mutations || []).length}</b><span>Mutations</span></div>
+        <div><b>${(d.encumbrances || []).length}</b><span>Encumbrances</span></div>
+        <div><b>${(lit.cases || []).length}</b><span>Court cases</span></div>
+        <div><b>${(d.timeline || []).length}</b><span>Timeline events</span></div>
+        <div class="${((risk.verdict || 'CLEAR') !== 'CLEAR' || isGate || litGate) ? 'li-review-required' : 'li-review-clear'}"><b>${((risk.verdict || 'CLEAR') !== 'CLEAR' || isGate || litGate) ? 'REVIEW' : 'CLEAR'}</b><span>${((risk.verdict || 'CLEAR') !== 'CLEAR' || isGate || litGate) ? 'Human verification' : 'No review gate'}</span></div>
+      </div>
+      <div class="li-investigation-decision">
+        <div><strong>Investigation status</strong><span>${((risk.verdict || 'CLEAR') !== 'CLEAR' || isGate || litGate) ? 'Human verification required before a decision.' : 'No deterministic review gate is currently raised.'}</span></div>
+        <div class="li-decision-actions"><button class="btn ghost" id="liDetailMap">🗺 Open map evidence</button><button class="btn ghost" id="liDetailExplain">🔎 Explain risk</button></div>
+      </div>
       <div class="li-detail-head">
         <div>
           <h3 class="card-title" style="margin-bottom:2px">${dash(d.property.survey)} · ${dash(d.property.village)}</h3>
@@ -504,9 +516,12 @@
         <div class="li-card"><h4>${esc(t('documentsSection'))}</h4><ul class="li-history">${documents}</ul></div>
         <div class="li-card"><h4>${esc(t('auditSection'))}</h4>${audit}</div>
       </div>
+      <div id="liRiskExplanation" class="li-card li-explanation hidden"><h4>Why this parcel needs review</h4><ul class="li-flag-list">${(risk.why || []).filter(Boolean).slice(0,5).map((x) => `<li>${esc(x)}</li>`).join('') || '<li>No recorded risk explanation.</li>'}</ul><div class="li-sub">Signals are workflow evidence, not legal conclusions.</div></div>
       <div id="liDueDiligenceResult" class="hidden"></div>`;
 
     $('liDetailBack').addEventListener('click', () => { S.detail = null; renderPanes(); });
+    $('liDetailMap')?.addEventListener('click', () => { window.location.href = '/map?land_id=' + encodeURIComponent(d.land_id) + '&locate=1'; });
+    $('liDetailExplain')?.addEventListener('click', () => $('liRiskExplanation')?.classList.toggle('hidden'));
     const reportBtn = $('liDetailReport');
     if (reportBtn) reportBtn.addEventListener('click', () => generateReport(d.land_id));
     const ddBtn = $('liDetailDueDiligence');
