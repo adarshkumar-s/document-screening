@@ -2189,8 +2189,11 @@ async def run_ocr_pipeline(content: bytes, filename: str, lang: str = "auto") ->
     image = Image.open(io.BytesIO(content))
     image.load()
     max_side = int(os.getenv("MAX_IMAGE_DIMENSION", "15000"))
+    max_pixels = int(os.getenv("MAX_IMAGE_PIXELS", "60000000"))
     if max(image.width, image.height) > max_side:
         raise ValueError(f"Image exceeds the maximum supported dimension of {max_side}px")
+    if image.width * image.height > max_pixels:
+        raise ValueError(f"Image exceeds the maximum supported pixel budget of {max_pixels}")
     return await run_ai_assisted_pipeline(image, lang)
 
 
@@ -2913,6 +2916,9 @@ async def run_document_comparison(
     elif file_a and file_b:
         data_a = await file_a.read()
         data_b = await file_b.read()
+        max_compare_bytes = 15 * 1024 * 1024
+        if len(data_a) > max_compare_bytes or len(data_b) > max_compare_bytes:
+            raise HTTPException(status_code=413, detail="Comparison upload exceeds the 15 MB file limit.")
         if not data_a or not data_b:
             raise HTTPException(status_code=422, detail="One or both uploaded files are empty.")
 
@@ -3331,6 +3337,9 @@ async def bulk_upload_file(background: BackgroundTasks, batch_id: str, file: Upl
     mode = batch["mode"]
     item_id = _ocp.add_batch_item(batch_id, filename)
 
+    if len(content) > 15 * 1024 * 1024:
+        _ocp.update_batch_item(item_id, state="FAILED", error="File exceeds the 15 MB upload limit")
+        return {"item_id": item_id, "status": "FAILED", "error": "File exceeds the 15 MB upload limit"}
     if not content or not _bulk_allowed(ext):
         _ocp.update_batch_item(item_id, state="FAILED", error="Unsupported or empty file")
         log_audit(user["full_name"], "BULK_OCR_ERROR", f"Bulk OCR rejected '{filename}' in batch {batch_id}", None)
