@@ -1382,7 +1382,10 @@
       const parts = [];
       if (comparison.pin_inside_boundary === false) parts.push('Pin is outside saved boundary');
       if (comparison.outside_reference === true) parts.push('Pin is outside reference geometry');
-      if (comparison.area_difference_percent != null) parts.push(`boundary/reference area difference ${comparison.area_difference_percent}%`);
+      if (comparison.recorded_vs_boundary_difference_percent != null) parts.push(`recorded vs mapped area difference ${comparison.recorded_vs_boundary_difference_percent}%`);
+      if (comparison.recorded_vs_reference_difference_percent != null) parts.push(`recorded vs reference area difference ${comparison.recorded_vs_reference_difference_percent}%`);
+      if (comparison.boundary_vs_reference_difference_percent != null) parts.push(`mapped vs reference area difference ${comparison.boundary_vs_reference_difference_percent}%`);
+      if ((comparison.boundary_evidence || {}).completeness < 1 && (comparison.boundary_evidence || {}).completeness > 0) parts.push(`boundary descriptions ${Math.round((comparison.boundary_evidence || {}).completeness * 100)}% complete`);
       if (parts.length) setNotice(`<strong>Spatial review signal.</strong> ${esc(parts.join(' · '))}. Reference comparisons are screening-only.`, 'warn');
       else setNotice('<strong>Spatial checks complete.</strong> No current geometry inconsistency signal was returned.', 'info');
     } catch (error) { setNotice(`<strong>Spatial checks unavailable.</strong> ${esc(error.message)}`, 'warn'); }
