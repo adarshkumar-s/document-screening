@@ -1549,7 +1549,7 @@ def map_geojson(user: Dict[str, Any] = Depends(get_current_user)):
     for record in records:
         geometry = record.get("geometry")
         if not geometry:
-            coordinate = coordinate_pair(record.get("lat"), record.get("lon"))
+            coordinate = (float(record["lat"]), float(record["lon"])) if record.get("lat") is not None and record.get("lon") is not None else None
             geometry = {"type": "Point", "coordinates": [coordinate[1], coordinate[0]]} if coordinate else None
         if not geometry:
             continue
