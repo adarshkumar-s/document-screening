@@ -368,6 +368,7 @@ def _ensure_tables() -> None:
         _ensure_document_column(db, "map_geometry_updated_at", "REAL")
         _ensure_document_column(db, "location_accuracy_m", "REAL")
         _ensure_document_column(db, "location_source_detail", "TEXT")
+        _ensure_document_column(db, "location_reason", "TEXT")
         db.execute(
             """CREATE TABLE IF NOT EXISTS properties (
                 property_id TEXT PRIMARY KEY,
@@ -970,6 +971,7 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
         "location_verified_by": verified_by if has_exact_pin else None,
         "location_verified_at": verified_at if has_exact_pin else None,
         "location_reason": row["location_reason"] if "location_reason" in row.keys() else None,
+        "location_source_detail": row["location_source_detail"] if "location_source_detail" in row.keys() else None,
         "location_provenance": {
             "status": location_status,
             "source": location_source,
@@ -1051,7 +1053,7 @@ def _map_property_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, An
 # land-records / risk-review / detail request.
 _MAP_RECORD_COLUMNS = (
     "id", "filename", "doc_type", "status", "fields", "validation", "mean_conf",
-    "lat", "lon", "map_geometry", "map_geometry_source", "uploaded_by", "created_at", "updated_at",
+    "lat", "lon", "map_geometry", "map_geometry_source", "location_accuracy_m", "location_source_detail", "location_reason", "uploaded_by", "created_at", "updated_at",
 )
 
 
@@ -1204,18 +1206,29 @@ def map_records(
         if min_lat > max_lat or min_lon > max_lon:
             raise HTTPException(status_code=400, detail="Invalid map bounding box.")
         bbox = (min_lat, min_lon, max_lat, max_lon)
-    all_records = _map_visible_records(user, limit=limit, q=q, district=district, tehsil=tehsil, village=village, status=status, location=location, bbox=bbox)
-    filtered = [record for record in all_records if _map_record_matches(
+    # SQL applies role/status/bbox narrowing; exact field semantics are applied before pagination.
+    # The bounded candidate window prevents unbounded OCR payload reads while avoiding the old
+    # "LIMIT first, filter later" bug that could hide matching records.
+    candidate_limit = min(10000, max(limit + 1, 10000))
+    candidate_records = _map_visible_records(
+        user, limit=candidate_limit, offset=0, q=q, district=district, tehsil=tehsil,
+        village=village, status=status, location="", bbox=bbox,
+    )
+    filtered = [record for record in candidate_records if _map_record_matches(
         record, q=_normalise(q), district=district, tehsil=tehsil, village=village,
         status=status, location=location)]
+    page = filtered[:limit]
     return {
-        "records": filtered,
+        "records": page,
         "total": len(filtered),
+        "has_more": len(filtered) > limit,
         "metadata": {
             "authoritative": False,
             "source": "Screened document fields and authorised reviewer pins",
-            "summary": _map_summary(all_records),
+            "summary": _map_summary(filtered),
             "filters": {"q": q, "district": district, "tehsil": tehsil, "village": village, "status": status, "location": location},
+            "candidate_window": len(candidate_records),
+            "truncated": len(candidate_records) >= candidate_limit and len(filtered) > limit,
         },
     }
 
@@ -1240,6 +1253,359 @@ def map_conflicts(user: Dict[str, Any] = Depends(get_current_user)):
     return {"conflicts": conflicts, "count": len(conflicts),
             "disclaimer": "Spatial conflicts are screening signals only and do not establish boundary, title, possession, or legal status."}
 
+
+
+
+def _geo_points(geometry: Optional[Dict[str, Any]]) -> List[List[Tuple[float, float]]]:
+    if not isinstance(geometry, dict):
+        return []
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates") or []
+    if gtype == "Polygon":
+        return [[(float(p[0]), float(p[1])) for p in ring] for ring in coords if isinstance(ring, list) and len(ring) >= 4]
+    if gtype == "MultiPolygon":
+        rings = []
+        for polygon in coords:
+            if isinstance(polygon, list):
+                rings.extend([[(float(p[0]), float(p[1])) for p in ring] for ring in polygon if isinstance(ring, list) and len(ring) >= 4])
+        return rings
+    return []
+
+
+def _polygon_area(ring: Sequence[Tuple[float, float]]) -> float:
+    if len(ring) < 3:
+        return 0.0
+    return abs(sum(ring[i][0] * ring[(i + 1) % len(ring)][1] - ring[(i + 1) % len(ring)][0] * ring[i][1] for i in range(len(ring))) / 2.0)
+
+
+def _bbox_of_geometry(geometry: Optional[Dict[str, Any]]) -> Optional[Tuple[float, float, float, float]]:
+    rings = _geo_points(geometry)
+    pts = [point for ring in rings for point in ring]
+    if not pts:
+        return None
+    xs, ys = zip(*pts)
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bbox_overlap_ratio(first: Optional[Dict[str, Any]], second: Optional[Dict[str, Any]]) -> Optional[float]:
+    a, b = _bbox_of_geometry(first), _bbox_of_geometry(second)
+    if not a or not b:
+        return None
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    area_a = max(0.0, (a[2] - a[0]) * (a[3] - a[1]))
+    area_b = max(0.0, (b[2] - b[0]) * (b[3] - b[1]))
+    if not area_a or not area_b:
+        return 0.0
+    return round(inter / min(area_a, area_b), 4)
+
+
+def _point_in_ring(point: Tuple[float, float], ring: Sequence[Tuple[float, float]]) -> bool:
+    x, y = point
+    inside = False
+    for i in range(len(ring)):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % len(ring)]
+        if ((y1 > y) != (y2 > y)):
+            cross_x = (x2 - x1) * (y - y1) / ((y2 - y1) or 1e-30) + x1
+            if x < cross_x:
+                inside = not inside
+    return inside
+
+
+def _point_in_geometry(lat: float, lon: float, geometry: Optional[Dict[str, Any]]) -> Optional[bool]:
+    rings = _geo_points(geometry)
+    if not rings:
+        return None
+    return any(_point_in_ring((lon, lat), ring) for ring in rings)
+
+
+def _reference_comparison(record: Dict[str, Any]) -> Dict[str, Any]:
+    reference = record.get("reference_geometry")
+    boundary = record.get("geometry")
+    result: Dict[str, Any] = {
+        "available": bool(reference and boundary),
+        "screening_only": True,
+        "boundary_area": None,
+        "reference_area": None,
+        "area_difference_percent": None,
+        "bbox_overlap_ratio": None,
+        "pin_inside_boundary": None,
+        "pin_inside_reference": None,
+        "outside_reference": None,
+    }
+    if boundary:
+        rings = _geo_points(boundary)
+        result["boundary_area"] = round(sum(_polygon_area(ring) for ring in rings), 12) if rings else None
+    if reference:
+        rings = _geo_points(reference)
+        result["reference_area"] = round(sum(_polygon_area(ring) for ring in rings), 12) if rings else None
+    if result["boundary_area"] and result["reference_area"]:
+        result["area_difference_percent"] = round(abs(result["boundary_area"] - result["reference_area"]) / result["reference_area"] * 100, 2)
+        result["bbox_overlap_ratio"] = _bbox_overlap_ratio(boundary, reference)
+    if record.get("lat") is not None and record.get("lon") is not None:
+        result["pin_inside_boundary"] = _point_in_geometry(float(record["lat"]), float(record["lon"]), boundary)
+        result["pin_inside_reference"] = _point_in_geometry(float(record["lat"]), float(record["lon"]), reference)
+        result["outside_reference"] = result["pin_inside_reference"] is False if reference else None
+    return result
+
+
+def _candidate_parcels_for_record(record: Dict[str, Any], limit: int = 10) -> List[Dict[str, Any]]:
+    fields = {
+        "survey_number": record.get("survey"),
+        "khasra_number": record.get("khasra"),
+        "village": record.get("village"),
+        "taluka": record.get("tehsil"),
+        "district": record.get("district"),
+    }
+    resolved = _resolve(fields)
+    return (resolved.get("matches") or [])[:limit]
+
+
+def _record_reference_property(record_id: str) -> Optional[str]:
+    with get_db() as db:
+        row = db.execute("SELECT property_id FROM property_documents WHERE document_id=? ORDER BY linked_at DESC LIMIT 1", (record_id,)).fetchone()
+    return row["property_id"] if row else None
+
+
+@map_router.get("/records/{doc_id}/parcel-candidates")
+def map_parcel_candidates(doc_id: str, user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    records = _map_visible_records(user, limit=10000, q=doc_id)
+    record = next((item for item in records if str(item["id"]) == str(doc_id)), None)
+    if not record:
+        raise HTTPException(404, "Record not found or access denied.")
+    candidates = _candidate_parcels_for_record(record)
+    return {"document_id": doc_id, "resolution_status": "AMBIGUOUS_MATCH" if len(candidates) > 1 else ("MATCH" if candidates else "NO_MATCH"),
+            "candidates": candidates, "screening_only": True}
+
+
+@map_router.put("/records/{doc_id}/parcel-selection")
+def map_select_parcel(doc_id: str, payload: Dict[str, Any],
+                      user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    property_id = str(payload.get("property_id") or "").strip()
+    reason = str(payload.get("reason") or "").strip()[:500]
+    if not property_id:
+        raise HTTPException(400, "property_id is required.")
+    with get_db() as db:
+        document = db.execute("SELECT id, fields FROM documents WHERE id=?", (doc_id,)).fetchone()
+        property_row = _property_row(db, property_id)
+        if not document or not property_row:
+            raise HTTPException(404, "Document or parcel not found.")
+        fields = _parse_json(document["fields"], {}) or {}
+        supplied = {
+            "survey_number": _field_value(fields, "survey_number"),
+            "khasra_number": _field_value(fields, "khasra_number"),
+            "village": _field_value(fields, "village"),
+            "taluka": _field_value(fields, "taluka", "tehsil"),
+            "district": _field_value(fields, "district"),
+        }
+        mismatches = []
+        for key in ("village", "taluka", "district"):
+            if supplied[key] and _normalise(supplied[key]) != _normalise(property_row[key] or ""):
+                mismatches.append(key)
+        if supplied["survey_number"] and _land_number(supplied["survey_number"]).casefold() != _land_number(property_row["survey_number"] or property_row["gat_number"] or "").casefold():
+            mismatches.append("survey_number")
+        if mismatches:
+            raise HTTPException(409, {"detail": "Selected parcel conflicts with extracted document identity.", "conflicting_fields": mismatches})
+        previous = db.execute("SELECT property_id FROM property_documents WHERE document_id=? ORDER BY linked_at DESC LIMIT 1", (doc_id,)).fetchone()
+        db.execute("DELETE FROM property_documents WHERE document_id=?", (doc_id,))
+        now = _now()
+        db.execute("INSERT INTO property_documents(property_id,document_id,source_type,linked_at) VALUES (?,?,?,?)",
+                   (property_id, doc_id, "human_selected_parcel", now))
+        db.execute("INSERT INTO provenance(id,property_id,field_name,value,source,confidence,created_at) VALUES (?,?,?,?,?,?,?)",
+                   (uuid.uuid4().hex, property_id, "document_parcel_selection", _json({"document_id": doc_id, "previous_property_id": previous["property_id"] if previous else None, "reason": reason}), "Human parcel selection", 1.0, now))
+        db.execute("INSERT INTO property_timeline(id,property_id,event_type,description,source,created_at) VALUES (?,?,?,?,?,?)",
+                   (uuid.uuid4().hex, property_id, "PARCEL_SELECTED", f"Document {doc_id} was explicitly linked to parcel {property_id}.", "Human parcel verification", now))
+    actor = user.get("full_name") or user.get("email") or "user"
+    log_audit(actor, "parcel_selected", f"Document {doc_id} linked to parcel {property_id}. Previous={previous['property_id'] if previous else 'none'}. Reason: {reason or 'Not supplied'}", doc_id)
+    return {"ok": True, "document_id": doc_id, "property_id": property_id, "previous_property_id": previous["property_id"] if previous else None}
+
+
+def _refresh_review_findings(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build persistent spatial review signals from currently visible records."""
+    ensure_schema()
+    records = _map_visible_records(user, limit=10000)
+    findings: List[Dict[str, Any]] = []
+    by_location: Dict[Tuple[float, float], List[Dict[str, Any]]] = {}
+    by_survey: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for record in records:
+        if record.get("lat") is not None and record.get("lon") is not None:
+            by_location.setdefault((round(float(record["lat"]), 6), round(float(record["lon"]), 6)), []).append(record)
+        if record.get("survey"):
+            by_survey.setdefault((_land_number(record.get("survey")).casefold(), _normalise(record.get("village"))), []).append(record)
+        comparison = _reference_comparison(record)
+        if comparison.get("pin_inside_boundary") is False:
+            findings.append(_finding("PIN_OUTSIDE_BOUNDARY", "ERROR", "Location is outside saved boundary", "The exact reviewer pin is outside the saved officer boundary; review the pin and boundary.", [record["id"]]))
+        if comparison.get("outside_reference") is True:
+            findings.append(_finding("PIN_OUTSIDE_REFERENCE", "WARNING", "Location is outside reference geometry", "The exact pin falls outside the stored reference shape. Reference geometry is a screening signal only.", [record["id"]]))
+        if comparison.get("area_difference_percent") is not None and comparison["area_difference_percent"] > 25:
+            findings.append(_finding("REFERENCE_AREA_MISMATCH", "WARNING", "Boundary/reference area differs materially", "Saved boundary and reference geometry differ by more than 25% in simple planar screening.", [record["id"]]))
+        if record.get("geometry") and not record.get("reference_geometry") and record.get("geometry_source") == "Officer-digitized boundary":
+            # Geometry has already passed self-intersection validation.
+            pass
+    for key, group in by_location.items():
+        if len(group) > 1:
+            findings.append(_finding("DUPLICATE_EXACT_LOCATION", "WARNING", "Multiple records share an exact location", "More than one visible document is pinned at the same coordinates.", [item["id"] for item in group]))
+    for key, group in by_survey.items():
+        areas = {str(item.get("area") or "").strip() for item in group if str(item.get("area") or "").strip()}
+        if len(group) > 1 and len(areas) > 1:
+            findings.append(_finding("CONFLICTING_RECORDED_AREA", "WARNING", "Same survey has conflicting recorded areas", "Documents with the same survey and village contain different area strings; review source records and units.", [item["id"] for item in group]))
+        if len(group) > 1:
+            findings.append(_finding("DUPLICATE_SURVEY", "INFO", "Multiple records share survey and village", "Repeated survey/village identifiers may be legitimate history or duplicates; verify document relationships.", [item["id"] for item in group]))
+    # Ambiguous parcel candidates are derived per document.
+    for record in records:
+        candidates = _candidate_parcels_for_record(record, 3)
+        if len(candidates) > 1:
+            scores = [float(item.get("score") or 0) for item in candidates]
+            if scores[0] < 0.99 and (scores[0] - scores[1]) < 0.12:
+                findings.append(_finding("AMBIGUOUS_PARCEL", "ERROR", "Multiple parcels are similarly plausible", "A human reviewer must select the canonical parcel before relying on parcel-linked analysis.", [record["id"]]))
+    # Deduplicate current open findings per record/type.
+    now = _now()
+    with get_db() as db:
+        db.execute("UPDATE verification_findings SET status='SUPERSEDED', updated_at=? WHERE status='OPEN'", (now,))
+        for finding in findings:
+            fid = uuid.uuid4().hex
+            property_id = _record_reference_property(str(finding["evidence"][0])) if finding["evidence"] else None
+            db.execute("""INSERT INTO verification_findings
+                (finding_id,property_id,case_id,status,finding_type,severity,title,evidence,created_by,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (fid, property_id, None, "OPEN", finding["finding_type"], finding["severity"], finding["title"],
+                 _json(finding), user.get("email") or user.get("full_name") or "system", now, now))
+    return findings
+
+
+@map_router.get("/review-queue")
+def map_review_queue(user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    findings = _refresh_review_findings(user)
+    return {"findings": findings, "count": len(findings), "disclaimer": "Review signals require human verification; they are not legal conclusions."}
+
+
+@map_router.post("/review-queue/{finding_id}/resolve")
+def map_resolve_finding(finding_id: str, payload: Dict[str, Any],
+                        user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    status_value = str(payload.get("status") or "RESOLVED").upper()
+    if status_value not in {"RESOLVED", "DISMISSED"}:
+        raise HTTPException(400, "status must be RESOLVED or DISMISSED")
+    note = str(payload.get("note") or "").strip()[:500]
+    with get_db() as db:
+        row = db.execute("SELECT * FROM verification_findings WHERE finding_id=?", (finding_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Finding not found.")
+        db.execute("UPDATE verification_findings SET status=?, updated_at=? WHERE finding_id=?", (status_value, _now(), finding_id))
+    actor = user.get("full_name") or user.get("email") or "user"
+    log_audit(actor, "spatial_finding_resolved", f"{finding_id} -> {status_value}. Note: {note or 'none'}", None)
+    return {"ok": True, "finding_id": finding_id, "status": status_value}
+
+
+@map_router.get("/records/{doc_id}/spatial-checks")
+def map_spatial_checks(doc_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    record = next((r for r in _map_visible_records(user, limit=10000) if str(r["id"]) == str(doc_id)), None)
+    if not record:
+        raise HTTPException(404, "Record not found or access denied.")
+    comparison = _reference_comparison(record)
+    return {
+        "document_id": doc_id,
+        "comparison": comparison,
+        "geometry_source": record.get("geometry_source"),
+        "reference_source": (record.get("reference_property") or {}).get("geometry_source"),
+        "screening_only": True,
+    }
+
+
+@map_router.get("/records/{doc_id}/layers")
+def map_record_layers(doc_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    record = next((r for r in _map_visible_records(user, limit=10000) if str(r["id"]) == str(doc_id)), None)
+    if not record:
+        raise HTTPException(404, "Record not found or access denied.")
+    cases: List[Dict[str, Any]] = []
+    try:
+        from court_cases import list_cases, litigation_verdict_for
+        cases = list_cases(record.get("survey") or record.get("khasra") or "", record.get("village") or "")
+        for case in cases:
+            case["litigation_state"] = "ACTIVE" if str(case.get("status") or "").upper() == "ACTIVE" else "PRIOR"
+    except Exception:
+        cases = []
+    timeline = []
+    property_id = _record_reference_property(doc_id)
+    if property_id:
+        with get_db() as db:
+            timeline = [dict(row) for row in db.execute(
+                "SELECT event_type,description,source,created_at FROM property_timeline WHERE property_id=? ORDER BY created_at ASC",
+                (property_id,)).fetchall()]
+    return {
+        "document": {key: record.get(key) for key in ("id","survey","village","owner","area","location_status")},
+        "court_cases": cases,
+        "litigation_verdict": ("ACTIVE_LITIGATION" if any(str(c.get("status")).upper()=="ACTIVE" for c in cases) else ("PRIOR_LITIGATION" if cases else "CLEAR")),
+        "property_timeline": timeline,
+        "screening_only": True,
+    }
+
+
+@map_router.get("/geojson")
+def map_geojson(user: Dict[str, Any] = Depends(get_current_user)):
+    records = _map_visible_records(user, limit=10000)
+    features = []
+    for record in records:
+        geometry = record.get("geometry")
+        if not geometry:
+            coordinate = coordinate_pair(record.get("lat"), record.get("lon"))
+            geometry = {"type": "Point", "coordinates": [coordinate[1], coordinate[0]]} if coordinate else None
+        if not geometry:
+            continue
+        properties = {key: record.get(key) for key in (
+            "id","filename","status","owner","survey","khasra","village","tehsil","district",
+            "location_status","location_source","location_accuracy_m","geometry_source")}
+        properties["screening_only"] = True
+        features.append({"type":"Feature","id":record["id"],"geometry":geometry,"properties":properties})
+    return {"type":"FeatureCollection","features":features,"metadata":{"authoritative":False,"screening_only":True}}
+
+
+@map_router.get("/export.geojson")
+def map_export_geojson(user: Dict[str, Any] = Depends(get_current_user)):
+    payload = map_geojson(user)
+    return Response(content=_json(payload), media_type="application/geo+json", headers={
+        "Content-Disposition":"attachment; filename=land-map.geojson","Cache-Control":"no-store"})
+
+
+@map_router.get("/export.kml")
+def map_export_kml(user: Dict[str, Any] = Depends(get_current_user)):
+    records = _map_visible_records(user, limit=10000)
+    placemarks = []
+    for record in records:
+        coordinate = coordinate_pair(record.get("lat"), record.get("lon"))
+        geometry = record.get("geometry")
+        description = esc_kml(" | ".join(f"{key}: {record.get(key) or ''}" for key in ("survey","village","owner","location_status")))
+        if geometry and geometry.get("type") == "Polygon":
+            ring = geometry.get("coordinates", [[]])[0]
+            coords = " ".join(f"{point[0]},{point[1]},0" for point in ring)
+            shape = f"<Polygon><outerBoundaryIs><LinearRing><coordinates>{coords}</coordinates></LinearRing></outerBoundaryIs></Polygon>"
+        elif coordinate:
+            shape = f"<Point><coordinates>{coordinate[1]},{coordinate[0]},0</coordinates></Point>"
+        else:
+            continue
+        placemarks.append(f"<Placemark><name>{esc_kml(record.get('id'))}</name><description>{description}</description>{shape}</Placemark>")
+    body = "".join(placemarks)
+    kml = '<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Land Map</name>' + body + "</Document></kml>"
+    return Response(content=kml, media_type="application/vnd.google-earth.kml+xml", headers={"Content-Disposition":"attachment; filename=land-map.kml","Cache-Control":"no-store"})
+
+
+def esc_kml(value: Any) -> str:
+    import html as _html
+    return _html.escape(str(value or ""), quote=True)
+
+
+@map_router.get("/spatial-summary")
+def map_spatial_summary(user: Dict[str, Any] = Depends(get_current_user)):
+    records = _map_visible_records(user, limit=10000)
+    counts = {"verified": 0, "village_approx": 0, "unresolved": 0, "boundaries": 0, "reference_boundaries": 0}
+    for record in records:
+        if record.get("lat") is not None and record.get("lon") is not None: counts["verified"] += 1
+        elif record.get("village"): counts["village_approx"] += 1
+        else: counts["unresolved"] += 1
+        if record.get("geometry"): counts["boundaries"] += 1
+        if record.get("reference_geometry"): counts["reference_boundaries"] += 1
+    return {"counts": counts, "screening_only": True}
 
 @map_router.get("/summary")
 def map_summary(user: Dict[str, Any] = Depends(get_current_user)):
@@ -1357,7 +1723,7 @@ def map_set_document_location(
         previous = (row["lat"], row["lon"])
         if raw_lat is None:
             db.execute(
-                "UPDATE documents SET lat=NULL, lon=NULL, location_accuracy_m=NULL, location_source=NULL, location_verified_by=NULL, location_verified_at=NULL, updated_at=? WHERE id=?",
+                "UPDATE documents SET lat=NULL, lon=NULL, location_accuracy_m=NULL, location_source_detail=NULL, location_reason=NULL, location_verified_by=NULL, location_verified_at=NULL, updated_at=? WHERE id=?",
                 (changed_at, doc_id),
             )
             detail = "Document GIS pin cleared; previous coordinates were (%s, %s)." % previous
@@ -1379,8 +1745,8 @@ def map_set_document_location(
             if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
                 raise HTTPException(status_code=400, detail="lat must be -90..90 and lon -180..180.")
             db.execute(
-                "UPDATE documents SET lat=?, lon=?, location_accuracy_m=?, updated_at=? WHERE id=?",
-                (latitude, longitude, accuracy_m, changed_at, doc_id),
+                "UPDATE documents SET lat=?, lon=?, location_accuracy_m=?, location_source_detail=?, location_reason=?, location_verified_by=?, location_verified_at=?, updated_at=? WHERE id=?",
+                (latitude, longitude, accuracy_m, "Authorised reviewer pin", reason or None, actor, changed_at, changed_at, doc_id),
             )
             detail = "Document GIS pin changed from (%s, %s) to (%.6f, %.6f)." % (previous[0], previous[1], latitude, longitude)
             if reason:
