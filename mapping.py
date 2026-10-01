@@ -364,6 +364,10 @@ def _ensure_tables() -> None:
         _ensure_document_column(db, "lon", "REAL")
         _ensure_document_column(db, "map_geometry", "TEXT")
         _ensure_document_column(db, "map_geometry_source", "TEXT")
+        _ensure_document_column(db, "map_geometry_status", "TEXT")
+        _ensure_document_column(db, "map_geometry_updated_at", "REAL")
+        _ensure_document_column(db, "location_accuracy_m", "REAL")
+        _ensure_document_column(db, "location_source_detail", "TEXT")
         db.execute(
             """CREATE TABLE IF NOT EXISTS properties (
                 property_id TEXT PRIMARY KEY,
