@@ -2935,12 +2935,27 @@ def get_my_records(user: dict = Depends(require_roles(ROLE_DATA_OFFICER, ROLE_VE
 
 @app.get("/api/documents/queue")
 def get_verification_queue(user: dict = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+    # Queue consumers only need the lightweight review projection. Avoid
+    # shipping raw OCR text/cleaned OCR for every pending document.
+    queue_columns = (
+        "id, filename, doc_type, mean_conf, verdict, status, languages, pages, "
+        "fields, validation, detected_language, metadata, uploaded_by, reviewer_comments, "
+        "created_at, updated_at"
+    )
     with get_db() as db:
-        cur = db.execute("SELECT * FROM documents WHERE status=? ORDER BY created_at ASC", (STATUS_PENDING_VERIFICATION,))
-        return {"queue": [
-            {**dict(r), "fields": json.loads(r["fields"] or "{}"), "metadata": decode_document_metadata(r["metadata"])}
-            for r in cur.fetchall()
-        ]}
+        cur = db.execute(
+            f"SELECT {queue_columns} FROM documents "
+            "WHERE status=? ORDER BY created_at ASC",
+            (STATUS_PENDING_VERIFICATION,),
+        )
+        items = []
+        for r in cur.fetchall():
+            item = dict(r)
+            item["fields"] = json.loads(item.get("fields") or "{}")
+            item["validation"] = json.loads(item.get("validation") or "{}")
+            item["metadata"] = decode_document_metadata(item.get("metadata"))
+            items.append(item)
+        return {"queue": items}
 
 @app.post("/api/documents/{doc_id}/review-action")
 def review_action(
@@ -2960,8 +2975,11 @@ def review_action(
         r = cur.fetchone()
         if not r: raise HTTPException(status_code=404, detail="Document not found.")
 
-        if r["status"] == STATUS_APPROVED and new_st != STATUS_APPROVED:
-            raise HTTPException(status_code=400, detail="Approved records cannot be reverted.")
+        if r["status"] != STATUS_PENDING_VERIFICATION:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Only documents in the verification queue can be reviewed (current status: {r['status']})."
+            )
 
         fields = json.loads(r["fields"] or "{}")
 
@@ -2990,12 +3008,35 @@ def review_action(
                         except Exception:
                             pass
 
-            reval_fields, reval_rep = enrich_and_validate_fields(fields)
-            fields = reval_fields
+        # Always validate the final field state before a review decision.
+        # Previously validation only ran when corrections were supplied, which
+        # allowed an unchanged, incomplete record to be approved.
+        reval_fields, reval_rep = enrich_and_validate_fields(fields)
+        fields = reval_fields
+
+        if new_st == STATUS_APPROVED and reval_rep.get("verdict") != "valid":
+            summary = reval_rep.get("summary") or {}
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot approve a record that still has validation issues. "
+                    f"Missing={summary.get('missing', 0)}, "
+                    f"Warnings={summary.get('warning', 0)}, "
+                    f"Invalid={summary.get('invalid', 0)}."
+                )
+            )
 
         db.execute(
-            "UPDATE documents SET status=?, reviewer_comments=?, fields=?, updated_at=? WHERE id=?",
-            (new_st, req.comments or "", json.dumps(fields, ensure_ascii=False), time.time(), doc_id)
+            "UPDATE documents SET status=?, reviewer_comments=?, fields=?, validation=?, verdict=?, updated_at=? WHERE id=?",
+            (
+                new_st,
+                req.comments or "",
+                json.dumps(fields, ensure_ascii=False),
+                json.dumps(reval_rep, ensure_ascii=False),
+                reval_rep["verdict"],
+                time.time(),
+                doc_id,
+            )
         )
     log_audit(user["full_name"], f"VERIFICATION_{req.action.upper()}", f"Marked doc #{doc_id} as {new_st}", doc_id)
 
