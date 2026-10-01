@@ -983,9 +983,11 @@ if(btnStaffSub){
 }
 
 async function loadStaffQueue(){
+  const tb = $('#staffQueueTable tbody');
+  if(!tb) return;
+  tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">Loading verification queue…</td></tr>';
   try{
     const d = await api('/api/documents/queue');
-    const tb = $('#staffQueueTable tbody');
     tb.innerHTML = '';
 
     if(!d.queue || !d.queue.length){
@@ -996,21 +998,24 @@ async function loadStaffQueue(){
     d.queue.forEach(q=>{
       const f = q.fields || {};
       const tr = el('tr');
+      const conf = Number(q.mean_conf || 0);
       tr.innerHTML = `
-        <td><span class="mono">#${q.id}</span></td>
+        <td><span class="mono">#${escapeHtml(q.id)}</span></td>
         <td><b>${escapeHtml(q.filename)}</b></td>
         <td><span class="chip" style="font-size:10px">${escapeHtml(q.doc_type || 'Land Record')}</span></td>
         <td>${escapeHtml(q.uploaded_by)}</td>
-        <td><span class="pill ${q.mean_conf>=75?'valid':'review'}">${q.mean_conf}%</span></td>
+        <td><span class="pill ${conf>=75?'valid':'review'}">${conf}%</span></td>
         <td>${escapeHtml(f.owner_name?.value || '—')}</td>
         <td>${escapeHtml(f.khasra_number?.value || f.survey_number?.value || '—')}</td>
         <td style="text-align:right">
-          <button class="btn saffron" onclick="openStaffReview('${q.id}')" style="padding:4px 10px;font-size:12px">Review</button>
+          <button class="btn saffron" onclick="openStaffReview('${escapeHtml(q.id)}')" style="padding:4px 10px;font-size:12px">Review</button>
         </td>
       `;
       tb.appendChild(tr);
     });
-  }catch(e){}
+  }catch(e){
+    tb.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--err)">Unable to load verification queue: ${escapeHtml(e.message || 'Unknown error')}. Use Refresh to retry.</td></tr>`;
+  }
 }
 
 async function openStaffReview(id){
