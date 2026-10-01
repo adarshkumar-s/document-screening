@@ -384,6 +384,10 @@ def run_fast_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
     """
     srv = get_server()
     candidates = srv._ocr_languages(requested_lang or "auto")
+    if (requested_lang or "auto").lower().strip() == "auto":
+        installed = srv.available_ocr_languages()
+        if installed is None or "hin" in installed or "script/Devanagari" in installed:
+            candidates = list(dict.fromkeys(["hin+eng", "script/Devanagari"] + candidates))
     strategy = {
         "lang": candidates[0],
         "lang_candidates": candidates,
@@ -393,6 +397,18 @@ def run_fast_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
         "denoise": False,
     }
     ocr_res = srv.run_guided_ocr(image, strategy)
+    if float(ocr_res.get("confidence", 0.0) or 0.0) < 0.68 or int(ocr_res.get("word_count", 0) or 0) < 12:
+        retry = dict(strategy)
+        retry["psm"] = 6
+        retry["denoise"] = True
+        retry["lang_candidates"] = candidates[:3]
+        retry_res = srv.run_guided_ocr(image, retry)
+        if (float(retry_res.get("confidence", 0.0) or 0.0) > float(ocr_res.get("confidence", 0.0) or 0.0)
+                or int(retry_res.get("word_count", 0) or 0) > int(ocr_res.get("word_count", 0) or 0)):
+            retry_res["retry_reason"] = "LOW_CONFIDENCE_OR_SPARSE_TEXT"
+            retry_res["ocr_passes"] = 2
+            return retry_res
+    ocr_res["ocr_passes"] = 1
     return ocr_res
 
 
