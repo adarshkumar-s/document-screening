@@ -9,6 +9,6 @@ function loadRecordActions(){
   window.__recordActionsLoaded=true;
   const s=document.createElement('script');s.src='/js/record-actions.js?v=1';s.async=false;s.onload=()=>window.RecordActionsReady?.();document.head.appendChild(s);
 }
-function init(){wire();$('#openLandIntelDashboardBtn')?.addEventListener('click',()=>go('records'));$$('[data-intel-action]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.intelAction)));const y=$('#siteFooterYear');if(y)y.textContent=new Date().getFullYear();loadRecordActions();}
+function init(){wire();$('#openLandIntelDashboardBtn')?.addEventListener('click',()=>go('records'));$('[data-intel-action]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.intelAction)));$('[data-showcase-open]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.showcaseOpen||'records')));$('[data-showcase-scenario]').forEach(b=>b.addEventListener('click',()=>{const id=b.dataset.showcaseScenario;if(window.LandIntel?.openDemoScenario)window.LandIntel.openDemoScenario(id);else go('records');}));const y=$('#siteFooterYear');if(y)y.textContent=new Date().getFullYear();loadRecordActions();}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();new MutationObserver(wire).observe(document.body,{childList:true,subtree:true});
 })();
