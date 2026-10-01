@@ -540,6 +540,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
         confidence = float(ocr_res.get("confidence", 0.0) or 0.0)
         word_count = int(ocr_res.get("word_count", 0) or 0)
         engine_error = ocr_res.get("engine_error")
+        ocr_quality = ocr_res.get("quality") or ocr_quality
+        ocr_orientation = ocr_res.get("orientation") or ocr_orientation
 
     # Deterministic field extraction. Reuse the canonical, tested extractor
     # (server.extract_fields_from_ocr) so the fast pipeline produces EXACTLY the
@@ -548,6 +550,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     detected = srv.extract_fields_from_ocr(ocr_text, filename or "upload")
     enriched_fields = detected["fields"]
     validation = detected["validation"]
+    ocr_quality = {"score": 0.0, "issues": []}
+    ocr_orientation = {"rotation": 0, "confidence": 0.0, "script": None}
     low_confidence_fields = []
     for field_name, field_value in enriched_fields.items():
         if not isinstance(field_value, dict) or not str(field_value.get("value") or "").strip():
@@ -616,7 +620,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
                             "GOOD" if confidence >= 0.75 else ("UNCERTAIN" if confidence >= 0.45 else "FAILED")),
             "ocr_confidence": confidence,
             "ocr_word_count": word_count,
-            "ocr_strategy": {"method": ocr_method},
+            "ocr_strategy": {"method": ocr_method, "passes": int((ocr_result_meta.get("ocr_passes") or 1)), "quality_score": ocr_quality.get("score", 0.0), "quality_issues": ocr_quality.get("issues", []), "orientation": ocr_orientation},
             "recommendation": ("INSTALL_OCR_ENGINE" if engine_limited else
                                "READY_FOR_REVIEW" if validation.get("verdict") != "rejected" else "REVIEW_REQUIRED"),
             "explanation": ("OCR engine (Tesseract) is unavailable on this server — install it (plus language "
@@ -638,6 +642,8 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             "pages_processed": pages_ocrd,
             "pages_omitted": max(0, pages - pages_ocrd) if ext == ".pdf" else 0,
             "ocr_engine": "unavailable" if engine_limited else ("pdf_text_layer" if ocr_method == "pdf_text_layer" else "tesseract"),
+            "ocr_quality": ocr_quality,
+            "ocr_orientation": ocr_orientation,
             **({"ocr_engine_error": engine_error} if engine_limited else {}),
         },
         "escalated": validation.get("verdict") == "rejected" or engine_limited,
