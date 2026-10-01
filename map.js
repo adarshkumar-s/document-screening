@@ -574,13 +574,16 @@
         </dl>
       </div>
       ${property ? `<div class="reference-record-note"><strong>Reference geometry linked</strong><span>${esc(property.parcel_id || property.property_id || 'Reference parcel')} · ${esc(property.geometry_source || 'Source not available')}</span><small>Reference only; not a legal boundary. Geometry confidence is shown only because it exists in the backend property record: ${esc(property.geometry_confidence == null ? 'Not supplied' : property.geometry_confidence)}</small></div>` : ''}
-      <div class="selected-actions"><button class="btn secondary" type="button" data-selected-open>Open document</button><button class="btn ghost" type="button" data-selected-history>View history</button>${recordCoordinate(record) || recordGeometry(record) ? '<button class="btn ghost" type="button" data-selected-map>View map</button>' : ''}${!recordCoordinate(record) && !recordGeometry(record) && (record.village || record.district) ? '<button class="btn ghost" type="button" data-selected-resolve>Resolve village location</button>' : ''}</div>
+      <div class="selected-actions"><button class="btn ghost" type="button" data-parcel-candidates>Review parcel candidates</button><button class="btn secondary" type="button" data-selected-open>Open document</button><button class="btn ghost" type="button" data-selected-history>View history</button><button class="btn ghost" type="button" data-selected-layers>Land & court layers</button><button class="btn ghost" type="button" data-selected-checks>Spatial checks</button>${recordCoordinate(record) || recordGeometry(record) ? '<button class="btn ghost" type="button" data-selected-map>View map</button>' : ''}${!recordCoordinate(record) && !recordGeometry(record) && (record.village || record.district) ? '<button class="btn ghost" type="button" data-selected-resolve>Resolve village location</button>' : ''}</div>
       <div class="location-editor ${canEdit ? '' : 'read-only'}">
         <div class="editor-head"><strong>Exact location editing</strong><span>${canEdit ? 'Verification Officer / Administrator' : 'Read-only for this role'}</span></div>
         ${canEdit ? `<div class="pin-fields"><label>Latitude<input id="pinLatitude" inputmode="decimal" value="${exact ? esc(exact.lat) : ''}" placeholder="e.g. 28.6139"></label><label>Longitude<input id="pinLongitude" inputmode="decimal" value="${exact ? esc(exact.lon) : ''}" placeholder="e.g. 77.2090"></label></div><label>Verification note<input id="pinReason" maxlength="500" value="${esc(record.location_reason || '')}" placeholder="Why is this exact location being set or cleared?"></label><div class="editor-actions"><button class="btn secondary" type="button" data-save-pin>Save exact location</button><button class="btn ghost" type="button" data-place-pin>Choose on map</button>${exact ? '<button class="btn danger" type="button" data-clear-pin>Clear exact location</button>' : ''}</div><small class="editor-help">Saving writes mapping-only coordinates and an audit event. It does not alter OCR or document fields.</small><div class="boundary-editor"><strong>Plot boundary</strong><div class="editor-actions">${state.boundaryMode ? `<button class="btn secondary" type="button" data-finish-boundary>Save boundary (${state.boundaryPoints.length} corners)</button><button class="btn ghost" type="button" data-cancel-boundary>Cancel</button>` : '<button class="btn ghost" type="button" data-start-boundary>Trace boundary on map</button>'}</div><small class="editor-help">Click at least three corners on the map. The saved shape is a mapping-only screening aid, not a legal boundary.</small></div>` : '<p class="editor-help">Exact locations and traced boundaries can only be edited by an authorised Verification Officer or Administrator. Server-side role checks remain enforced.</p>'}
       </div>`;
     panel.querySelector('[data-selected-open]')?.addEventListener('click', () => openDocument(record.id));
     panel.querySelector('[data-selected-history]')?.addEventListener('click', () => openHistory(record.id));
+    panel.querySelector('[data-selected-layers]')?.addEventListener('click', () => openSpatialLayers(record));
+    panel.querySelector('[data-selected-checks]')?.addEventListener('click', () => loadSpatialChecks(record));
+    panel.querySelector('[data-parcel-candidates]')?.addEventListener('click', () => loadParcelCandidates(record));
     panel.querySelector('[data-selected-map]')?.addEventListener('click', () => selectRecord(record.id));
     panel.querySelector('[data-selected-resolve]')?.addEventListener('click', () => resolveRecordLocation(record));
     panel.querySelector('[data-place-pin]')?.addEventListener('click', () => {
@@ -1262,6 +1265,104 @@
     }
   }
 
+
+  async function downloadMapExport(path, filename, label) {
+    try {
+      const response = await fetch(path, { headers: token() ? { Authorization: \`Bearer \${token()}\` } : {}, credentials: 'same-origin' });
+      if (!response.ok) throw new Error('Export is not available for this session.');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = filename;
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+      setNotice(\`<strong>\${esc(label)} exported.</strong> The export contains only records visible to your role and is labelled as screening/reference data.\`, 'info');
+    } catch (error) { setNotice(\`<strong>Export failed.</strong> \${esc(error.message)}\`, 'warn'); }
+  }
+
+  async function openReviewQueue() {
+    if (!roleCanPin()) {
+      setNotice('<strong>Review queue is restricted.</strong> Only Verification Officers and Administrators can resolve spatial findings.', 'warn');
+      return;
+    }
+    try {
+      const data = await api('/api/map/review-queue');
+      const findings = Array.isArray(data.findings) ? data.findings : [];
+      $('reviewQueueSummary').innerHTML = findings.length
+        ? \`<strong>\${findings.length} screening signal\${findings.length === 1 ? '' : 's'}.</strong> These require human verification and are not legal conclusions.\`
+        : '<strong>No current spatial screening signals.</strong> This does not establish that the records are legally correct.';
+      $('reviewQueueList').innerHTML = findings.length ? findings.map((finding) => \`
+        <div class="history-item">
+          <div class="history-year">\${esc(finding.severity || 'INFO')}</div>
+          <div><div class="history-file">\${esc(finding.title || finding.finding_type || 'Review signal')}</div>
+          <div class="history-owner">\${esc(finding.reason || 'Human verification required.')}</div>
+          <span class="history-status">\${esc(finding.finding_type || '')}</span></div>
+          <div class="history-actions">\${(finding.evidence || []).slice(0,1).map((id) => \`<button type="button" data-review-select="\${esc(id)}">Open</button>\`).join('')}<button type="button" data-review-id="\${esc(finding.id || '')}" data-review-status="RESOLVED">Resolve</button><button type="button" data-review-id="\${esc(finding.id || '')}" data-review-status="DISMISSED">Dismiss</button></div>
+        </div>\`).join('') : '<div class="empty-state">No open findings.</div>';
+      $('reviewQueuePanel').classList.remove('hidden');
+      $('reviewQueuePanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (error) { setNotice(\`<strong>Review queue unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+  }
+
+  async function resolveReviewFinding(id, status) {
+    if (!id) return;
+    const note = window.prompt(\`Optional note for \${status.toLowerCase()}:\`, '') || '';
+    try {
+      await api(\`/api/map/review-queue/\${encodeURIComponent(id)}/resolve\`, { method: 'POST', body: JSON.stringify({ status, note }) });
+      await openReviewQueue();
+      setNotice(\`<strong>Review signal updated.</strong> \${esc(status)} recorded in the audit trail.\`, 'info');
+    } catch (error) { setNotice(\`<strong>Review signal was not updated.</strong> \${esc(error.message)}\`, 'warn'); }
+  }
+
+  async function openSpatialLayers(record) {
+    try {
+      const data = await api(\`/api/map/records/\${encodeURIComponent(record.id)}/layers\`);
+      const active = Array.isArray(data.court_cases) ? data.court_cases.filter((item) => String(item.status || '').toUpperCase() === 'ACTIVE').length : 0;
+      const cases = Array.isArray(data.court_cases) ? data.court_cases : [];
+      const timeline = Array.isArray(data.property_timeline) ? data.property_timeline : [];
+      const litigation = data.litigation_verdict || 'CLEAR';
+      const courtHtml = cases.length ? cases.map((item) => \`<div class="history-chain"><strong>\${esc(item.case_number || 'Court case')}</strong> · \${esc(item.status || '')} · \${esc(item.court_name || '')}</div>\`).join('') : '<span class="muted">No linked court cases found for this survey/village.</span>';
+      const timelineHtml = timeline.length ? timeline.slice(-8).map((item) => \`<div class="history-chain"><strong>\${esc(item.event_type || 'Event')}</strong> · \${esc(item.description || '')}</div>\`).join('') : '<span class="muted">No parcel timeline events are linked.</span>';
+      const panel = $('selectedRecordPanel');
+      panel.insertAdjacentHTML('beforeend', \`<div class="reference-record-note"><strong>Spatial & land layers</strong><span>Litigation: \${esc(litigation)} · active cases: \${active}</span><small>\${courtHtml}</small><small>Parcel timeline:<br>\${timelineHtml}</small></div>\`);
+    } catch (error) { setNotice(\`<strong>Layer data unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+  }
+
+  async function loadSpatialChecks(record) {
+    try {
+      const data = await api(\`/api/map/records/\${encodeURIComponent(record.id)}/spatial-checks\`);
+      const comparison = data.comparison || {};
+      const parts = [];
+      if (comparison.pin_inside_boundary === false) parts.push('Pin is outside saved boundary');
+      if (comparison.outside_reference === true) parts.push('Pin is outside reference geometry');
+      if (comparison.area_difference_percent != null) parts.push(\`boundary/reference area difference \${comparison.area_difference_percent}%\`);
+      if (parts.length) setNotice(\`<strong>Spatial review signal.</strong> \${esc(parts.join(' · '))}. Reference comparisons are screening-only.\`, 'warn');
+      else setNotice('<strong>Spatial checks complete.</strong> No current geometry inconsistency signal was returned.', 'info');
+    } catch (error) { setNotice(\`<strong>Spatial checks unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+  }
+
+
+  async function loadParcelCandidates(record) {
+    if (!roleCanPin()) { setNotice('<strong>Parcel candidate review is restricted.</strong> Verification Officer or Administrator only.', 'warn'); return; }
+    try {
+      const data = await api(\`/api/map/records/\${encodeURIComponent(record.id)}/parcel-candidates\`);
+      const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+      const html = candidates.length ? candidates.map((candidate) => {
+        const p = candidate.property || {};
+        return \`<div class="reference-record-note"><strong>\${esc(p.parcel_id || p.property_id || 'Parcel')}</strong><span>Score \${esc(candidate.score)} · \${esc(candidate.status || '')}</span><small>\${esc((candidate.matched_fields || []).join(', ') || 'No strong field match')}</small><button class="btn ghost" type="button" data-select-parcel="\${esc(p.property_id || '')}">Select this parcel</button></div>\`;
+      }).join('') : '<div class="empty-state">No controlled parcel candidates were found.</div>';
+      const panel = $('selectedRecordPanel');
+      panel.insertAdjacentHTML('beforeend', \`<div id="parcelCandidateBox"><strong>Parcel candidates</strong><p class="muted">Human selection is required when multiple controlled parcels are similarly plausible.</p>\${html}</div>\`);
+      panel.querySelectorAll('[data-select-parcel]').forEach((button) => button.addEventListener('click', async () => {
+        const reason = window.prompt('Why was this parcel selected? (optional)', '') || '';
+        try {
+          await api(\`/api/map/records/\${encodeURIComponent(record.id)}/parcel-selection\`, { method: 'PUT', body: JSON.stringify({ property_id: button.dataset.selectParcel, reason }) });
+          setNotice('<strong>Parcel selection saved.</strong> The document-to-parcel link and provenance were updated.', 'info');
+          await loadRecords();
+        } catch (error) { setNotice(\`<strong>Parcel selection failed.</strong> \${esc(error.message)}\`, 'warn'); }
+      }));
+    } catch (error) { setNotice(\`<strong>Parcel candidates unavailable.</strong> \${esc(error.message)}\`, 'warn'); }
+  }
+
   async function exportMapCsv() {
     try {
       const response = await fetch('/api/map/export.csv', {
@@ -1365,6 +1466,16 @@
       renderRecordList(); renderMarkers(); if (state.mapReady) fitMap();
     }));
     $('exportMapBtn').addEventListener('click', exportMapCsv);
+    $('exportGeoJsonBtn')?.addEventListener('click', () => downloadMapExport('/api/map/export.geojson', 'land-map.geojson', 'GeoJSON'));
+    $('exportKmlBtn')?.addEventListener('click', () => downloadMapExport('/api/map/export.kml', 'land-map.kml', 'KML'));
+    $('reviewQueueBtn')?.addEventListener('click', openReviewQueue);
+    $('closeReviewQueueBtn')?.addEventListener('click', () => $('reviewQueuePanel').classList.add('hidden'));
+    $('reviewQueueList')?.addEventListener('click', (event) => {
+      const select = event.target.closest('[data-review-select]');
+      if (select) showRecordOnMap(select.dataset.reviewSelect);
+      const action = event.target.closest('[data-review-id]');
+      if (action) resolveReviewFinding(action.dataset.reviewId, action.dataset.reviewStatus);
+    });
     $('fitRecordsBtn').addEventListener('click', () => { state.mapUserMoved = false; state.fitted = false; fitMap(true); });
     $('mapTileSource').addEventListener('change', (event) => setTileSource(event.target.value));
     const showMode = $('mapShowMode');
