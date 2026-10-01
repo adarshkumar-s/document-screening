@@ -16,6 +16,7 @@ SIGNUP_WINDOW_SECONDS = 60 * 60
 SIGNUP_MAX_ATTEMPTS = 5
 MULTIPART_WINDOW_SECONDS = 60 * 60
 MULTIPART_MAX_ATTEMPTS = 20
+TRUSTED_PROXY_IPS = {x.strip() for x in __import__('os').getenv('TRUSTED_PROXY_IPS', '').split(',') if x.strip()}
 
 _lock = threading.Lock()
 _buckets: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
@@ -23,10 +24,12 @@ _MAX_BUCKETS = 20_000
 
 
 def _client_key(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()[:64]
-    return (request.client.host if request.client else "unknown")[:64]
+    peer = request.client.host if request.client else "unknown"
+    if peer in TRUSTED_PROXY_IPS:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()[:64]
+    return peer[:64]
 
 
 def _allow(bucket: str, key: str, limit: int, window: int) -> bool:
