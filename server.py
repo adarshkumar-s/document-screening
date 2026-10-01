@@ -810,26 +810,31 @@ def _ocr_orientation(image: Image.Image) -> Dict[str, Any]:
 def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, Any]:
     """Run Tesseract with AI-selected settings and return genuine word confidence."""
     quality = _ocr_image_quality(image)
-    orientation = strategy.get("orientation") or _ocr_orientation(image)
-    rotation = int(orientation.get("rotation", 0) or 0) if float(orientation.get("confidence", 0) or 0) >= 0.55 else int(strategy.get("rotation", 0) or 0)
+    # OSD is expensive; only run it when explicitly requested. The normal
+    # upload path stays single-pass/low-latency and uses the supplied rotation.
+    if strategy.get("detect_orientation", False):
+        orientation = strategy.get("orientation") or _ocr_orientation(image)
+    else:
+        orientation = strategy.get("orientation") or {"rotation": int(strategy.get("rotation", 0) or 0), "confidence": 1.0, "script": None}
+    rotation = int(orientation.get("rotation", 0) or 0)
     img = ImageOps.exif_transpose(image).convert("L")
     img = _rotate_image(img, rotation)
 
-    if img.width < 1200:
-        scale = 1500.0 / float(max(1, img.width))
+    if img.width < 1100:
+        scale = 1350.0 / float(max(1, img.width))
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
-    elif img.width > 2600:
-        scale = 2200.0 / float(img.width)
+    elif img.width > 2100:
+        scale = 1900.0 / float(img.width)
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
 
-    if strategy.get("enhance", True):
+    if strategy.get("enhance", False):
         img = ImageOps.autocontrast(img, cutoff=0.5)
-        img = ImageEnhance.Contrast(img).enhance(1.15)
-        img = ImageEnhance.Sharpness(img).enhance(1.35)
+        img = ImageEnhance.Contrast(img).enhance(1.10)
     if strategy.get("denoise", False):
         img = img.filter(ImageFilter.MedianFilter(size=3))
 
-    psm = int(strategy.get("psm", 3) or 3)
+    psm = int(strategy.get("psm", 6) or 6)
+    timeout = float(strategy.get("timeout", os.getenv("OCR_TIMEOUT_SECONDS", "8")) or 8)
     lang_candidates = strategy.get("lang_candidates") or [strategy.get("lang", "hin+eng+tel+tam"), "eng"]
 
     data = None
@@ -844,8 +849,9 @@ def run_guided_ocr(image: Image.Image, strategy: Dict[str, Any]) -> Dict[str, An
             candidate_data = pytesseract.image_to_data(
                 img,
                 lang=candidate,
-                config=f"--oem 3 --psm {psm}",
+                config=f"--oem 1 --psm {psm} -c preserve_interword_spaces=1",
                 output_type=pytesseract.Output.DICT,
+                timeout=timeout,
             )
             recognized = any(str(word or "").strip() for word in candidate_data.get("text", []))
             if recognized:
