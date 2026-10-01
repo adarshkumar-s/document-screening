@@ -398,12 +398,12 @@ def _render_pdf_first_page(content: bytes, scale: float = 1.8):
 
 
 def run_fast_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
-    """Deterministic OCR without Gemini pre-scan.
+    """Fast local OCR with a vision rescue only when local OCR is unusable.
 
-    Uses sensible defaults; AI verification is deferred to an async task and
-    does NOT block this path. When the OCR engine itself is missing/broken the
-    result carries an ``engine_error`` key so callers can surface the reason
-    instead of silently returning empty text.
+    Good scans stay entirely local. Blank/sparse scans get the deterministic
+    multi-pass Tesseract recovery from server.run_guided_ocr; only if that
+    still fails do we ask the configured vision model to transcribe visible
+    text. The rescue never invents missing land identifiers.
     """
     srv = get_server()
     candidates = srv._ocr_languages(requested_lang or "auto")
@@ -411,6 +411,7 @@ def run_fast_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
         installed = srv.available_ocr_languages()
         if installed is None or "hin" in installed or "script/Devanagari" in installed:
             candidates = list(dict.fromkeys(["hin+eng", "script/Devanagari"] + candidates))
+
     strategy = {
         "lang": candidates[0],
         "lang_candidates": candidates,
@@ -421,22 +422,52 @@ def run_fast_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
         "denoise": False,
         "timeout": float(os.getenv("OCR_TIMEOUT_SECONDS", "8")),
     }
-    ocr_res = srv.run_guided_ocr(image, strategy)
-    if float(ocr_res.get("confidence", 0.0) or 0.0) < 0.55 or int(ocr_res.get("word_count", 0) or 0) < 8:
-        retry = dict(strategy)
-        retry["psm"] = 3
-        retry["denoise"] = True
-        retry["detect_orientation"] = True
-        retry["enhance"] = True
-        retry["lang_candidates"] = candidates[:3]
-        retry_res = srv.run_guided_ocr(image, retry)
-        if (float(retry_res.get("confidence", 0.0) or 0.0) > float(ocr_res.get("confidence", 0.0) or 0.0)
-                or int(retry_res.get("word_count", 0) or 0) > int(ocr_res.get("word_count", 0) or 0)):
-            retry_res["retry_reason"] = "LOW_CONFIDENCE_OR_SPARSE_TEXT"
-            retry_res["ocr_passes"] = 2
-            return retry_res
-    ocr_res["ocr_passes"] = 1
-    return ocr_res
+    local = srv.run_guided_ocr(image, strategy)
+    local_words = int(local.get("word_count", 0) or 0)
+    local_text = str(local.get("text") or "").strip()
+
+    if local_words >= 3 and local_text:
+        return local
+
+    # Last resort: configured Gemini vision. This is deliberately gated behind
+    # failed local OCR so normal uploads remain fast and deterministic.
+    if getattr(srv, "ai_client", None) and os.getenv("OCR_VISION_FALLBACK", "1").strip().lower() not in {"0", "false", "no"}:
+        try:
+            buf = io.BytesIO()
+            image.convert("RGB").save(buf, format="JPEG", quality=88)
+            prompt = """Transcribe ALL clearly visible text in this land-record image.
+Return STRICT JSON only:
+{"text":"...","language":"...","confidence":0.0}
+Rules:
+- Preserve names, survey/khasra/khata numbers, dates, areas and boundary labels exactly as visible.
+- Keep line breaks where practical.
+- Do not guess blurred or missing characters; omit text that cannot be read.
+- This is transcription, not legal interpretation."""
+            response = srv.ai_client.models.generate_content(
+                model=os.getenv("OCR_VISION_MODEL", "gemini-3.6-flash"),
+                contents=[srv.types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"), prompt],
+                config=srv.types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+            )
+            parsed = json.loads(srv._clean_json(response.text))
+            rescue_text = str(parsed.get("text") or "").strip() if isinstance(parsed, dict) else ""
+            if rescue_text:
+                words = [w for w in rescue_text.split() if any(ch.isalnum() for ch in w)]
+                rescue_conf = max(0.0, min(1.0, float(parsed.get("confidence", 0.0) or 0.0)))
+                return {
+                    "text": rescue_text,
+                    "confidence": rescue_conf,
+                    "tokens": [],
+                    "detected_language": srv.detect_primary_script(rescue_text) or str(parsed.get("language") or "eng"),
+                    "word_count": len(words),
+                    "engine": "gemini_vision_rescue",
+                    "method": "gemini_vision_rescue",
+                    "ocr_passes": int(local.get("ocr_passes", 0) or 0),
+                    "retry_reason": "LOCAL_OCR_SPARSE",
+                }
+        except Exception as exc:
+            local["vision_fallback_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+
+    return local
 
 
 # ---------------------------------------------------------------------------
