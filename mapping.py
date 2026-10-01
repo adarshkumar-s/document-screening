@@ -1851,9 +1851,23 @@ def map_geocode(payload: Dict[str, Any], user: Dict[str, Any] = Depends(get_curr
     if query:
         if len(query) > 200:
             raise HTTPException(status_code=400, detail="query too long (max 200 chars)")
+        # Free-form OCR/document text must never be sent to a third-party geocoder.
+        # Only place-shaped legacy queries are accepted; structured place fields below
+        # are preferred for new clients.
+        sensitive_markers = (
+            "owner", "father", "applicant", "petitioner", "respondent", "case number",
+            "court", "document", "doc id", "account", "phone", "mobile", "email",
+            "khasra", "khata", "mutation", "encumbrance", "address"
+        )
+        if any(marker in query.casefold() for marker in sensitive_markers):
+            raise HTTPException(status_code=400, detail="Use village, tehsil, district and state fields for geocoding; private document/person data is not accepted.")
+        parts = [part.strip() for part in re.split(r",|\\n", query) if part.strip()]
+        if len(parts) > 5:
+            raise HTTPException(status_code=400, detail="Place query may contain at most five place components.")
         result = _map_geocode_query(query)
         log_audit(user.get("full_name", user.get("email", "user")), "geocode_requested",
-                  f"Map geocode requested for place-level query; resolved={bool(result.get('lat') is not None)}.", None)
+                  "Map geocode requested for a place-only query; no parcel coordinate was created.",
+                  None)
         return result
     village, tehsil, district, state = (
         str(payload.get(name) or "").strip() for name in ("village", "tehsil", "district", "state")
