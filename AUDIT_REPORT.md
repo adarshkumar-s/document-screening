@@ -6,6 +6,120 @@
 
 ---
 
+# SESSION 2 — CORRECTION PASS (branch `arena/01a0ffb7-document-screening`)
+
+> **The prior report's headline claim did not hold on this checkout.** Section 2
+> and Section 8 below state `pytest -q` → *"215 passed"*. Measured on this
+> checkout at base commit `4dd3018`, the same command returned
+> **217 failed, 389 passed, 11 skipped, 30 errors** in 33.55 s. The claim
+> *"All roles work server-side ✅ probed live"* and *"Reports/PDF/UI consistent ✅"*
+> were also false: `GET /api/land-records/{id}` answered **422** for every
+> request, and `js/land-intel.js` had a hard `SyntaxError` that made browsers
+> discard the entire Land Intelligence UI.
+>
+> Everything in this section was executed, not inferred.
+
+## S2.1 Measured baseline (before any change)
+
+| Check | Result at `4dd3018` |
+|---|---|
+| `pytest -q` | **217 failed, 389 passed, 11 skipped, 30 errors** (33.55 s) |
+| `python -m compileall -q .` | clean (the defects were not syntax errors) |
+| `node --check js/land-intel.js` | **FAILS** — `land-intel.js:420  return \`` `SyntaxError: Invalid or unexpected token` |
+| `GET /api/land-records/{land_id}` | **422** `missing: land, documents, state, risk, timeline` |
+| `POST /api/documents/{id}/review-action {approve}` | **409** for any record lacking an optional field |
+
+Isolating the causes: neutralising the abuse limiter alone moved the suite from
+217 failed to **27 failed**, i.e. ~190 of the failures had one root cause.
+
+## S2.2 Defects found and fixed (this session)
+
+| # | Sev | Defect (verified) | Fix |
+|---|---|---|---|
+| 1 | **Critical** | `@land_router.get("/{land_id}")` was separated from its handler by an inserted helper, so Python applied the decorator to `_investigation_pipeline_status`; FastAPI read its five arguments as **required query params**. Every parcel-detail request returned 422 (~25 tests + the whole land-detail surface). | Decorator restored to `land_record_detail`; helpers left in place. Pinned by `tests/test_route_integrity.py`. |
+| 2 | **Critical** | `js/land-intel.js` lines 420–448 contained literal backslash-escaped backticks (`\``, `\${`). Browsers discard the whole script, so the Land Intelligence UI (completeness, conflict centre, master review queue) was dead. | Unescaped on exactly those 14 lines; `node --check` clean. Same failure class as prior report's bug #2 — it recurred. |
+| 3 | **Critical** | `security_hardening`'s sliding windows are process-global keyed by client IP. Under pytest every `TestClient` shares one peer, so the 5-signups/hour budget was exhausted by the first fixtures and ~190 tests failed `429 Too many signup attempts`. | Limits now env-configurable (`RATE_LIMIT_*`, invalid values fall back to defaults); added `reset_buckets()`; `tests/conftest.py` resets per test. |
+| 4 | **High** | The approval gate required `validation.verdict == "valid"`, but any empty *optional* field (boundaries, land class, ownership type, khata, mutation/registration no.) sets the verdict to `review`. **No real land record could ever be approved** — always 409. | Documented rule set next to `APPROVAL_REQUIRED_FIELDS`: invalid values and missing *identity* fields block; legitimately-empty optional fields do not. Advisory `verdict` semantics unchanged. 409 now returns per-field `blockers` with a readable `detail` string. |
+| 5 | **High** | `mapping._ensure_tables` migrated every `documents` location column except `location_verified_by` / `location_verified_at`, which the audited exact-pin UPDATE writes → `sqlite3.OperationalError: no such column`. Every pin set/clear failed (4 tests). | Both columns added to the idempotent migration. |
+| 6 | **High** | OCR cache: engine-failure entries were rejected by the empty-text guard *before* the engine-error branch, so they were never reused; and the cache-hit path reported them as `CACHED` / `READY_FOR_REVIEW`. | Engine-failure entries serve only while the engine is still missing, are invalidated the moment it is reachable, and always report `ENGINE_UNAVAILABLE` / `INSTALL_OCR_ENGINE` / `escalated: true`. |
+| 7 | **Medium** | A preprocessing failure (odd image mode, truncated object) aborted the entire OCR pass. | Grayscale/resize/enhance/threshold/denoise degrade independently, log to stderr, and surface `preprocessing_warnings` + `engine_errors` in the result. |
+| 8 | **Medium** | `ocr_land_bridge` had no `extract_pdf_text`, but `tests/test_pdf_land_intelligence_bridge.py` imports it → `ImportError`. | Added as an embedded-text-first wrapper over `extract_pdf_evidence`. |
+| 9 | **Medium** | The suite reused `./data/land_records.db`, so rows from earlier sessions leaked into assertions — `test_li_risk_verdicts_match_expected` failed once unrelated `Banner Ville` parcels had accumulated. | `tests/conftest.py` gives the suite its own database (an explicit `DB_PATH` is still respected). |
+| 10 | **Low** | `js/app.js` surfaced a non-string `detail` as `[object Object]`. | Renders `detail`/`message` plus any structured `blockers`. |
+
+Two test *fixtures* were also reaching the wrong seam and are fixed: one
+patched `server.pytesseract` although the installed high-recall runtime calls
+`pytesseract` directly (so it depended on a locally installed Tesseract that
+CI's test job does not provide); one passed an incomplete injected-server stub.
+
+## S2.3 New capability: explicit extraction states
+
+`extraction_states.py` owns one **pure** classifier producing six named
+outcomes — `EXTRACTION_SUCCESS`, `NEEDS_HUMAN_REVIEW`,
+`TEXT_FOUND_FIELDS_MISSING`, `NO_TEXT_DETECTED`, `OCR_ENGINE_UNAVAILABLE`,
+`AI_FALLBACK_FAILED` — each with a reason, a recommended action, the evidence
+that decided it, and the thresholds in force (env-configurable, defaults match
+`validate_single_field`). Absence of evidence never yields a success, and
+`ai_not_configured` is not treated as a failure because no rescue was possible.
+
+Wired into `run_fast_ocr_pipeline` (result + `pipeline_meta`) and derived on
+read by `GET /api/documents/{id}` from the persisted row, so documents
+processed before the change also report a state and no backfill migration is
+needed. Surfaced in the review card in `js/app.js`.
+
+## S2.4 Tests executed in this session (all actually run)
+
+| Command | Result |
+|---|---|
+| `pytest -q` at base `4dd3018` | 217 failed, 389 passed, 30 errors |
+| `pytest -q` after fixes | **663 passed, 11 skipped, 0 failed** |
+| `pytest -q` (2 further consecutive runs) | 663 passed each — no order dependence |
+| `python -m compileall -q .` | clean |
+| `node --check` on every first-party `.js` | clean (`js/land-intel.js` was failing) |
+| `python -c "from main import app"` | OK |
+| Production startup (`APP_ENV=production`, uvicorn on 0.0.0.0:8000) | `/healthz` → `{"status":"healthy","ai_enabled":false,"ocr_engine":{"tesseract":false,"pdf":true}}`; `/`, `/map`, `/js/land-intel.js` all 200 |
+
+New tests: `tests/test_route_integrity.py` (6) and
+`tests/test_extraction_states.py` (21). The route guard was **verified to
+fail** when the decorator defect is reintroduced (2 failures) and pass when
+fixed — an unfalsifiable guard is not a guard.
+
+## S2.5 Environment limitation (stated, not worked around)
+
+**Tesseract is not installed in this sandbox and cannot be installed** —
+`apt-get update` fails (`deb.debian.org` unreachable; only PyPI is reachable).
+Two consequences, both verified rather than assumed:
+
+* `/healthz` correctly reports `"tesseract": false`, so the diagnostic path is
+  real and not fabricated.
+* All 663 tests pass **without** an OCR engine. That is a genuine property of
+  the suite, and it is why the two fixtures that depended on a local Tesseract
+  were rewired to deterministic seams.
+
+What was therefore **not** measured here: real OCR field-accuracy benchmarks.
+No OCR benchmark number is claimed in this report, because no reviewed
+reference dataset was available in this environment. Producing one is the
+highest-value remaining task (see S2.6).
+
+## S2.6 Remaining known limitations after this session
+
+* **No OCR accuracy benchmark.** The mandate's benchmark (field coverage,
+  exact-match, per-field accuracy, character similarity) needs a
+  human-reviewed reference set; none exists in the repo and no OCR engine is
+  installed here to generate one honestly.
+* **GIS/parcel-matching and risk-rule logic was not extended** this session;
+  the existing engine was only made reachable again by fixing defect #1.
+* **Report generation was not modified.** PDF generation is covered by the
+  existing suite but was not re-exercised beyond it.
+* The review-card extraction panel is parse-verified (`node --check`) and its
+  data contract is API-tested, but it was **not rendered in a real browser** —
+  no browser tooling is available in this sandbox.
+* `landrec_system_v3.9.6.zip` (5.2 MB) is still committed; prior report's
+  recommendation to move it out of git is unchanged.
+
+
+---
+
 ## 1. Exact SHAs
 
 | Commit | Content |

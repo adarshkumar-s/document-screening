@@ -1045,6 +1045,56 @@ async function openStaffReview(id){
     };
     const recStyle = recStyles[ai.recommendation] || recStyles['REVIEW_REQUIRED'];
 
+    // Explicit extraction outcome. The server always returns this; it tells the
+    // reviewer whether the page was never read, was read but yielded no
+    // identifiers, or was read cleanly — which the old single "recommendation"
+    // badge could not distinguish.
+    const es = d.extraction_state || null;
+    const esStyles = {
+      'EXTRACTION_SUCCESS':       'background:#dcfce7;color:#15803d;border:1px solid #86efac',
+      'NEEDS_HUMAN_REVIEW':       'background:#fef3c7;color:#b45309;border:1px solid #fde68a',
+      'TEXT_FOUND_FIELDS_MISSING':'background:#ffedd5;color:#9a3412;border:1px solid #fdba74',
+      'NO_TEXT_DETECTED':         'background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5',
+      'OCR_ENGINE_UNAVAILABLE':   'background:#fee2e2;color:#991b1b;border:1px solid #f87171',
+      'AI_FALLBACK_FAILED':       'background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd'
+    };
+    const esPanel = es ? (() => {
+      const ev = es.evidence || {};
+      const found = ev.required_fields_found || [];
+      const missing = ev.required_fields_missing || [];
+      const conf = (ev.mean_field_confidence === null || ev.mean_field_confidence === undefined)
+        ? 'unknown' : Math.round(Number(ev.mean_field_confidence) * 100) + '%';
+      const rows = [
+        ['Extraction outcome', es.state],
+        ['Why', es.reason],
+        ['What to do next', es.recommended_action],
+        ['Identity fields found', found.length ? found.join(', ') : 'none'],
+        ['Identity fields missing', missing.length ? missing.join(', ') : 'none'],
+        ['Mean field confidence', conf],
+        ['OCR text length', (Number(ev.transcript_chars || 0)).toLocaleString() + ' characters']
+      ];
+      if (ev.engine_error) rows.push(['OCR engine error', ev.engine_error]);
+      if (ev.validation_verdict) rows.push(['Validation verdict', ev.validation_verdict]);
+      return `
+      <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:14px;margin-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div style="font-size:13px;font-weight:800;color:var(--gov-navy)">📄 OCR Extraction Outcome</div>
+          <span style="font-size:11px;font-weight:800;padding:3px 8px;border-radius:4px;${esStyles[es.state] || esStyles['NEEDS_HUMAN_REVIEW']}">
+            ${escapeHtml(es.state || 'UNKNOWN')}
+          </span>
+        </div>
+        <table style="width:100%;margin-top:8px;font-size:12px;border-collapse:collapse">
+          <tbody>
+            ${rows.map(r => `<tr>
+              <td style="padding:3px 8px 3px 0;color:var(--muted);white-space:nowrap;vertical-align:top">${escapeHtml(r[0])}</td>
+              <td style="padding:3px 0;color:var(--ink);word-break:break-word">${escapeHtml(String(r[1] == null ? '' : r[1]))}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        ${es.requires_human_review ? `<div style="margin-top:8px;font-size:12px;color:#b45309"><b>Human review required.</b> This outcome is not a verified record until a reviewer confirms it.</div>` : ''}
+      </div>`;
+    })() : '';
+
     let html = `
       <div class="card-header">
         <div>
@@ -1073,6 +1123,7 @@ async function openStaffReview(id){
           </div>
         ` : ''}
       </div>
+      ${esPanel}
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
         <div>
