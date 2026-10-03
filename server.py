@@ -1090,6 +1090,47 @@ def approval_blockers(fields: Dict[str, Any]) -> List[Dict[str, str]]:
     return blockers
 
 
+def document_extraction_state(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive the explicit extraction state for a persisted document row.
+
+    Reads only data already on the row (transcript, fields, validation, stored
+    OCR metadata), so it works for documents processed before this field
+    existed and needs no backfill migration. Never raises: a classification
+    problem degrades to NEEDS_HUMAN_REVIEW rather than breaking the detail API.
+    """
+    try:
+        from extraction_states import NEEDS_HUMAN_REVIEW, classify_extraction_state
+
+        metadata = doc.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        hybrid = metadata.get("hybrid_extraction") if isinstance(metadata.get("hybrid_extraction"), dict) else {}
+        engine_error = metadata.get("ocr_engine_error")
+        try:
+            engine_available = bool(tesseract_available())
+        except Exception:
+            engine_available = None
+
+        return classify_extraction_state(
+            ocr_text=doc.get("ocr_text") or doc.get("cleaned_ocr_text") or "",
+            engine_error=engine_error,
+            engine_available=engine_available,
+            fields=doc.get("fields") or {},
+            validation=doc.get("validation") or {},
+            ai_meta=hybrid.get("text_extraction"),
+            vision_meta=hybrid.get("vision_extraction"),
+        )
+    except Exception as exc:
+        print(f"[EXTRACTION STATE WARNING] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return {
+            "state": "NEEDS_HUMAN_REVIEW",
+            "requires_human_review": True,
+            "reason": "Extraction outcome could not be determined from the stored record.",
+            "recommended_action": "Review the raw OCR text and fields manually.",
+            "evidence": {"classifier_error": type(exc).__name__},
+            "thresholds": {},
+        }
+
+
 def enrich_and_validate_fields(raw_fields: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     enriched_fields = {}
     issues = []
@@ -3419,7 +3460,13 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
         doc_dict["fields"] = json.loads(doc_dict.get("fields") or "{}")
         doc_dict["ai_decision_support"] = json.loads(doc_dict.get("ai_decision_support") or "{}")
         doc_dict["metadata"] = decode_document_metadata(doc_dict.get("metadata"))
-        
+
+        # One explicit extraction outcome for the reviewer. Derived from the
+        # persisted row so documents processed before this field existed also
+        # report a state, and so a reviewer edit is reflected immediately
+        # rather than showing a stale verdict from upload time.
+        doc_dict["extraction_state"] = document_extraction_state(doc_dict)
+
         if role == ROLE_VIEWER:
             doc_dict.pop("reviewer_comments", None)
             doc_dict.pop("ocr_text", None)

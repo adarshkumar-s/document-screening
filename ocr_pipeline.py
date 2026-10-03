@@ -27,6 +27,7 @@ from __future__ import annotations
 import io
 import os
 import json
+import sys
 import time
 import uuid
 import hashlib
@@ -874,8 +875,36 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
                     })
 
     engine_limited = bool(engine_error) and not ocr_text.strip()
+
+    # One explicit, named outcome for the reviewer, derived only from evidence
+    # already collected above. See extraction_states for the rules.
+    try:
+        from extraction_states import classify_extraction_state
+
+        extraction_state = classify_extraction_state(
+            ocr_text=ocr_text,
+            engine_error=engine_error,
+            engine_available=(False if engine_limited else None),
+            fields=enriched_fields,
+            validation=validation,
+            ai_meta=(hybrid_meta or {}).get("text_extraction"),
+            vision_meta=(hybrid_meta or {}).get("vision_extraction"),
+            page_methods=(ocr_result_meta or {}).get("page_methods") if isinstance(ocr_result_meta, dict) else None,
+        )
+    except Exception as exc:  # never let classification break a completed OCR
+        print(f"[OCR] extraction state classification failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        extraction_state = {
+            "state": "NEEDS_HUMAN_REVIEW",
+            "requires_human_review": True,
+            "reason": "Extraction completed but its outcome could not be classified.",
+            "recommended_action": "Review the raw OCR text and fields manually.",
+            "evidence": {"classifier_error": type(exc).__name__},
+            "thresholds": {},
+        }
+
     return {
         "mean_conf": int(round(confidence * 100)),
+        "extraction_state": extraction_state,
         "languages": ["English", detected_lang],
         "pages": pages,
         "detected_language": detected_lang,
@@ -908,6 +937,7 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             "ocr_method": ocr_method,
             "content_hash": chash,
             "duration_ms": duration_ms,
+            "extraction_state": extraction_state["state"],
             "pages_processed": pages_ocrd,
             "pages_omitted": max(0, pages - pages_ocrd) if ext == ".pdf" else 0,
             "ocr_engine": "unavailable" if engine_limited else ("pdf_text_layer" if ocr_method == "pdf_text_layer" else "tesseract"),
