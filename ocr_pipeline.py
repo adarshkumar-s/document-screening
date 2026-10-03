@@ -770,10 +770,15 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             extracted_confidence = float(field_value.get("confidence", 0.95))
         except (TypeError, ValueError):
             extracted_confidence = 0.5
-        # Deterministic label extraction alone must not claim 95% certainty
-        # when the underlying scan was visibly poor. OCR word-level confidence
-        # is not field-specific, so use it as a conservative upper bound.
-        field_value["confidence"] = round(min(extracted_confidence, confidence), 3)
+        # OCR recognition confidence is only a ceiling for transcript-derived
+        # values. Independent AI/vision results have their own evidence and
+        # must not be capped at zero because Tesseract failed.
+        field_source = str(field_value.get("source") or "ocr").lower()
+        independent_source = any(token in field_source for token in ("vision", "gemini", "ai", "llm"))
+        if not independent_source:
+            field_value["confidence"] = round(min(extracted_confidence, max(0.0, min(1.0, confidence))), 3)
+        else:
+            field_value["confidence"] = round(max(0.0, min(1.0, extracted_confidence)), 3)
         if field_value["confidence"] < 0.65:
             low_confidence_fields.append(field_name)
     if low_confidence_fields:
