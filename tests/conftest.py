@@ -19,6 +19,24 @@ if str(ROOT) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limit_buckets():
+    """Give every test a fresh abuse-limit budget.
+
+    security_hardening keeps its sliding windows in module-global state keyed
+    by client IP. Under pytest every TestClient presents the same peer, so the
+    default 5-signups-per-hour budget was exhausted by the first few fixtures
+    and the remaining ~190 tests failed with 429 instead of running. Clearing
+    the buckets per test keeps the real production limiter intact while making
+    the suite independent of how many users earlier tests created.
+    """
+    import security_hardening
+
+    security_hardening.reset_buckets()
+    yield
+    security_hardening.reset_buckets()
+
+
+@pytest.fixture(autouse=True)
 def _restore_server_db_path():
     """Some existing tests reassign server.DB_PATH directly; restore it after
     every test so later tests keep using the canonical database."""

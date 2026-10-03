@@ -46,7 +46,18 @@ async function api(path, opts={}){
   let data = null;
   try{ data = await r.json(); }catch(e){}
   if(!r.ok){
-    throw new Error((data && (data.detail || data.message)) || ('Error ' + r.status));
+    // `detail` is normally a string, but some endpoints return a structured
+    // object.  Never surface "[object Object]" to an operator.
+    const raw = data && (data.detail || data.message);
+    let msg = 'Error ' + r.status;
+    if(typeof raw === 'string' && raw.trim()) msg = raw;
+    else if(raw && typeof raw === 'object'){
+      msg = raw.message || raw.detail || msg;
+      if(Array.isArray(raw.blockers) && raw.blockers.length){
+        msg += ' ' + raw.blockers.map(b => `${b.field || 'field'}: ${b.message || b.reason || ''}`.trim()).join(' | ');
+      }
+    }
+    throw new Error(msg);
   }
   return data;
 }

@@ -243,13 +243,47 @@ def cache_lookup(chash: str, user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         1 for value in fields.values()
         if isinstance(value, dict) and str(value.get("value") or "").strip()
     )
-    if cached_words < 3 or not cached_text or (cached_fields == 0 and cached_conf < 0.20):
-        return None
 
     if metadata.get("ocr_pipeline_version") != OCR_PIPELINE_VERSION:
         return None
-    if metadata.get("ocr_engine_error") and get_server().tesseract_available():
+
+    # An engine-failure entry is a *failure record*, not an extraction. It is
+    # safe to serve only while the engine is still missing (re-running OCR
+    # would fail identically); the moment Tesseract is reachable the stale
+    # failure must be discarded so the document is actually re-processed.
+    # Handled before the empty-text guard below, which would otherwise reject
+    # it unconditionally and send every re-upload back through a doomed pass.
+    engine_error = metadata.get("ocr_engine_error")
+    if engine_error:
+        if get_server().tesseract_available():
+            return None
+        return {
+            "content_hash": chash,
+            "source_doc_id": row["source_doc_id"],
+            "ocr_text": row["ocr_text"] or "",
+            "cleaned_ocr_text": row["cleaned_text"] or row["ocr_text"] or "",
+            "detected_language": row["detected_language"] or "eng",
+            "mean_conf": int(round(float(row["confidence"] or 0) * 100)),
+            "confidence": float(row["confidence"] or 0),
+            "fields": fields,
+            "validation": validation,
+            "languages": ["English", row["detected_language"] or "eng"],
+            "pages": int(row["pages"] or 1),
+            "doc_type": (fields.get("document_type", {}) or {}).get("value", "Land Record")
+            if isinstance(fields.get("document_type"), dict) else "Land Record",
+            "ocr_method": row["ocr_method"] or "tesseract",
+            "word_count": int(row["word_count"] or 0),
+            "metadata": metadata,
+            "cache_hit": True,
+            # Marker that makes the caller surface ENGINE_UNAVAILABLE instead
+            # of presenting this as a usable cached extraction.
+            "engine_failure": True,
+            "ocr_engine_error": engine_error,
+        }
+
+    if cached_words < 3 or not cached_text or (cached_fields == 0 and cached_conf < 0.20):
         return None
+
     # Never let a zero-field cache entry bypass newer extraction stages.
     if cached_fields == 0:
         return None
@@ -613,6 +647,10 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
     # Cache lookup
     cached = cache_lookup(chash, user or {})
     if cached:
+        # A cached engine failure is reported as the same engine failure a
+        # fresh attempt would produce. It must never be dressed up as a
+        # successful cached extraction.
+        cached_engine_failure = bool(cached.get("engine_failure"))
         result = {
             "mean_conf": cached["mean_conf"],
             "languages": cached["languages"],
@@ -623,13 +661,21 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
             "validation": cached["validation"],
             "ai_decision_support": {
                 "pipeline_mode": "CACHED_OCR",
-                "ocr_quality": "CACHED",
+                "ocr_quality": ("ENGINE_UNAVAILABLE" if cached_engine_failure else "CACHED"),
                 "ocr_confidence": cached["confidence"],
                 "ocr_word_count": cached["word_count"],
-                "recommendation": "READY_FOR_REVIEW",
-                "explanation": "Served from content-addressed OCR cache (RBAC scoped).",
+                "recommendation": ("INSTALL_OCR_ENGINE" if cached_engine_failure else "READY_FOR_REVIEW"),
+                "explanation": (
+                    "The OCR engine is still unavailable on this server; the previous engine-failure "
+                    "result for this exact file was reused instead of re-running a pass that would fail "
+                    "identically. Install Tesseract (plus language packs) or set TESSERACT_CMD, then "
+                    "re-process this document."
+                    if cached_engine_failure else
+                    "Served from content-addressed OCR cache (RBAC scoped)."
+                ),
                 "cache_hit": True,
                 "ocr_method": cached["ocr_method"],
+                **({"ocr_engine_error": cached.get("ocr_engine_error")} if cached_engine_failure else {}),
             },
             "ocr_text": cached["ocr_text"],
             "cleaned_ocr_text": cached["cleaned_ocr_text"],
@@ -640,8 +686,10 @@ async def run_fast_ocr_pipeline(content: bytes, filename: str, lang: str = "auto
                 "ocr_method": cached["ocr_method"],
                 "content_hash": chash,
                 "duration_ms": 0,
+                "ocr_engine": ("unavailable" if cached_engine_failure else "cache"),
+                **({"ocr_engine_error": cached.get("ocr_engine_error")} if cached_engine_failure else {}),
             },
-            "escalated": False,
+            "escalated": cached_engine_failure,
             "metadata": {**c_meta, **(cached.get("metadata") or {})},
         }
         return result

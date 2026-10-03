@@ -1587,8 +1587,6 @@ def risk_review(
     return {"land_records": results[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
 
 
-@land_router.get("/{land_id}")
-
 def _investigation_pipeline_status(land, documents, state, risk, timeline):
     stages = [
         ("INGEST", bool(documents), "Source documents linked"),
@@ -1620,6 +1618,7 @@ def _evidence_chain(land, documents, state, risk, timeline):
         chain.append({"source_type":"DERIVED","source_id":flag.get("code"),"finding_type":"RISK_SIGNAL","finding":flag.get("title"),"evidence":flag.get("evidence") or []})
     return chain
 
+@land_router.get("/{land_id}")
 def land_record_detail(land_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     land = _get_land(user, land_id)
     if not land:

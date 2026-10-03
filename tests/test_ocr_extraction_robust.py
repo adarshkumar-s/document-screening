@@ -197,8 +197,28 @@ def test_engine_failure_cache_is_invalidated_once_engine_works(monkeypatch, tmp_
     import ocr_pipeline
     ocr_pipeline.CACHE_TABLE_READY = False
 
-    monkeypatch.setattr(server, "HAS_TESSERACT", True)
-    monkeypatch.setattr(server.pytesseract, "image_to_data", _broken_tesseract)
+    # Patch the pipeline's own OCR seam (run_fast_ocr) rather than
+    # server.pytesseract. Once main.py has run, the installed high-recall
+    # runtime calls pytesseract directly, so patching the server attribute had
+    # no effect and the "repaired engine" phase returned empty text on any host
+    # without Tesseract — including CI, whose test job installs no OCR engine.
+    attempts = []
+
+    def _engine_down(_image, _lang="auto"):
+        attempts.append("down")
+        return {
+            "text": "", "confidence": 0.0, "word_count": 0,
+            "detected_language": "eng", "method": "tesseract_unavailable",
+            "engine_error": "Tesseract executable is unavailable",
+        }
+
+    def _engine_up(_image, _lang="auto"):
+        attempts.append("up")
+        return {
+            "text": "Survey No: 131\nVillage: Shantiban", "confidence": 0.95,
+            "word_count": 5, "detected_language": "eng",
+            "method": "tesseract_enhanced_psm6",
+        }
 
     image = Image.new("RGB", (60, 60), "white")
     buf = io.BytesIO()
@@ -206,22 +226,34 @@ def test_engine_failure_cache_is_invalidated_once_engine_works(monkeypatch, tmp_
     content = buf.getvalue()
     user = {"email": "a@b.test", "role": "ADMIN"}
 
-    asyncio.run(ocr_pipeline.run_fast_ocr_pipeline(
-        content, "scan.png", "auto", user=user, doc_id="DOC-1"))
+    monkeypatch.setattr(server, "HAS_TESSERACT", True)
+    monkeypatch.setattr(ocr_pipeline, "run_fast_ocr", _engine_down)
 
-    # Engine still broken: the cached (empty) result is served — no re-OCR.
+    first = asyncio.run(ocr_pipeline.run_fast_ocr_pipeline(
+        content, "scan.png", "auto", user=user, doc_id="DOC-1"))
+    assert first["pipeline_meta"]["ocr_engine"] == "unavailable"
+
+    # Engine still broken: the cached failure record is served — no re-OCR.
     monkeypatch.setattr(server, "tesseract_available", lambda: False)
     hit = asyncio.run(ocr_pipeline.run_fast_ocr_pipeline(
         content, "scan-copy.png", "auto", user=user, doc_id="DOC-2"))
     assert hit["pipeline_meta"]["cache_hit"] is True
+    assert attempts == ["down"], "a cached engine failure must not trigger another doomed OCR pass"
+    # ...and it must still be reported as an engine failure, never as a usable
+    # cached extraction.
+    assert hit["ai_decision_support"]["ocr_quality"] == "ENGINE_UNAVAILABLE"
+    assert hit["ai_decision_support"]["recommendation"] == "INSTALL_OCR_ENGINE"
+    assert hit["escalated"] is True
 
     # Engine repaired: the stale engine-failure entry must NOT be served.
     monkeypatch.setattr(server, "tesseract_available", lambda: True)
-    monkeypatch.setattr(server.pytesseract, "image_to_data", _fake_image_to_data)
+    monkeypatch.setattr(ocr_pipeline, "run_fast_ocr", _engine_up)
     refreshed = asyncio.run(ocr_pipeline.run_fast_ocr_pipeline(
         content, "scan-copy2.png", "auto", user=user, doc_id="DOC-3"))
     assert refreshed["pipeline_meta"]["cache_hit"] is False
+    assert attempts == ["down", "up"]
     assert "131" in refreshed["ocr_text"]
+    assert refreshed["escalated"] is False
 
 
 def test_auto_language_candidates_are_filtered_to_installed_packs(monkeypatch):
