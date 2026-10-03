@@ -115,6 +115,10 @@ def test_scanned_pdf_ocr_reads_every_page(monkeypatch):
         HAS_PDFIUM=True,
         pdfium=types.SimpleNamespace(PdfDocument=lambda content: fake_pdf),
         extract_fields_from_ocr=server.extract_fields_from_ocr,
+        # run_fast_ocr_pipeline validates through the injected server, so the
+        # stub must expose the real validator; without it the call raised
+        # AttributeError instead of exercising page-by-page extraction.
+        enrich_and_validate_fields=server.enrich_and_validate_fields,
     )
     monkeypatch.setattr(ocr_pipeline, "get_server", lambda: fake_server)
     monkeypatch.setattr(ocr_pipeline, "cache_lookup", lambda *args: None)

@@ -67,6 +67,21 @@ def extract_pdf_evidence(content: bytes, lang: str = "auto") -> Tuple[str, int, 
     return "\n\n".join(evidence).strip(), pages, {"pages_processed": min(pages, MAX_PDF_PAGES), "ocr_pages": ocr_pages, "page_methods": page_methods}, rescue_image
 
 
+def extract_pdf_text(content: bytes, lang: str = "auto") -> Tuple[str, int]:
+    """Return the transcript and total page count for a PDF.
+
+    Thin, stable wrapper over :func:`extract_pdf_evidence` for callers that
+    only need text: embedded text layers are used for every page that has one,
+    and image OCR runs only for pages without a usable text layer.
+
+    Raises ``ValueError`` when the PDF engine is unavailable or the file has no
+    pages, so callers can report ``OCR_ENGINE_UNAVAILABLE`` rather than
+    treating a blank transcript as a successfully-read empty document.
+    """
+    transcript, pages, _evidence_meta, _rescue_image = extract_pdf_evidence(content, lang)
+    return transcript, pages
+
+
 def extract_image_evidence(content: bytes, filename: str, lang: str = "auto") -> Tuple[str, int, Dict[str, Any], Any]:
     import io
     from PIL import Image

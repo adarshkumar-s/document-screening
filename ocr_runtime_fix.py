@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable
 import os
 import re
+import sys
 
 
 def install() -> None:
@@ -113,15 +114,64 @@ def install() -> None:
             script_bonus += 0.05
         return confidence * 0.62 + min(useful / 80.0, 1.0) * 0.38 + script_bonus
 
-    def variants(src):
-        normal = ImageOps.autocontrast(src, cutoff=0.5)
-        normal = ImageEnhance.Contrast(normal).enhance(1.18)
-        normal = ImageEnhance.Sharpness(normal).enhance(1.4)
-        # Keep variants cheap. The source project uses the same principle:
-        # preprocessing is a ladder, not one destructive transformation.
-        threshold = normal.point(lambda p: 255 if p > 175 else 0)
-        denoised = normal.filter(ImageFilter.MedianFilter(size=3))
-        return [(normal, "enhanced"), (denoised, "denoised"), (threshold, "threshold")]
+    def normalise_source(image, warnings: list[str]):
+        """Greyscale + bound the source image, degrading instead of aborting.
+
+        A preprocessing failure on one odd input (unsupported mode, truncated
+        object, exotic subclass) must not zero out the whole OCR attempt: we
+        hand Tesseract the original object and record why the ladder was
+        skipped.  Real PIL images take the full path.
+        """
+        try:
+            src = ImageOps.exif_transpose(image).convert("L")
+        except Exception as exc:
+            note = f"grayscale_skipped: {type(exc).__name__}: {exc}"
+            warnings.append(note)
+            print(f"[OCR] preprocessing skipped ({note})", file=sys.stderr)
+            return image
+        try:
+            longest = max(src.size)
+            if longest > 5000:
+                scale = 5000.0 / longest
+                src = src.resize((max(1, int(src.width * scale)), max(1, int(src.height * scale))))
+            elif longest < 1600:
+                scale = 1600.0 / max(1, longest)
+                src = src.resize((max(1, int(src.width * scale)), max(1, int(src.height * scale))))
+        except Exception as exc:
+            warnings.append(f"resize_skipped: {type(exc).__name__}: {exc}")
+        return src
+
+    def variants(src, warnings: list[str]):
+        """Build the cheap preprocessing ladder, dropping steps that fail.
+
+        Each rung is independent: if median filtering or thresholding is not
+        possible for this image, the remaining rungs still run rather than the
+        whole page producing no OCR attempts.
+        """
+        out = []
+        try:
+            normal = ImageOps.autocontrast(src, cutoff=0.5)
+            normal = ImageEnhance.Contrast(normal).enhance(1.18)
+            normal = ImageEnhance.Sharpness(normal).enhance(1.4)
+            out.append((normal, "enhanced"))
+        except Exception as exc:
+            warnings.append(f"enhanced_skipped: {type(exc).__name__}: {exc}")
+            normal = None
+        if normal is not None:
+            # Keep variants cheap. The source project uses the same principle:
+            # preprocessing is a ladder, not one destructive transformation.
+            try:
+                out.append((normal.point(lambda p: 255 if p > 175 else 0), "threshold"))
+            except Exception as exc:
+                warnings.append(f"threshold_skipped: {type(exc).__name__}: {exc}")
+            try:
+                out.append((normal.filter(ImageFilter.MedianFilter(size=3)), "denoised"))
+            except Exception as exc:
+                warnings.append(f"denoised_skipped: {type(exc).__name__}: {exc}")
+        if not out:
+            # Nothing in the ladder was applicable: OCR the source as given.
+            out.append((src, "raw"))
+        return out
 
     def robust_ocr(image, requested_lang: str = "auto") -> Dict[str, Any]:
         have = installed()
@@ -139,28 +189,30 @@ def install() -> None:
                 "engine_error": "Tesseract is installed but no usable language packs were found.",
             }
 
-        src = ImageOps.exif_transpose(image).convert("L")
-        longest = max(src.size)
-        if longest > 5000:
-            scale = 5000.0 / longest
-            src = src.resize((max(1, int(src.width * scale)), max(1, int(src.height * scale))))
-        elif longest < 1600:
-            scale = 1600.0 / max(1, longest)
-            src = src.resize((max(1, int(src.width * scale)), max(1, int(src.height * scale))))
+        preprocessing_warnings: list[str] = []
+        src = normalise_source(image, preprocessing_warnings)
 
         requested = (requested_lang or "auto").strip().lower()
         errors: list[str] = []
         probe_scores = []
-        base_probe = ImageOps.autocontrast(src, cutoff=0.5)
+        try:
+            base_probe = ImageOps.autocontrast(src, cutoff=0.5)
+        except Exception as exc:
+            preprocessing_warnings.append(f"probe_contrast_skipped: {type(exc).__name__}: {exc}")
+            base_probe = src
 
         # Explicit language: do not waste time guessing. Auto language uses a
         # small one-pass-per-language probe; this is slower than a huge combined
         # Tesseract language call but considerably more reliable on mixed scripts.
         if requested == "auto":
             probe_image = base_probe
-            if max(probe_image.size) > 1200:
-                s = 1200.0 / max(probe_image.size)
-                probe_image = probe_image.resize((max(1, int(probe_image.width * s)), max(1, int(probe_image.height * s))))
+            try:
+                if max(probe_image.size) > 1200:
+                    s = 1200.0 / max(probe_image.size)
+                    probe_image = probe_image.resize((max(1, int(probe_image.width * s)), max(1, int(probe_image.height * s))))
+            except Exception as exc:
+                preprocessing_warnings.append(f"probe_resize_skipped: {type(exc).__name__}: {exc}")
+                probe_image = base_probe
             for lang in candidates:
                 data, err = recognize(probe_image, lang, 6, timeout=18)
                 if err:
@@ -182,7 +234,7 @@ def install() -> None:
             candidates = selected or candidates[:3]
 
         best = None
-        for variant, variant_name in variants(src):
+        for variant, variant_name in variants(src, preprocessing_warnings):
             for language in candidates:
                 # For auto, run a few layout modes. For an explicit language,
                 # psm 6 + 11 is usually enough; psm 3 is the final sparse-page
@@ -206,7 +258,8 @@ def install() -> None:
                 "text": "", "confidence": 0.0, "word_count": 0,
                 "detected_language": "eng", "method": "tesseract_blank",
                 "engine_error": errors[-1] if errors else "Tesseract returned no recognized words",
-                "strategy": {"languages": candidates, "variants": ["enhanced", "denoised", "threshold"], "psms": [6, 11, 3]},
+                "strategy": {"languages": candidates, "variants": ["enhanced", "denoised", "threshold"], "psms": [6, 11, 3],
+                             "preprocessing_warnings": preprocessing_warnings, "engine_errors": errors[:20]},
             }
         _, count, conf, text, language, psm, variant_name = best
         return {
@@ -214,7 +267,8 @@ def install() -> None:
             "detected_language": normalise_script(text),
             "tesseract_language": language,
             "method": f"tesseract_{variant_name}_psm{psm}",
-            "strategy": {"lang": language, "psm": psm, "variant": variant_name, "probe": probe_scores[:5]},
+            "strategy": {"lang": language, "psm": psm, "variant": variant_name, "probe": probe_scores[:5],
+                         "preprocessing_warnings": preprocessing_warnings, "engine_errors": errors[:20]},
         }
 
     pipeline.run_fast_ocr = robust_ocr

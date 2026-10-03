@@ -9,14 +9,47 @@ from typing import Deque, Dict, Tuple
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+import os
+
 MAX_REQUEST_BYTES = 25 * 1024 * 1024
-AUTH_WINDOW_SECONDS = 15 * 60
-AUTH_MAX_ATTEMPTS = 10
-SIGNUP_WINDOW_SECONDS = 60 * 60
-SIGNUP_MAX_ATTEMPTS = 5
-MULTIPART_WINDOW_SECONDS = 60 * 60
-MULTIPART_MAX_ATTEMPTS = 20
-TRUSTED_PROXY_IPS = {x.strip() for x in __import__('os').getenv('TRUSTED_PROXY_IPS', '').split(',') if x.strip()}
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a positive integer limit from the environment.
+
+    Anything unparseable or non-positive falls back to the documented default
+    rather than silently disabling the limit.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# Limits are configuration, not code: a deployment behind a corporate NAT or a
+# load-balanced proxy legitimately needs different numbers than a laptop.
+AUTH_WINDOW_SECONDS = _env_int("RATE_LIMIT_AUTH_WINDOW_SECONDS", 15 * 60)
+AUTH_MAX_ATTEMPTS = _env_int("RATE_LIMIT_AUTH_MAX_ATTEMPTS", 10)
+SIGNUP_WINDOW_SECONDS = _env_int("RATE_LIMIT_SIGNUP_WINDOW_SECONDS", 60 * 60)
+SIGNUP_MAX_ATTEMPTS = _env_int("RATE_LIMIT_SIGNUP_MAX_ATTEMPTS", 5)
+MULTIPART_WINDOW_SECONDS = _env_int("RATE_LIMIT_MULTIPART_WINDOW_SECONDS", 60 * 60)
+MULTIPART_MAX_ATTEMPTS = _env_int("RATE_LIMIT_MULTIPART_MAX_ATTEMPTS", 20)
+TRUSTED_PROXY_IPS = {x.strip() for x in os.getenv('TRUSTED_PROXY_IPS', '').split(',') if x.strip()}
+
+
+def reset_buckets() -> None:
+    """Drop all rate-limit state.
+
+    Used by the test suite so the in-process sliding windows cannot leak
+    between tests: buckets are module-global, so without this a whole pytest
+    process shares one budget and every test after the fifth signup sees 429.
+    """
+    with _lock:
+        _buckets.clear()
 
 _lock = threading.Lock()
 _buckets: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
@@ -107,4 +140,4 @@ def install(app) -> None:
             raise
 
 
-__all__ = ["install", "MAX_REQUEST_BYTES"]
+__all__ = ["install", "reset_buckets", "MAX_REQUEST_BYTES"]

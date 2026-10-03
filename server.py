@@ -333,6 +333,41 @@ async def handle_unexpected_error(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "An unexpected server error occurred."})
 
 
+class ApprovalBlocked(Exception):
+    """Raised when a review action cannot complete because of record state.
+
+    Raised (not returned) from inside `with get_db()` blocks so pending writes
+    roll back, then converted to a 409 by the handler below.
+    """
+
+    def __init__(self, blockers, summary, required_fields):
+        self.blockers = list(blockers or [])
+        self.summary = summary or {}
+        self.required_fields = list(required_fields or [])
+        super().__init__("Approval blocked by unresolved record issues.")
+
+
+@app.exception_handler(ApprovalBlocked)
+async def handle_approval_blocked(request: Request, exc: "ApprovalBlocked"):
+    named = ", ".join(str(b.get("field")) for b in exc.blockers) or "see blockers"
+    # `detail` stays a plain string: the portal's fetch helper surfaces it
+    # directly in an alert.  The structured list rides alongside it for the
+    # API/UI to render field-by-field guidance.
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": (
+                f"Cannot approve this record yet: {len(exc.blockers)} blocking "
+                f"issue(s) — {named}. Fix them, or reject the record. Optional "
+                "fields that are legitimately empty do not block approval."
+            ),
+            "blockers": exc.blockers,
+            "summary": exc.summary,
+            "approval_required_fields": exc.required_fields,
+        },
+    )
+
+
 class DBConnection:
     def __init__(self):
         self.is_pg = False
@@ -1002,6 +1037,100 @@ def validate_single_field(field_name: str, value: str, confidence: float) -> Tup
         return "WARNING", "Low confidence score."
     return "VALID", "Passed validation rule."
 
+# ---------------------------------------------------------------------------
+# Approval gating rules — single documented, testable location.
+#
+# `verdict` (valid/review/rejected) is an *advisory* signal: it is persisted on
+# the document, shown in the UI and used for triage.  It intentionally stays
+# "review" whenever anything is merely empty, because a reviewer should see that.
+#
+# Blocking a human approval is a separate, narrower decision.  A verification
+# officer may approve once:
+#   * no field fails its format rule (nothing is INVALID), and
+#   * every field the application already declares *required for identity*
+#     (see validate_single_field) is present.
+# Optional descriptive fields — boundaries, land class, ownership type, khata,
+# mutation/registration references — are legitimately absent from many Indian
+# land records and must NOT block a human decision.  They stay visible as
+# MISSING on the record and keep the advisory verdict at "review".
+# ---------------------------------------------------------------------------
+APPROVAL_REQUIRED_FIELDS = (
+    "owner_name", "survey_number", "khasra_number", "village", "district",
+)
+APPROVAL_OPTIONAL_FIELDS = tuple(k for k in FIELD_KEYS if k not in APPROVAL_REQUIRED_FIELDS)
+
+
+def approval_blockers(fields: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Return the list of conditions that must be resolved before approval.
+
+    An empty list means the record may be approved.  Each entry names the
+    field, the reason and what the reviewer should do, so the API can return
+    an actionable message instead of a bare count.
+    """
+    blockers: List[Dict[str, str]] = []
+    for key in FIELD_KEYS:
+        entry = fields.get(key)
+        if not isinstance(entry, dict):
+            continue
+        status = entry.get("validation_status")
+        if status == "INVALID":
+            blockers.append({
+                "field": key,
+                "reason": "invalid_value",
+                "message": entry.get("validation_message") or "Value failed its format rule.",
+                "action": "Correct the value or reject the record.",
+            })
+        elif status == "MISSING" and key in APPROVAL_REQUIRED_FIELDS:
+            blockers.append({
+                "field": key,
+                "reason": "required_field_missing",
+                "message": f"Required identity field '{key}' is missing.",
+                "action": "Supply the value from the source document, or reject the record.",
+            })
+    return blockers
+
+
+def document_extraction_state(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive the explicit extraction state for a persisted document row.
+
+    Reads only data already on the row (transcript, fields, validation, stored
+    OCR metadata), so it works for documents processed before this field
+    existed and needs no backfill migration. Never raises: a classification
+    problem degrades to NEEDS_HUMAN_REVIEW rather than breaking the detail API.
+    """
+    try:
+        from extraction_states import NEEDS_HUMAN_REVIEW, classify_extraction_state
+
+        metadata = doc.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        hybrid = metadata.get("hybrid_extraction") if isinstance(metadata.get("hybrid_extraction"), dict) else {}
+        engine_error = metadata.get("ocr_engine_error")
+        try:
+            engine_available = bool(tesseract_available())
+        except Exception:
+            engine_available = None
+
+        return classify_extraction_state(
+            ocr_text=doc.get("ocr_text") or doc.get("cleaned_ocr_text") or "",
+            engine_error=engine_error,
+            engine_available=engine_available,
+            fields=doc.get("fields") or {},
+            validation=doc.get("validation") or {},
+            ai_meta=hybrid.get("text_extraction"),
+            vision_meta=hybrid.get("vision_extraction"),
+        )
+    except Exception as exc:
+        print(f"[EXTRACTION STATE WARNING] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return {
+            "state": "NEEDS_HUMAN_REVIEW",
+            "requires_human_review": True,
+            "reason": "Extraction outcome could not be determined from the stored record.",
+            "recommended_action": "Review the raw OCR text and fields manually.",
+            "evidence": {"classifier_error": type(exc).__name__},
+            "thresholds": {},
+        }
+
+
 def enrich_and_validate_fields(raw_fields: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     enriched_fields = {}
     issues = []
@@ -1032,9 +1161,16 @@ def enrich_and_validate_fields(raw_fields: Dict[str, Any]) -> Tuple[Dict[str, An
         enriched_fields["document_type"] = raw_fields["document_type"]
 
     verdict = "rejected" if has_invalid else ("review" if has_warning else "valid")
+    blockers = approval_blockers(enriched_fields)
     validation_report = {
         "verdict": verdict,
         "issues": issues,
+        # Additive, machine-readable approval gate.  `verdict` keeps its
+        # historical advisory meaning so persisted rows and the UI are
+        # unchanged; `approval_blocked` is what the review action enforces.
+        "approval_blocked": bool(blockers),
+        "approval_blockers": blockers,
+        "approval_required_fields": list(APPROVAL_REQUIRED_FIELDS),
         "summary": {
             "valid": sum(1 for f in enriched_fields.values() if isinstance(f, dict) and f.get("validation_status") == "VALID"),
             "warning": sum(1 for f in enriched_fields.values() if isinstance(f, dict) and f.get("validation_status") == "WARNING"),
@@ -3011,19 +3147,22 @@ def review_action(
         # Always validate the final field state before a review decision.
         # Previously validation only ran when corrections were supplied, which
         # allowed an unchanged, incomplete record to be approved.
+        #
+        # Blocking is decided by approval_blockers() (see the documented rule
+        # set next to APPROVAL_REQUIRED_FIELDS): invalid values and missing
+        # *identity* fields block; legitimately-absent optional fields do not.
         reval_fields, reval_rep = enrich_and_validate_fields(fields)
         fields = reval_fields
 
-        if new_st == STATUS_APPROVED and reval_rep.get("verdict") != "valid":
-            summary = reval_rep.get("summary") or {}
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Cannot approve a record that still has validation issues. "
-                    f"Missing={summary.get('missing', 0)}, "
-                    f"Warnings={summary.get('warning', 0)}, "
-                    f"Invalid={summary.get('invalid', 0)}."
-                )
+        if new_st == STATUS_APPROVED and reval_rep.get("approval_blocked"):
+            # Raise (never return) so the surrounding `with get_db()` rolls back
+            # any correction rows written above, exactly as the previous
+            # HTTPException did.  The handler below turns this into a 409 with a
+            # readable `detail` string plus machine-readable `blockers`.
+            raise ApprovalBlocked(
+                blockers=reval_rep.get("approval_blockers") or [],
+                summary=reval_rep.get("summary") or {},
+                required_fields=reval_rep.get("approval_required_fields") or [],
             )
 
         db.execute(
@@ -3321,7 +3460,13 @@ def get_document(doc_id: str, user: dict = Depends(get_current_user)):
         doc_dict["fields"] = json.loads(doc_dict.get("fields") or "{}")
         doc_dict["ai_decision_support"] = json.loads(doc_dict.get("ai_decision_support") or "{}")
         doc_dict["metadata"] = decode_document_metadata(doc_dict.get("metadata"))
-        
+
+        # One explicit extraction outcome for the reviewer. Derived from the
+        # persisted row so documents processed before this field existed also
+        # report a state, and so a reviewer edit is reflected immediately
+        # rather than showing a stale verdict from upload time.
+        doc_dict["extraction_state"] = document_extraction_state(doc_dict)
+
         if role == ROLE_VIEWER:
             doc_dict.pop("reviewer_comments", None)
             doc_dict.pop("ocr_text", None)

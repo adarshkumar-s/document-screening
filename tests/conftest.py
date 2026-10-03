@@ -8,6 +8,17 @@ os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "Admin@123")
 # assistant worker; keep the shared suite deterministic and opt in per test
 # (tests/test_sa_investigation.py monkeypatches it back on where needed).
 os.environ.setdefault("SA_AUTO_INVESTIGATE", "0")
+
+# Run the suite against its own database. Previously every run reused
+# ./data/land_records.db, so rows left behind by earlier sessions (or by a
+# developer's local portal) leaked into assertions — for example risk-review
+# tests started failing once unrelated "Banner Ville" parcels had accumulated.
+# An explicit DB_PATH from the environment is still respected.
+import tempfile
+
+_SUITE_DB_DIR = tempfile.mkdtemp(prefix="docscreen-suite-")
+os.environ.setdefault("DB_PATH", os.path.join(_SUITE_DB_DIR, "land_records.db"))
+
 import sys
 from pathlib import Path
 
@@ -16,6 +27,24 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_buckets():
+    """Give every test a fresh abuse-limit budget.
+
+    security_hardening keeps its sliding windows in module-global state keyed
+    by client IP. Under pytest every TestClient presents the same peer, so the
+    default 5-signups-per-hour budget was exhausted by the first few fixtures
+    and the remaining ~190 tests failed with 429 instead of running. Clearing
+    the buckets per test keeps the real production limiter intact while making
+    the suite independent of how many users earlier tests created.
+    """
+    import security_hardening
+
+    security_hardening.reset_buckets()
+    yield
+    security_hardening.reset_buckets()
 
 
 @pytest.fixture(autouse=True)

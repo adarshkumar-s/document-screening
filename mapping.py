@@ -369,6 +369,12 @@ def _ensure_tables() -> None:
         _ensure_document_column(db, "location_accuracy_m", "REAL")
         _ensure_document_column(db, "location_source_detail", "TEXT")
         _ensure_document_column(db, "location_reason", "TEXT")
+        # The audited exact-pin write path (set/clear document pin) stores the
+        # acting reviewer and timestamp on the document row itself; without
+        # these columns the UPDATE raises "no such column" and every pin
+        # change fails.  Kept idempotent and mapping-only like the rest.
+        _ensure_document_column(db, "location_verified_by", "TEXT")
+        _ensure_document_column(db, "location_verified_at", "REAL")
         db.execute(
             """CREATE TABLE IF NOT EXISTS properties (
                 property_id TEXT PRIMARY KEY,
