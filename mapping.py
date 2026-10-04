@@ -1720,11 +1720,44 @@ def _point_in_ring(point: Tuple[float, float], ring: Sequence[Tuple[float, float
     return inside
 
 
+def _geometry_polygons(geometry: Optional[Dict[str, Any]]) -> List[List[List[Tuple[float, float]]]]:
+    """Preserve GeoJSON polygon/ring structure so holes are not filled."""
+    if not isinstance(geometry, dict):
+        return []
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates") or []
+    raw_polygons = [coords] if gtype == "Polygon" else (coords if gtype == "MultiPolygon" else [])
+    polygons: List[List[List[Tuple[float, float]]]] = []
+    try:
+        for polygon in raw_polygons:
+            if not isinstance(polygon, list):
+                continue
+            rings = []
+            for ring in polygon:
+                if not isinstance(ring, list) or len(ring) < 4:
+                    continue
+                points = [(float(p[0]), float(p[1])) for p in ring]
+                if all(math.isfinite(x) and math.isfinite(y) for x, y in points):
+                    rings.append(points)
+            if rings:
+                polygons.append(rings)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return []
+    return polygons
+
+
 def _point_in_geometry(lat: float, lon: float, geometry: Optional[Dict[str, Any]]) -> Optional[bool]:
-    rings = _geo_points(geometry)
-    if not rings:
+    polygons = _geometry_polygons(geometry)
+    if not polygons:
         return None
-    return any(_point_in_ring((lon, lat), ring) for ring in rings)
+    point = (lon, lat)
+    # Each polygon's first ring is its exterior; subsequent rings are holes.
+    for rings in polygons:
+        if _point_in_ring(point, rings[0]) and not any(
+            _point_in_ring(point, hole) for hole in rings[1:]
+        ):
+            return True
+    return False
 
 
 def _recorded_area_m2(value: Any) -> Optional[float]:
@@ -1740,11 +1773,16 @@ def _recorded_area_m2(value: Any) -> Optional[float]:
     return number
 
 def _geometry_area_m2(geometry: Optional[Dict[str, Any]]) -> Optional[float]:
-    rings = _geo_points(geometry)
-    if not rings:
+    polygons = _geometry_polygons(geometry)
+    if not polygons:
         return None
-    # Use local projected metres rather than raw degree² so the comparison is meaningful.
-    return round(sum(_boundary_area_m2([[p[0], p[1]] for p in ring]) for ring in rings), 2)
+    # Approximate projected area, subtracting holes from their own polygon.
+    total = 0.0
+    for rings in polygons:
+        total += max(0.0, _boundary_area_m2(rings[0]) - sum(
+            _boundary_area_m2(ring) for ring in rings[1:]
+        ))
+    return round(total, 2)
 
 def _reference_comparison(record: Dict[str, Any]) -> Dict[str, Any]:
     reference = record.get("reference_geometry")
