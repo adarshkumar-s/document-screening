@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import csv
 import difflib
+import hashlib
 import io
+import math
 import os
 import json
 import re
@@ -40,6 +42,33 @@ from server import (
 
 map_router = APIRouter(prefix="/api/map", tags=["Document Map"])
 document_history_router = APIRouter(prefix="/api", tags=["Document History"])
+
+# Unified record cap: listings, summaries, the review queue and every export
+# must describe the SAME eligible dataset (audit defect D9). One constant keeps
+# counts, clustering and exports consistent; responses expose it as
+# `metadata.record_cap` so clients can detect truncation honestly.
+MAP_RECORD_CAP = 10000
+# Geometry ingestion limits (audit defect D4). The global request-body limit
+# (security_hardening.MAX_REQUEST_BYTES) bounds payload size; this bounds the
+# per-geometry vertex count so validation stays cheap and results deterministic.
+MAP_MAX_IMPORT_VERTICES = 500
+# Configurable recorded-vs-geometry area screening tolerance (percent).
+# Local survey practices, map scale and source precision differ; the threshold
+# is deliberately environment-configurable instead of a universal constant.
+MAP_AREA_MISMATCH_PERCENT = float(os.getenv("MAP_AREA_MISMATCH_PERCENT", "25") or 25)
+# Finding types this module generates and manages. Rows with other types (e.g.
+# ai_governance's AI_PROPOSAL findings) or a non-null case_id are never touched
+# by the map review-queue recompute (audit defect D3).
+MAP_MANAGED_FINDING_TYPES = (
+    "DUPLICATE_EXACT_LOCATION",
+    "PIN_OUTSIDE_BOUNDARY",
+    "PIN_OUTSIDE_REFERENCE",
+    "RECORDED_AREA_MISMATCH",
+    "REFERENCE_AREA_MISMATCH",
+    "CONFLICTING_RECORDED_AREA",
+    "DUPLICATE_SURVEY",
+    "AMBIGUOUS_PARCEL",
+)
 
 MAP_NOMINATIM_USER_AGENT = os.getenv("MAP_GEOCODER_USER_AGENT", "Document-Screening-Portfolio-Map/1.0 (+https://github.com/adarshkumar-s/document-screening)")
 MAP_GEOCODER_URL = os.getenv("MAP_GEOCODER_URL", "https://nominatim.openstreetmap.org/search")
@@ -355,6 +384,20 @@ def _ensure_document_column(db: Any, column: str, definition: str) -> None:
         pass
 
 
+def _ensure_table_column(db: Any, table: str, column: str, definition: str) -> None:
+    """Idempotently add a nullable column to any mapping-managed table."""
+    try:
+        if db.is_pg:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
+            return
+        columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    except Exception:
+        # A concurrent startup may have added the column.
+        pass
+
+
 def _ensure_tables() -> None:
     """Create/migrate the local land schema and seed synthetic parcel geometry."""
     with get_db() as db:
@@ -366,6 +409,9 @@ def _ensure_tables() -> None:
         _ensure_document_column(db, "map_geometry_source", "TEXT")
         _ensure_document_column(db, "map_geometry_status", "TEXT")
         _ensure_document_column(db, "map_geometry_updated_at", "REAL")
+        # Reason recorded with the CURRENT geometry (audit defect D8). The full
+        # before/after chain lives in document_geometry_history.
+        _ensure_document_column(db, "map_geometry_reason", "TEXT")
         _ensure_document_column(db, "location_accuracy_m", "REAL")
         _ensure_document_column(db, "location_source_detail", "TEXT")
         _ensure_document_column(db, "location_reason", "TEXT")
@@ -500,6 +546,32 @@ def _ensure_tables() -> None:
                 created_at REAL NOT NULL
             )"""
         )
+        # Recoverable before/after geometry history for every write path
+        # (draw, import, estimate, clear). Previous geometries are never lost
+        # silently (audit defect D8).
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS document_geometry_history (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                previous_geometry TEXT,
+                new_geometry TEXT,
+                previous_source TEXT,
+                new_source TEXT,
+                reason TEXT,
+                actor TEXT,
+                created_at REAL NOT NULL
+            )"""
+        )
+        for index_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_geom_history_document ON document_geometry_history(document_id, created_at)",
+        ):
+            db.execute(index_sql)
+        # Resolution metadata for findings (audit defect D2): keeps an
+        # auditable record of WHO resolved/ dismissed a finding and WHY.
+        _ensure_table_column(db, "verification_findings", "resolution_note", "TEXT")
+        _ensure_table_column(db, "verification_findings", "resolved_by", "TEXT")
+        _ensure_table_column(db, "verification_findings", "resolved_at", "REAL")
 
         # Mapping lookup indexes keep parcel/reference queries off full-table scans.
         for index_sql in (
@@ -561,8 +633,117 @@ def _property_by_id(property_id: str) -> Optional[Dict[str, Any]]:
     return _property_dict(row) if row else None
 
 
-def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
-    """Resolve extracted identity fields to controlled parcel candidates."""
+def _all_property_rows() -> List[Any]:
+    """Load the reference parcel table once so batch callers (review queue,
+    findings recompute) do not re-query it per record (audit defect D11)."""
+    ensure_schema()
+    with get_db() as db:
+        return db.execute("SELECT * FROM properties ORDER BY property_id").fetchall()
+
+
+_INDEXED_FIELDS = (
+    "survey_number", "gat_number", "khasra_number", "sub_division",
+    "village", "taluka", "district",
+)
+
+
+def _build_property_index(rows: Sequence[Any]) -> Dict[str, Any]:
+    """Inverted index over the reference parcels for O(1) candidate lookup.
+
+    Without this, batch matching (the review queue) compares every record
+    against every parcel and materialises each parcel's JSON geometry —
+    measured at 24.7 s for 1 000 records / 2 000 parcels and >8 minutes for
+    10 000 records (scripts/map_perf_bench.py). Keys mirror the SQL prefilter
+    exactly (identifier columns with sibling aliases, geography columns), and
+    the candidate loop below remains the source of truth for matching."""
+    ident: Dict[Tuple[str, str], List[Any]] = {}
+    geo: Dict[Tuple[str, str], List[Any]] = {}
+    row_keys: Dict[int, Dict[str, str]] = {}
+    for row in rows:
+        keys: Dict[str, str] = {}
+        for column in ("survey_number", "gat_number", "khasra_number"):
+            value = row[column] if column in row.keys() else None
+            if value:
+                key = _land_number(value).casefold()
+                ident.setdefault((column, key), []).append(row)
+                keys[column] = key
+        for column in ("village", "taluka", "district"):
+            value = row[column] if column in row.keys() else None
+            if value:
+                key = _normalise(value)
+                geo.setdefault((column, key), []).append(row)
+                keys[column] = key
+        value = row["sub_division"] if "sub_division" in row.keys() else None
+        if value:
+            keys["sub_division"] = _key_for("sub_division", value)
+        # Normalised keys are computed ONCE per parcel here; the candidate loop
+        # then compares precomputed strings instead of re-normalising every
+        # document value per row (profiled at 32M _key_for calls per queue
+        # recompute on a 10k dataset).
+        row_keys[id(row)] = keys
+    return {"ident": ident, "geo": geo, "rows": list(rows), "row_keys": row_keys}
+
+
+def _indexed_candidates(index: Dict[str, Any], supplied: Dict[str, str]) -> List[Any]:
+    """Rows that could satisfy at least one match clause, in stable order."""
+    picked: List[Any] = []
+    seen: set = set()
+
+    def add(rows: Sequence[Any]) -> None:
+        for row in rows:
+            marker = id(row)
+            if marker not in seen:
+                seen.add(marker)
+                picked.append(row)
+
+    any_clause = False
+    for field_name in LAND_IDENTIFIER_FIELDS:
+        value = supplied.get(field_name)
+        if not value:
+            continue
+        any_clause = True
+        key = _land_number(value).casefold()
+        for column in (field_name, *_SIBLING_IDENTIFIER_COLUMNS.get(field_name, ())):
+            add(index["ident"].get((column, key), ()))
+    for field_name, column in (("village", "village"), ("taluka", "taluka"), ("district", "district")):
+        value = supplied.get(field_name)
+        if not value:
+            continue
+        any_clause = True
+        add(index["geo"].get((column, _normalise(value)), ()))
+    if not any_clause:
+        # Equivalent to the empty WHERE clause: every row is eligible (e.g. a
+        # document that only carries a subdivision).
+        return list(index["rows"])
+    # No re-sort here: each bucket list was built in property_id order and the
+    # union preserves that determinism; `_resolve` finishes with a total sort
+    # (score, then property_id), so ranking never depends on input order.
+    # Rebuilding an order map per call measured as the dominant queue cost.
+    return picked
+
+
+def _resolve(fields: Dict[str, Any], property_rows: Optional[Sequence[Any]] = None,
+             property_index: Optional[Dict[str, Any]] = None,
+             materialize_properties: bool = True) -> Dict[str, Any]:
+    """Resolve extracted identity fields to controlled parcel candidates.
+
+    Returns a bounded candidate list where each candidate separates:
+      evidence.positive      — fields that matched the parcel record,
+      evidence.contradictory — fields that conflict with the parcel record,
+      evidence.missing       — identity fields with no usable value on either side,
+      evidence.source_reliability — what the matched data source is (and is not).
+
+    `resolution_status` is calibrated from evaluated evidence only:
+      MATCH                — a strong cadastral identifier matched with no conflicts,
+      AMBIGUOUS_MATCH      — candidates are too close to separate (human review),
+      INSUFFICIENT_EVIDENCE— only weak geography matches; never auto-selectable,
+      POSSIBLE MATCH       — strong match exists but evidence is incomplete,
+      NO MATCH             — identifier conflicts or nothing matched,
+      INSUFFICIENT DATA    — no identity fields were extracted.
+
+    The legacy `status` key keeps its historical vocabulary for existing
+    consumers (server.py property resolution, sa_investigation).
+    """
     ensure_schema()
     supplied = {
         "survey_number": _field_value(fields, "survey_number"),
@@ -577,66 +758,124 @@ def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
     if not available:
         return {
             "status": "INSUFFICIENT DATA",
+            "resolution_status": "INSUFFICIENT DATA",
             "confidence": 0.0,
             "matches": [],
             "conflicting_fields": [],
             "reasons": ["No controlled property identity fields were extracted."],
+            "evidence_summary": {"positive": [], "contradictory": [], "missing": list(supplied), "source_reliability": None},
         }
 
-    with get_db() as db:
-        clauses: List[str] = []
-        params: List[Any] = []
-        for field_name in LAND_IDENTIFIER_FIELDS:
-            value = supplied.get(field_name)
-            if value:
-                key = _land_number(value).casefold()
-                sibling = _SIBLING_IDENTIFIER_COLUMNS.get(field_name, ())
-                cols = [field_name, *sibling]
-                clauses.append("(" + " OR ".join([f"LOWER(REPLACE(COALESCE({col}, ''), ' ', ''))=?" for col in cols]) + ")")
-                params.extend([key] * len(cols))
-        for field_name, column in (("village", "village"), ("taluka", "taluka"), ("district", "district")):
-            value = supplied.get(field_name)
-            if value:
-                clauses.append(f"LOWER(TRIM(COALESCE({column}, ''))) = ?")
-                params.append(_normalise(value))
-        where = " WHERE " + " OR ".join(clauses) if clauses else ""
-        rows = db.execute("SELECT * FROM properties" + where + " ORDER BY property_id LIMIT 2000", tuple(params)).fetchall()
+    if property_index is not None:
+        # Batch path: O(candidate) lookup instead of a full scan per record.
+        rows = _indexed_candidates(property_index, available)
+    elif property_rows is None:
+        with get_db() as db:
+            clauses: List[str] = []
+            params: List[Any] = []
+            for field_name in LAND_IDENTIFIER_FIELDS:
+                value = supplied.get(field_name)
+                if value:
+                    key = _land_number(value).casefold()
+                    sibling = _SIBLING_IDENTIFIER_COLUMNS.get(field_name, ())
+                    cols = [field_name, *sibling]
+                    clauses.append("(" + " OR ".join([f"LOWER(REPLACE(COALESCE({col}, ''), ' ', ''))=?" for col in cols]) + ")")
+                    params.extend([key] * len(cols))
+            for field_name, column in (("village", "village"), ("taluka", "taluka"), ("district", "district")):
+                value = supplied.get(field_name)
+                if value:
+                    clauses.append(f"LOWER(TRIM(COALESCE({column}, ''))) = ?")
+                    params.append(_normalise(value))
+            where = " WHERE " + " OR ".join(clauses) if clauses else ""
+            rows = db.execute("SELECT * FROM properties" + where + " ORDER BY property_id LIMIT 2000", tuple(params)).fetchall()
+    else:
+        # Preloaded rows: the candidate loop below re-checks every field, so a
+        # full scan produces identical results to the SQL prefilter.
+        rows = list(property_rows)
 
-    candidates: List[Dict[str, Any]] = []
+    # Document values are normalised ONCE; the loop below previously
+    # re-normalised them per parcel row (the profiler recorded 32M helper
+    # calls per 10k-record review-queue recompute).
+    available_keys = {field: _key_for(field, value) for field, value in available.items()}
+    row_key_map: Dict[int, Dict[str, str]] = property_index.get("row_keys", {}) if property_index else {}
+
+    # Candidates accumulate as flat tuples — (score, status, matched,
+    # conflicting, row). JSON-shaped dicts (reason strings, evidence lists,
+    # geometry hydration) are built only for the top slice returned.
+    cands: List[Tuple[float, str, List[str], List[str], Any]] = []
     for row in rows:
-        property_data = _property_dict(row)
+        rkeys = row_key_map.get(id(row))
         matched: List[str] = []
         conflicting: List[str] = []
         for field_name, document_value in available.items():
-            parcel_value = row[field_name] if field_name in row.keys() else None
-            if parcel_value:
-                if _key_for(field_name, document_value) == _key_for(field_name, parcel_value):
+            if rkeys is not None:
+                parcel_key = rkeys.get(field_name)
+                if parcel_key is None:
+                    # The same land number can live in a sibling column.
+                    # Cross-check siblings ONLY when the primary column is
+                    # empty so a genuine conflict can never be masked.
+                    for sibling in _SIBLING_IDENTIFIER_COLUMNS.get(field_name, ()):
+                        sibling_key = rkeys.get(sibling)
+                        if sibling_key is not None and sibling_key == available_keys[field_name]:
+                            matched.append(sibling)
+                            break
+                elif parcel_key == available_keys[field_name]:
                     matched.append(field_name)
                 else:
                     conflicting.append(field_name)
                 continue
-            # The same land number can live in a sibling column of the parcel
-            # record (documents say "gat no" where the table stores gat_number
-            # and vice versa). Cross-check siblings ONLY when the primary
-            # column is empty so a genuine conflict can never be masked.
+            parcel_value = row[field_name] if field_name in row.keys() else None
+            if parcel_value:
+                if available_keys[field_name] == _key_for(field_name, parcel_value):
+                    matched.append(field_name)
+                else:
+                    conflicting.append(field_name)
+                continue
             for sibling in _SIBLING_IDENTIFIER_COLUMNS.get(field_name, ()):
                 sibling_value = row[sibling] if sibling in row.keys() else None
-                if sibling_value and _key_for(sibling, document_value) == _key_for(sibling, sibling_value):
+                if sibling_value and available_keys[field_name] == _key_for(sibling, sibling_value):
                     matched.append(sibling)
                     break
-        strong_matches = [field for field in matched if field in LAND_IDENTIFIER_FIELDS]
-        geography_matches = [field for field in matched if field in ("village", "taluka", "district")]
         if not matched:
             continue
+        strong_matches = [field for field in matched if field in LAND_IDENTIFIER_FIELDS]
+        geography_matches = [field for field in matched if field in ("village", "taluka", "district")]
         score = min(1.0, (len(strong_matches) * 0.48) + (len(geography_matches) * 0.14) + (0.10 if "sub_division" in matched else 0))
         if strong_matches and not conflicting:
-            status_value = "MATCH" if len(strong_matches) >= 1 else "POSSIBLE MATCH"
+            status_value = "MATCH"
         elif strong_matches:
             status_value = "NO MATCH" if len(conflicting) >= 1 else "POSSIBLE MATCH"
         else:
             status_value = "POSSIBLE MATCH"
-        candidates.append({
-            "property": property_data,
+        cands.append((score, status_value, matched, conflicting, row))
+
+    cands.sort(key=lambda item: (item[1] == "NO MATCH", -item[0], item[4]["property_id"]))
+
+    if not cands:
+        return {
+            "status": "NO MATCH",
+            "resolution_status": "NO MATCH",
+            "confidence": 0.0,
+            "matches": [],
+            "conflicting_fields": [],
+            "reasons": ["No controlled parcel matched the extracted identity."],
+            "evidence_summary": {
+                "positive": [],
+                "contradictory": [],
+                "missing": [field for field in supplied if field not in available],
+                "source_reliability": "Project-owned controlled parcel register (reference data); "
+                                      "not an official cadastral source.",
+            },
+        }
+
+    def _build_candidate(item: Tuple[float, str, List[str], List[str], Any]) -> Dict[str, Any]:
+        score, status_value, matched, conflicting, row = item
+        strong_matches = [field for field in matched if field in LAND_IDENTIFIER_FIELDS]
+        missing_evidence = [
+            field for field in supplied
+            if field not in matched and field not in conflicting
+        ]
+        candidate: Dict[str, Any] = {
             "score": round(score, 4),
             "confidence": round(min(0.99, max(score, 0.35 if strong_matches else 0.2)), 4),
             "matched_fields": matched,
@@ -644,32 +883,67 @@ def _resolve(fields: Dict[str, Any]) -> Dict[str, Any]:
             "reasons": [
                 *(f"Matched {field}." for field in matched),
                 *(f"Conflicting {field}." for field in conflicting),
+                *(f"No usable {field} value on both sides." for field in missing_evidence),
             ],
             "status": status_value,
-        })
-
-    candidates.sort(key=lambda item: (item["status"] == "NO MATCH", -item["score"], item["property"]["property_id"]))
-    if not candidates:
-        return {
-            "status": "NO MATCH",
-            "confidence": 0.0,
-            "matches": [],
-            "conflicting_fields": [],
-            "reasons": ["No controlled parcel matched the extracted identity."],
+            # Evidence is exposed separately so callers never have to infer
+            # "absence of conflict" from a single score (spec §4.7).
+            "evidence": {
+                "positive": list(matched),
+                "contradictory": list(conflicting),
+                "missing": missing_evidence,
+                "source_reliability": "Project-owned controlled parcel register (reference data); "
+                                      "not an official cadastral source.",
+            },
         }
+        if materialize_properties:
+            # JSON geometry parsing happens only here — scoring-only callers
+            # (review queue) skip it entirely.
+            candidate["property"] = _property_dict(row)
+        return candidate
+
+    candidates = [_build_candidate(item) for item in cands[:10]]
 
     best = candidates[0]
-    ambiguous = len(candidates) > 1 and best["score"] < 0.99 and (best["score"] - candidates[1]["score"]) < 0.12
+    best_strong = [field for field in (best.get("matched_fields") or []) if field in LAND_IDENTIFIER_FIELDS]
+    # Ambiguity ("several parcels equally plausible") only exists when a strong
+    # cadastral identifier matched; weak geography-only crowds are
+    # INSUFFICIENT_EVIDENCE, not AMBIGUOUS_MATCH.
+    ambiguous = bool(best_strong) and len(cands) > 1 and best["score"] < 0.99 and (best["score"] - candidates[1]["score"]) < 0.12
+    # resolution_status is derived ONLY from evaluated evidence:
+    # * close candidates -> AMBIGUOUS_MATCH (human selection required),
+    # * geography-only matches -> INSUFFICIENT_EVIDENCE (never a MATCH),
+    # * identifier conflict on the best row -> NO MATCH,
+    # * otherwise the legacy best status (MATCH / POSSIBLE MATCH).
+    if ambiguous:
+        resolution_status = "AMBIGUOUS_MATCH"
+    elif not best_strong:
+        resolution_status = "INSUFFICIENT_EVIDENCE"
+    elif best["status"] == "NO MATCH":
+        resolution_status = "NO MATCH"
+    else:
+        resolution_status = best["status"]
     status = "AMBIGUOUS_MATCH" if ambiguous else best["status"]
     confidence = min(best["confidence"], 0.60) if ambiguous else best["confidence"]
     reasons = [*best["reasons"], "Multiple controlled parcels are similarly plausible; human parcel selection is required."] if ambiguous else best["reasons"]
+    if resolution_status == "INSUFFICIENT_EVIDENCE":
+        reasons = [*reasons, "No strong cadastral identifier matched; this candidate list is insufficient evidence for an automatic link."]
     all_conflicts = list(best.get("conflicting_fields") or [])
+    all_positive = list(best.get("matched_fields") or [])
     return {
         "status": status,
+        "resolution_status": resolution_status,
         "confidence": confidence,
-        "matches": candidates[:10],
+        "matches": candidates,
+        "candidate_count": len(cands),
         "conflicting_fields": all_conflicts,
         "reasons": reasons,
+        "evidence_summary": {
+            "positive": all_positive,
+            "contradictory": all_conflicts,
+            "missing": best.get("evidence", {}).get("missing", []),
+            "source_reliability": best.get("evidence", {}).get("source_reliability"),
+        },
     }
 
 
@@ -950,6 +1224,9 @@ def _map_document_item(row: Any) -> Dict[str, Any]:
         "filename": row["filename"],
         "doc_type": row["doc_type"] or "Land Record",
         "status": row["status"],
+        "geometry_status": row["map_geometry_status"] if "map_geometry_status" in row.keys() else None,
+        "geometry_reason": row["map_geometry_reason"] if "map_geometry_reason" in row.keys() else None,
+        "geometry_updated_at": row["map_geometry_updated_at"] if "map_geometry_updated_at" in row.keys() else None,
         "owner": _field_value(fields, "owner_name"),
         "father": _field_value(fields, "father_name"),
         "survey": _field_value(fields, "survey_number"),
@@ -1010,13 +1287,23 @@ def _map_location_audit_context(document_ids: Sequence[str]) -> Dict[str, Dict[s
     if not document_ids:
         return {}
     wanted = {str(value) for value in document_ids}
+    # Restrict the scan to the requested documents (chunked for old SQLite
+    # parameter limits) instead of reading the full location audit history
+    # and filtering in Python (audit defect D11).
+    rows: List[Any] = []
+    wanted_list = sorted(wanted)
     with get_db() as db:
-        rows = db.execute(
-            """SELECT doc_id, ts, username, action, detail
-               FROM audit
-               WHERE action IN ('location_set', 'location_cleared')
-               ORDER BY ts DESC, id DESC"""
-        ).fetchall()
+        for start in range(0, len(wanted_list), 400):
+            chunk = wanted_list[start:start + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(db.execute(
+                f"""SELECT doc_id, ts, username, action, detail
+                    FROM audit
+                    WHERE action IN ('location_set', 'location_cleared')
+                      AND doc_id IN ({placeholders})
+                    ORDER BY ts DESC, id DESC""",
+                tuple(chunk),
+            ).fetchall())
     result: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         doc_id = str(row["doc_id"] or "")
@@ -1064,7 +1351,9 @@ def _map_property_context(document_ids: Sequence[str]) -> Dict[str, Dict[str, An
 # land-records / risk-review / detail request.
 _MAP_RECORD_COLUMNS = (
     "id", "filename", "doc_type", "status", "fields", "validation", "mean_conf",
-    "lat", "lon", "map_geometry", "map_geometry_source", "location_accuracy_m", "location_source_detail", "location_reason", "uploaded_by", "created_at", "updated_at",
+    "lat", "lon", "map_geometry", "map_geometry_source", "map_geometry_status", "map_geometry_reason", "map_geometry_updated_at",
+    "location_accuracy_m", "location_source_detail", "location_reason",
+    "location_verified_by", "location_verified_at", "uploaded_by", "created_at", "updated_at",
 )
 
 
@@ -1099,9 +1388,17 @@ def _map_reference_property_fallback(records: Sequence[Dict[str, Any]]) -> Dict[
 
 def _map_visible_records(user: Dict[str, Any], *, limit: int = 1000, offset: int = 0,
                         q: str = "", district: str = "", tehsil: str = "", village: str = "",
-                        status: str = "", location: str = "", bbox: Optional[Tuple[float, float, float, float]] = None) -> List[Dict[str, Any]]:
+                        status: str = "", bbox: Optional[Tuple[float, float, float, float]] = None) -> List[Dict[str, Any]]:
+    """Role-filtered document records for the map, capped at MAP_RECORD_CAP.
+
+    `location` filtering deliberately does NOT happen here: village-level vs
+    unresolved is derived from the parsed village field in `_map_document_item`
+    and applied by callers after this fetch (the old SQL `LIKE '%village%'`
+    heuristic matched the JSON key name, not the value — audit defect D12).
+    Ordering includes `id` as a tiebreaker so pagination is deterministic (D10).
+    """
     ensure_schema()
-    limit = max(1, min(int(limit), 5000))
+    limit = max(1, min(int(limit), MAP_RECORD_CAP))
     offset = max(0, int(offset))
     with get_db() as db:
         conditions: List[str] = []
@@ -1124,19 +1421,13 @@ def _map_visible_records(user: Dict[str, Any], *, limit: int = 1000, offset: int
                 like = f"%{value.casefold()}%"
                 conditions.append("LOWER(COALESCE(fields,'')) LIKE ?")
                 params.append(like)
-        if location == "EXACT_PIN":
-            conditions.append("lat IS NOT NULL AND lon IS NOT NULL")
-        elif location == "UNRESOLVED":
-            conditions.append("lat IS NULL AND lon IS NULL AND LOWER(COALESCE(fields,'')) NOT LIKE '%village%'")
-        elif location == "VILLAGE_LEVEL":
-            conditions.append("lat IS NULL AND lon IS NULL AND LOWER(COALESCE(fields,'')) LIKE '%village%'")
         if bbox:
             min_lat, min_lon, max_lat, max_lon = bbox
             conditions.append("lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?")
             params.extend([min_lat, max_lat, min_lon, max_lon])
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = db.execute(
-            f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             tuple(params + [limit, offset]),
         ).fetchall()
     visible = [row for row in rows if _map_document_visible(row, user)]
@@ -1181,6 +1472,69 @@ def _map_visible_records(user: Dict[str, Any], *, limit: int = 1000, offset: int
                 or "synthetic" in str(property_item.get("geometry_source") or "").casefold(),
         }
     return records
+
+
+def _map_record_by_id(user: Dict[str, Any], doc_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch ONE record with the same visibility rules as the list endpoint.
+
+    Detail endpoints (spatial checks, layers, parcel candidates) previously
+    loaded up to MAP_RECORD_CAP records to find a single row (audit defect
+    D11); this keeps their semantics with a single indexed query."""
+    ensure_schema()
+    with get_db() as db:
+        conditions = ["id = ?"]
+        params: List[Any] = [str(doc_id)]
+        role = user.get("role")
+        if role == ROLE_VIEWER:
+            conditions.append("UPPER(status) IN ('APPROVED','VERIFIED','AUTO_APPROVED')")
+        elif role == ROLE_DATA_OFFICER:
+            conditions.append("uploaded_by = ?")
+            params.append(user.get("email"))
+        row = db.execute(
+            f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents WHERE {' AND '.join(conditions)} LIMIT 1",
+            tuple(params),
+        ).fetchone()
+    if not row or not _map_document_visible(row, user):
+        return None
+    record = _map_document_item(row)
+    document_ids = [str(record["id"])]
+    audit_context = _map_location_audit_context(document_ids)
+    property_context = _map_property_context(document_ids)
+    fallback_context = _map_reference_property_fallback([record])
+    audit_item = audit_context.get(document_ids[0])
+    has_coordinates = record.get("lat") is not None and record.get("lon") is not None
+    record["location_audit_available"] = bool(audit_item)
+    record["location_provenance"]["audit_available"] = bool(audit_item)
+    if has_coordinates and audit_item and audit_item.get("action") == "location_set":
+        record["location_verified_by"] = audit_item.get("verified_by")
+        record["location_verified_at"] = audit_item.get("verified_at")
+        detail = str(audit_item.get("detail") or "")
+        record["location_reason"] = detail.split(" Reason: ", 1)[1] if " Reason: " in detail else None
+        record["location_provenance"].update({
+            "verified_by": record["location_verified_by"],
+            "verified_at": record["location_verified_at"],
+        })
+    property_item = property_context.get(document_ids[0]) or fallback_context.get(document_ids[0])
+    if not property_item:
+        record["reference_geometry"] = None
+        record["reference_property"] = None
+    else:
+        record["reference_geometry"] = property_item.get("geometry")
+        record["reference_property"] = {
+            "property_id": property_item.get("property_id"),
+            "parcel_id": property_item.get("parcel_id"),
+            "survey_number": property_item.get("survey_number"),
+            "sub_division": property_item.get("sub_division"),
+            "area": property_item.get("area"),
+            "area_unit": property_item.get("area_unit"),
+            "geometry_source": property_item.get("geometry_source"),
+            "geometry_confidence": property_item.get("geometry_confidence"),
+            "data_source": property_item.get("data_source"),
+            "location": property_item.get("location"),
+            "synthetic": "synthetic" in str(property_item.get("data_source") or "").casefold()
+                or "synthetic" in str(property_item.get("geometry_source") or "").casefold(),
+        }
+    return record
 
 
 def _map_record_matches(record: Dict[str, Any], *, q: str = "", district: str = "", tehsil: str = "", village: str = "", status: str = "", location: str = "") -> bool:
@@ -1228,7 +1582,8 @@ def map_records(
     village: str = Query("", max_length=200),
     status: str = Query("", max_length=80),
     location: str = Query("", max_length=40),
-    limit: int = Query(5000, ge=1, le=10000),
+    limit: int = Query(5000, ge=1, le=MAP_RECORD_CAP),
+    offset: int = Query(0, ge=0),
     min_lat: Optional[float] = Query(None, ge=-90, le=90),
     min_lon: Optional[float] = Query(None, ge=-180, le=180),
     max_lat: Optional[float] = Query(None, ge=-90, le=90),
@@ -1241,6 +1596,10 @@ def map_records(
     because their village/district fields can be geocoded and cached at
     village level. The summary metadata lets a future client render a map
     dashboard without downloading a second dataset.
+
+    Pagination is deterministic (`created_at DESC, id DESC`); `offset` walks
+    the same ordered set. `metadata.record_cap` / `metadata.truncated` disclose
+    the unified dataset cap shared with summaries and exports.
     """
     bbox = None
     if None not in (min_lat, min_lon, max_lat, max_lon):
@@ -1250,26 +1609,32 @@ def map_records(
     # SQL applies role/status/bbox narrowing; exact field semantics are applied before pagination.
     # The bounded candidate window prevents unbounded OCR payload reads while avoiding the old
     # "LIMIT first, filter later" bug that could hide matching records.
-    candidate_limit = min(10000, max(limit + 1, 10000))
+    candidate_limit = MAP_RECORD_CAP
     candidate_records = _map_visible_records(
         user, limit=candidate_limit, offset=0, q=q, district=district, tehsil=tehsil,
-        village=village, status=status, location="", bbox=bbox,
+        village=village, status=status, bbox=bbox,
     )
     filtered = [record for record in candidate_records if _map_record_matches(
         record, q=_normalise(q), district=district, tehsil=tehsil, village=village,
         status=status, location=location)]
-    page = filtered[:limit]
+    window_saturated = len(candidate_records) >= candidate_limit
+    page = filtered[offset:offset + limit]
     return {
         "records": page,
         "total": len(filtered),
-        "has_more": len(filtered) > limit,
+        "offset": offset,
+        "has_more": (offset + len(page)) < len(filtered),
         "metadata": {
             "authoritative": False,
             "source": "Screened document fields and authorised reviewer pins",
             "summary": _map_summary(filtered),
             "filters": {"q": q, "district": district, "tehsil": tehsil, "village": village, "status": status, "location": location},
             "candidate_window": len(candidate_records),
-            "truncated": len(candidate_records) >= candidate_limit and len(filtered) > limit,
+            "record_cap": candidate_limit,
+            "truncated": window_saturated,
+            # `total` counts the full eligible set only inside the candidate
+            # window; when the window saturated it is a lower bound.
+            "total_is_lower_bound": window_saturated,
         },
     }
 
@@ -1277,7 +1642,7 @@ def map_records(
 @map_router.get("/conflicts")
 def map_conflicts(user: Dict[str, Any] = Depends(get_current_user)):
     """Return conservative spatial screening signals, never legal conclusions."""
-    records = _map_visible_records(user, limit=5000)
+    records = _map_visible_records(user, limit=MAP_RECORD_CAP)
     conflicts = []
     seen = {}
     for record in records:
@@ -1445,7 +1810,10 @@ def _reference_comparison(record: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _candidate_parcels_for_record(record: Dict[str, Any], limit: int = 10) -> List[Dict[str, Any]]:
+def _candidate_parcels_for_record(record: Dict[str, Any], limit: int = 10,
+                                  property_rows: Optional[Sequence[Any]] = None,
+                                  property_index: Optional[Dict[str, Any]] = None,
+                                  materialize_properties: bool = True) -> List[Dict[str, Any]]:
     fields = {
         "survey_number": record.get("survey"),
         "khasra_number": record.get("khasra"),
@@ -1453,7 +1821,8 @@ def _candidate_parcels_for_record(record: Dict[str, Any], limit: int = 10) -> Li
         "taluka": record.get("tehsil"),
         "district": record.get("district"),
     }
-    resolved = _resolve(fields)
+    resolved = _resolve(fields, property_rows=property_rows, property_index=property_index,
+                        materialize_properties=materialize_properties)
     return (resolved.get("matches") or [])[:limit]
 
 
@@ -1465,12 +1834,24 @@ def _record_reference_property(record_id: str) -> Optional[str]:
 
 @map_router.get("/records/{doc_id}/parcel-candidates")
 def map_parcel_candidates(doc_id: str, user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
-    records = _map_visible_records(user, limit=10000, q=doc_id)
-    record = next((item for item in records if str(item["id"]) == str(doc_id)), None)
+    record = _map_record_by_id(user, doc_id)
     if not record:
         raise HTTPException(404, "Record not found or access denied.")
-    candidates = _candidate_parcels_for_record(record)
-    return {"document_id": doc_id, "resolution_status": "AMBIGUOUS_MATCH" if len(candidates) > 1 else ("MATCH" if candidates else "NO_MATCH"),
+    fields = {
+        "survey_number": record.get("survey"),
+        "khasra_number": record.get("khasra"),
+        "village": record.get("village"),
+        "taluka": record.get("tehsil"),
+        "district": record.get("district"),
+    }
+    resolved = _resolve(fields)
+    candidates = (resolved.get("matches") or [])[:10]
+    # The status comes from evaluated evidence (strong identifier vs geography
+    # vs ambiguity), never from how many rows a query happened to return (D7).
+    return {"document_id": doc_id,
+            "resolution_status": resolved.get("resolution_status") or "NO MATCH",
+            "evidence_summary": resolved.get("evidence_summary"),
+            "reasons": resolved.get("reasons") or [],
             "candidates": candidates, "screening_only": True}
 
 
@@ -1516,10 +1897,43 @@ def map_select_parcel(doc_id: str, payload: Dict[str, Any],
     return {"ok": True, "document_id": doc_id, "property_id": property_id, "previous_property_id": previous["property_id"] if previous else None}
 
 
+def _finding_fingerprint(finding_type: str, evidence: Sequence[Any]) -> str:
+    """Stable identity for a finding: type + sorted evidence identifiers.
+
+    The same condition keeps the same fingerprint across recomputations, so a
+    human resolution persists instead of resurrecting as a new open row (audit
+    defect D2)."""
+    payload = f"{finding_type}|" + ",".join(sorted(str(item) for item in evidence or []))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
 def _refresh_review_findings(user: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Build persistent spatial review signals from currently visible records."""
+    """Recompute this module's spatial review signals against stored rows.
+
+    Detection rules (each reproducible from record data only):
+
+    * PIN_OUTSIDE_BOUNDARY (ERROR) — reviewer pin outside a saved officer boundary.
+    * PIN_OUTSIDE_REFERENCE (WARNING) — reviewer pin outside reference geometry.
+    * RECORDED_AREA_MISMATCH (WARNING) — recorded area vs mapped boundary area
+      differs by more than MAP_AREA_MISMATCH_PERCENT (configurable, default 25%).
+    * REFERENCE_AREA_MISMATCH (WARNING) — mapped boundary vs reference geometry
+      area differs beyond the same tolerance.
+    * DUPLICATE_EXACT_LOCATION (WARNING) — two+ records at identical coordinates.
+    * CONFLICTING_RECORDED_AREA (WARNING) — same survey+village, different areas.
+    * DUPLICATE_SURVEY (INFO) — same survey+village on multiple documents.
+    * AMBIGUOUS_PARCEL (ERROR) — several parcels score within 0.12 of each other.
+
+    Reconciliation rules:
+    * Only rows this module manages (finding_type in MAP_MANAGED_FINDING_TYPES,
+      case_id IS NULL) are ever read or written — ai_governance's findings are
+      untouched (audit defect D3).
+    * A detected condition keeps its existing row id; RESOLVED/DISMISSED
+      decisions survive recomputation while the evidence set is unchanged.
+    * OPEN rows whose condition disappeared are SUPERSEDED with a note, never
+      silently deleted, preserving resolution history.
+    """
     ensure_schema()
-    records = _map_visible_records(user, limit=10000)
+    records = _map_visible_records(user, limit=MAP_RECORD_CAP)
     findings: List[Dict[str, Any]] = []
     by_location: Dict[Tuple[float, float], List[Dict[str, Any]]] = {}
     by_survey: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
@@ -1533,11 +1947,21 @@ def _refresh_review_findings(user: Dict[str, Any]) -> List[Dict[str, Any]]:
             findings.append(_finding("PIN_OUTSIDE_BOUNDARY", "ERROR", "Location is outside saved boundary", "The exact reviewer pin is outside the saved officer boundary; review the pin and boundary.", [record["id"]]))
         if comparison.get("outside_reference") is True:
             findings.append(_finding("PIN_OUTSIDE_REFERENCE", "WARNING", "Location is outside reference geometry", "The exact pin falls outside the stored reference shape. Reference geometry is a screening signal only.", [record["id"]]))
-        if comparison.get("area_difference_percent") is not None and comparison["area_difference_percent"] > 25:
-            findings.append(_finding("REFERENCE_AREA_MISMATCH", "WARNING", "Boundary/reference area differs materially", "Saved boundary and reference geometry differ by more than 25% in simple planar screening.", [record["id"]]))
-        if record.get("geometry") and not record.get("reference_geometry") and record.get("geometry_source") == "Officer-digitized boundary":
-            # Geometry has already passed self-intersection validation.
-            pass
+        boundary_delta = comparison.get("recorded_vs_boundary_difference_percent")
+        if boundary_delta is not None and boundary_delta > MAP_AREA_MISMATCH_PERCENT:
+            findings.append(_finding(
+                "RECORDED_AREA_MISMATCH", "WARNING", "Recorded area differs from mapped boundary",
+                f"The recorded area and the mapped boundary area differ by {boundary_delta:.1f}% "
+                f"(screening tolerance {MAP_AREA_MISMATCH_PERCENT:g}%). Verify units and source records; "
+                "this is a measurement comparison, not a title statement.",
+                [record["id"]]))
+        reference_delta = comparison.get("boundary_vs_reference_difference_percent")
+        if reference_delta is not None and reference_delta > MAP_AREA_MISMATCH_PERCENT:
+            findings.append(_finding(
+                "REFERENCE_AREA_MISMATCH", "WARNING", "Boundary/reference area differs materially",
+                f"Saved boundary and reference geometry differ by {reference_delta:.1f}% "
+                f"(screening tolerance {MAP_AREA_MISMATCH_PERCENT:g}% in simple planar screening).",
+                [record["id"]]))
     for key, group in by_location.items():
         if len(group) > 1:
             findings.append(_finding("DUPLICATE_EXACT_LOCATION", "WARNING", "Multiple records share an exact location", "More than one visible document is pinned at the same coordinates.", [item["id"] for item in group]))
@@ -1547,34 +1971,144 @@ def _refresh_review_findings(user: Dict[str, Any]) -> List[Dict[str, Any]]:
             findings.append(_finding("CONFLICTING_RECORDED_AREA", "WARNING", "Same survey has conflicting recorded areas", "Documents with the same survey and village contain different area strings; review source records and units.", [item["id"] for item in group]))
         if len(group) > 1:
             findings.append(_finding("DUPLICATE_SURVEY", "INFO", "Multiple records share survey and village", "Repeated survey/village identifiers may be legitimate history or duplicates; verify document relationships.", [item["id"] for item in group]))
-    # Ambiguous parcel candidates are derived per document.
+    # Ambiguous parcel candidates are derived per document against ONE shared
+    # index built from the reference table (keeps the queue O(records)).
+    property_index = _build_property_index(_all_property_rows())
     for record in records:
-        candidates = _candidate_parcels_for_record(record, 3)
+        candidates = _candidate_parcels_for_record(record, 3, property_index=property_index,
+                                                  materialize_properties=False)
         if len(candidates) > 1:
             scores = [float(item.get("score") or 0) for item in candidates]
-            if scores[0] < 0.99 and (scores[0] - scores[1]) < 0.12:
+            strong_top = bool(set(candidates[0].get("matched_fields") or []) & set(LAND_IDENTIFIER_FIELDS))
+            # A strong cadastral identifier must be in play — crowds of
+            # geography-only candidates are INSUFFICIENT_EVIDENCE, not
+            # ambiguity (mirrors _resolve's resolution rules).
+            if strong_top and scores[0] < 0.99 and (scores[0] - scores[1]) < 0.12:
                 findings.append(_finding("AMBIGUOUS_PARCEL", "ERROR", "Multiple parcels are similarly plausible", "A human reviewer must select the canonical parcel before relying on parcel-linked analysis.", [record["id"]]))
-    # Deduplicate current open findings per record/type.
+
+    # Deduplicate per (type, evidence) within this recomputation.
+    deduped: List[Dict[str, Any]] = []
+    seen_fps: set = set()
+    for finding in findings:
+        finding["fingerprint"] = _finding_fingerprint(finding["finding_type"], finding.get("evidence") or [])
+        if finding["fingerprint"] in seen_fps:
+            continue
+        seen_fps.add(finding["fingerprint"])
+        deduped.append(finding)
+    findings = deduped
+
     now = _now()
+    actor = user.get("email") or user.get("full_name") or "system"
+    # Document -> property link lookup once per recompute (was one query per
+    # newly inserted finding).
+    doc_property_link: Dict[str, str] = {}
     with get_db() as db:
-        db.execute("UPDATE verification_findings SET status='SUPERSEDED', updated_at=? WHERE status='OPEN'", (now,))
+        for link_row in db.execute(
+            "SELECT document_id, property_id FROM property_documents ORDER BY linked_at DESC"
+        ).fetchall():
+            doc_property_link.setdefault(str(link_row["document_id"]), str(link_row["property_id"]))
+    placeholders = ",".join("?" for _ in MAP_MANAGED_FINDING_TYPES)
+    with get_db() as db:
+        existing_rows = db.execute(
+            f"SELECT finding_id, finding_type, status, evidence FROM verification_findings "
+            f"WHERE case_id IS NULL AND finding_type IN ({placeholders})",
+            tuple(MAP_MANAGED_FINDING_TYPES),
+        ).fetchall()
+        existing_by_fp: Dict[str, Any] = {}
+        for row in existing_rows:
+            stored = _parse_json(row["evidence"], {}) or {}
+            stored_evidence = stored.get("evidence") if isinstance(stored, dict) else None
+            fp = _finding_fingerprint(row["finding_type"], stored_evidence or [])
+            existing_by_fp[fp] = row
+
         for finding in findings:
-            fid = uuid.uuid4().hex
-            property_id = _record_reference_property(str(finding["evidence"][0])) if finding["evidence"] else None
-            db.execute("""INSERT INTO verification_findings
-                (finding_id,property_id,case_id,status,finding_type,severity,title,evidence,created_by,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (fid, property_id, None, "OPEN", finding["finding_type"], finding["severity"], finding["title"],
-                 _json(finding), user.get("email") or user.get("full_name") or "system", now, now))
-            finding["finding_id"] = fid
-            finding["id"] = fid
+            fp = finding["fingerprint"]
+            existing = existing_by_fp.get(fp)
+            if existing is None:
+                fid = uuid.uuid4().hex
+                # verification_findings.property_id is NOT NULL; documents that
+                # are not linked to any reference parcel store "" (D1 fix) —
+                # a missing parcel link must never crash the queue.
+                property_id = doc_property_link.get(str(finding["evidence"][0])) if finding.get("evidence") else None
+                db.execute("""INSERT INTO verification_findings
+                    (finding_id,property_id,case_id,status,finding_type,severity,title,evidence,created_by,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (fid, property_id or "", None, "OPEN", finding["finding_type"], finding["severity"], finding["title"],
+                     _json(finding), actor, now, now))
+                finding["finding_id"] = fid
+                finding["id"] = fid
+                finding["status"] = "OPEN"
+            else:
+                previous_status = str(existing["status"] or "OPEN").upper()
+                new_status = previous_status if previous_status in {"RESOLVED", "DISMISSED"} else "OPEN"
+                stored_payload = _parse_json(existing["evidence"], None)
+                if new_status != previous_status:
+                    db.execute("UPDATE verification_findings SET status=?, evidence=?, title=?, updated_at=? WHERE finding_id=?",
+                               (new_status, _json(finding), finding["title"], now, existing["finding_id"]))
+                elif stored_payload != finding:
+                    # Only rewrite rows whose evidence/title actually changed;
+                    # warm recomputes were re-UPDATEing every open row.
+                    db.execute("UPDATE verification_findings SET evidence=?, title=?, updated_at=? WHERE finding_id=?",
+                               (_json(finding), finding["title"], now, existing["finding_id"]))
+                finding["finding_id"] = existing["finding_id"]
+                finding["id"] = existing["finding_id"]
+                finding["status"] = new_status
+
+        # Close map-managed OPEN rows whose condition is gone; keep them as
+        # SUPERSEDED with a reason so the resolution trail stays auditable.
+        for row in existing_rows:
+            if str(row["status"] or "").upper() != "OPEN":
+                continue
+            stored = _parse_json(row["evidence"], {}) or {}
+            stored_evidence = stored.get("evidence") if isinstance(stored, dict) else None
+            fp = _finding_fingerprint(row["finding_type"], stored_evidence or [])
+            if fp not in seen_fps:
+                db.execute(
+                    "UPDATE verification_findings SET status='SUPERSEDED', resolution_note=?, updated_at=? WHERE finding_id=? AND status='OPEN'",
+                    ("Recomputed: condition no longer present after a data change.", now, row["finding_id"]),
+                )
     return findings
 
 
 @map_router.get("/review-queue")
-def map_review_queue(user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN))):
+def map_review_queue(
+    status: str = Query("open", max_length=20),
+    severity: str = Query("", max_length=20),
+    finding_type: str = Query("", max_length=60, alias="type"),
+    user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
+):
+    """Recomputed spatial review queue with persistent resolution state.
+
+    `status` selects which stored states are returned (open, resolved,
+    dismissed, superseded, all; default open). Filters are applied AFTER
+    recomputation so every response reflects current record data."""
     findings = _refresh_review_findings(user)
-    return {"findings": findings, "count": len(findings), "disclaimer": "Review signals require human verification; they are not legal conclusions."}
+    counts = {"open": 0, "resolved": 0, "dismissed": 0, "superseded": 0}
+    for finding in findings:
+        key = str(finding.get("status") or "OPEN").lower()
+        counts[key] = counts.get(key, 0) + 1
+    wanted = str(status or "open").lower()
+    if wanted not in {"open", "resolved", "dismissed", "superseded", "all"}:
+        raise HTTPException(status_code=400, detail="status must be open, resolved, dismissed, superseded or all")
+    selected = [
+        finding for finding in findings
+        if wanted == "all" or str(finding.get("status") or "OPEN").lower() == wanted
+    ]
+    if severity:
+        wanted_severity = severity.upper()
+        if wanted_severity not in {"INFO", "WARNING", "ERROR"}:
+            raise HTTPException(status_code=400, detail="severity must be INFO, WARNING or ERROR")
+        selected = [finding for finding in selected if str(finding.get("severity") or "").upper() == wanted_severity]
+    if finding_type:
+        selected = [finding for finding in selected if str(finding.get("finding_type") or "") == finding_type]
+    return {
+        "findings": selected,
+        "count": len(selected),
+        "counts": counts,
+        "filters": {"status": wanted, "severity": severity.upper(), "type": finding_type},
+        "record_cap": MAP_RECORD_CAP,
+        "disclaimer": "Review signals require human verification; they are not legal conclusions.",
+    }
 
 
 @map_router.post("/review-queue/{finding_id}/resolve")
@@ -1584,19 +2118,24 @@ def map_resolve_finding(finding_id: str, payload: Dict[str, Any],
     if status_value not in {"RESOLVED", "DISMISSED"}:
         raise HTTPException(400, "status must be RESOLVED or DISMISSED")
     note = str(payload.get("note") or "").strip()[:500]
-    with get_db() as db:
-        row = db.execute("SELECT * FROM verification_findings WHERE finding_id=?", (finding_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Finding not found.")
-        db.execute("UPDATE verification_findings SET status=?, updated_at=? WHERE finding_id=?", (status_value, _now(), finding_id))
     actor = user.get("full_name") or user.get("email") or "user"
+    with get_db() as db:
+        row = db.execute("SELECT finding_id, finding_type FROM verification_findings WHERE finding_id=?", (finding_id,)).fetchone()
+        # Only findings this module manages are resolvable here; foreign rows
+        # (e.g. AI governance cases) keep their own workflow and are hidden.
+        if not row or row["finding_type"] not in MAP_MANAGED_FINDING_TYPES:
+            raise HTTPException(404, "Finding not found.")
+        db.execute(
+            "UPDATE verification_findings SET status=?, resolution_note=?, resolved_by=?, resolved_at=?, updated_at=? WHERE finding_id=?",
+            (status_value, note or None, actor, _now(), _now(), finding_id),
+        )
     log_audit(actor, "spatial_finding_resolved", f"{finding_id} -> {status_value}. Note: {note or 'none'}", None)
     return {"ok": True, "finding_id": finding_id, "status": status_value}
 
 
 @map_router.get("/records/{doc_id}/spatial-checks")
 def map_spatial_checks(doc_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    record = next((r for r in _map_visible_records(user, limit=10000) if str(r["id"]) == str(doc_id)), None)
+    record = _map_record_by_id(user, doc_id)
     if not record:
         raise HTTPException(404, "Record not found or access denied.")
     comparison = _reference_comparison(record)
@@ -1611,7 +2150,7 @@ def map_spatial_checks(doc_id: str, user: Dict[str, Any] = Depends(get_current_u
 
 @map_router.get("/records/{doc_id}/layers")
 def map_record_layers(doc_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    record = next((r for r in _map_visible_records(user, limit=10000) if str(r["id"]) == str(doc_id)), None)
+    record = _map_record_by_id(user, doc_id)
     if not record:
         raise HTTPException(404, "Record not found or access denied.")
     cases: List[Dict[str, Any]] = []
@@ -1640,7 +2179,7 @@ def map_record_layers(doc_id: str, user: Dict[str, Any] = Depends(get_current_us
 
 @map_router.get("/geojson")
 def map_geojson(user: Dict[str, Any] = Depends(get_current_user)):
-    records = _map_visible_records(user, limit=10000)
+    records = _map_visible_records(user, limit=MAP_RECORD_CAP)
     features = []
     for record in records:
         geometry = record.get("geometry")
@@ -1654,7 +2193,13 @@ def map_geojson(user: Dict[str, Any] = Depends(get_current_user)):
             "location_status","location_source","location_accuracy_m","geometry_source")}
         properties["screening_only"] = True
         features.append({"type":"Feature","id":record["id"],"geometry":geometry,"properties":properties})
-    return {"type":"FeatureCollection","features":features,"metadata":{"authoritative":False,"screening_only":True}}
+    return {"type":"FeatureCollection","features":features,
+            "metadata":{"authoritative":False,"screening_only":True,
+                        "crs":"urn:ogc:def:crs:OGC:1.3:CRS84",
+                        "record_count":len(features),
+                        "record_cap":MAP_RECORD_CAP,
+                        "truncated":len(records) >= MAP_RECORD_CAP,
+                        "note":"Coordinates are WGS84 longitude/latitude. Geometry provenance is per-feature geometry_source; screening data only."}}
 
 
 @map_router.get("/export.geojson")
@@ -1666,7 +2211,7 @@ def map_export_geojson(user: Dict[str, Any] = Depends(get_current_user)):
 
 @map_router.get("/export.kml")
 def map_export_kml(user: Dict[str, Any] = Depends(get_current_user)):
-    records = _map_visible_records(user, limit=10000)
+    records = _map_visible_records(user, limit=MAP_RECORD_CAP)
     placemarks = []
     for record in records:
         coordinate = (float(record["lat"]), float(record["lon"])) if record.get("lat") is not None and record.get("lon") is not None else None
@@ -1693,7 +2238,7 @@ def esc_kml(value: Any) -> str:
 
 @map_router.get("/spatial-summary")
 def map_spatial_summary(user: Dict[str, Any] = Depends(get_current_user)):
-    records = _map_visible_records(user, limit=10000)
+    records = _map_visible_records(user, limit=MAP_RECORD_CAP)
     counts = {"verified": 0, "village_approx": 0, "unresolved": 0, "boundaries": 0, "reference_boundaries": 0}
     for record in records:
         if record.get("lat") is not None and record.get("lon") is not None: counts["verified"] += 1
@@ -1705,9 +2250,14 @@ def map_spatial_summary(user: Dict[str, Any] = Depends(get_current_user)):
 
 @map_router.get("/summary")
 def map_summary(user: Dict[str, Any] = Depends(get_current_user)):
-    """Compact map dashboard metrics for the portal and integrations."""
-    records = _map_visible_records(user)
-    return {"summary": _map_summary(records), "metadata": {"authoritative": False}}
+    """Compact map dashboard metrics for the portal and integrations.
+
+    Uses the same MAP_RECORD_CAP dataset as /records and the exports so the
+    dashboard never describes a different population than the map (D9)."""
+    records = _map_visible_records(user, limit=MAP_RECORD_CAP)
+    return {"summary": _map_summary(records),
+            "metadata": {"authoritative": False, "record_cap": MAP_RECORD_CAP,
+                         "truncated": len(records) >= MAP_RECORD_CAP}}
 
 
 @map_router.get("/properties")
@@ -1770,22 +2320,44 @@ def map_properties(
     }
 
 
+def _csv_safe(value: Any) -> Any:
+    """Neutralise spreadsheet formula injection without losing content.
+
+    Cells beginning with `=`, `+`, `-`, `@`, tab or CR are prefixed with a
+    single quote so Excel/Sheets treat them as text (OWASP CSV injection
+    guidance). Numeric fields are passed through unchanged."""
+    if isinstance(value, (int, float)) or value is None:
+        return value
+    text = str(value)
+    if text and text[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + text
+    return text
+
+
 @map_router.get("/export.csv")
 def map_export_csv(user: Dict[str, Any] = Depends(get_current_user)):
     """Download a review-friendly map register without exposing hidden records."""
     ensure_schema()
+    records = _map_visible_records(user, limit=MAP_RECORD_CAP)
     output = io.StringIO(newline="")
-    output.write("\\ufeff")
+    output.write("\ufeff")
     writer = csv.DictWriter(output, fieldnames=(
         "id", "filename", "doc_type", "status", "owner", "survey", "khasra", "khata", "plot",
         "area", "village", "tehsil", "district", "state", "year", "lat", "lon",
         "location_status", "location_state", "location_label", "location_source", "location_source_detail", "location_accuracy_m", "location_reason", "location_confidence",
         "location_verified_by", "location_verified_at", "location_audit_available", "review_required"), extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(_map_visible_records(user))
+    for record in records:
+        writer.writerow({key: _csv_safe(record.get(key)) for key in writer.fieldnames})
+    truncated = len(records) >= MAP_RECORD_CAP
     return Response(content=output.getvalue(), media_type="text/csv; charset=utf-8", headers={
         "Content-Disposition": "attachment; filename=land-map-register.csv",
         "Cache-Control": "no-store",
+        # Export population metadata so the user can see exactly what the file
+        # contains (same unified cap as /records, /summary and GeoJSON).
+        "X-Map-Record-Count": str(len(records)),
+        "X-Map-Record-Cap": str(MAP_RECORD_CAP),
+        "X-Map-Truncated": "true" if truncated else "false",
     })
 
 
@@ -1813,9 +2385,10 @@ def map_set_document_location(
     actor = user.get("full_name", user.get("email", "user"))
     changed_at = _now()
     with get_db() as db:
-        row = db.execute("SELECT id, lat, lon FROM documents WHERE id=?", (doc_id,)).fetchone()
+        row = db.execute("SELECT id, lat, lon, updated_at FROM documents WHERE id=?", (doc_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Record not found.")
+        _assert_not_stale(row, payload)
         previous = (row["lat"], row["lon"])
         if raw_lat is None:
             db.execute(
@@ -1832,6 +2405,7 @@ def map_set_document_location(
                 "location_source": None,
                 "location_verified_by": None,
                 "location_verified_at": None,
+                "updated_at": changed_at,
             }
         else:
             try:
@@ -1854,17 +2428,35 @@ def map_set_document_location(
                 "location_source": "Authorised reviewer pin",
                 "location_verified_by": actor,
                 "location_verified_at": changed_at,
+                "updated_at": changed_at,
             }
     log_audit(actor, action, detail, doc_id)
     return result
 
 
 def _ring_geometry_checks(points):
+    """Structural validation for a closed polygon ring.
+
+    Rejects non-finite coordinates first (audit defect D4): NaN/Infinity
+    comparisons are always False, so every later check would silently pass and
+    a poisoned ring could reach the database or crash response serialisation.
+    """
     if len(points) < 4 or points[0] != points[-1]:
         return False, "Boundary ring must be closed."
+    for point in points:
+        if len(point) < 2:
+            return False, "Each boundary corner needs a longitude and latitude."
+        try:
+            lon, lat = float(point[0]), float(point[1])
+        except (TypeError, ValueError):
+            return False, "Boundary coordinates must be numeric."
+        if not (math.isfinite(lon) and math.isfinite(lat)):
+            return False, "Boundary coordinates must be finite numbers (no NaN or infinity)."
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return False, "Boundary coordinates are outside valid latitude/longitude ranges."
     vertices = [(float(p[0]), float(p[1])) for p in points[:-1]]
     area2 = sum(vertices[i][0]*vertices[(i+1)%len(vertices)][1] - vertices[(i+1)%len(vertices)][0]*vertices[i][1] for i in range(len(vertices)))
-    if abs(area2) < 1e-12:
+    if not math.isfinite(area2) or abs(area2) < 1e-12:
         return False, "Boundary area is zero or too small."
     def orient(a,b,d):
         return (b[0]-a[0])*(d[1]-a[1])-(b[1]-a[1])*(d[0]-a[0])
@@ -1878,6 +2470,60 @@ def _ring_geometry_checks(points):
             if crosses(a,b,vertices[j],vertices[(j+1)%len(vertices)]):
                 return False, "Boundary edges cross; draw a simple polygon."
     return True, ""
+
+def _record_geometry_change(
+    db: Any,
+    doc_id: str,
+    action: str,
+    previous_geometry: Optional[str],
+    new_geometry: Optional[str],
+    previous_source: Optional[str],
+    new_source: Optional[str],
+    reason: str,
+    actor: str,
+    created_at: float,
+) -> None:
+    """Persist a recoverable before/after geometry change (audit defect D8).
+
+    Runs inside the caller's transaction so a failed write never leaves a
+    history entry without its geometry update (or vice versa)."""
+    db.execute(
+        """INSERT INTO document_geometry_history
+           (id,document_id,action,previous_geometry,new_geometry,previous_source,new_source,reason,actor,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (uuid.uuid4().hex, doc_id, action, previous_geometry, new_geometry,
+         previous_source, new_source, (reason or "")[:500] or None, actor, created_at),
+    )
+
+
+def _assert_not_stale(row: Any, payload: Dict[str, Any], label: str = "record") -> None:
+    """Optimistic concurrency: optional `expected_updated_at` guards against
+    overwriting a newer edit made by another reviewer (audit defect D13).
+
+    Omitted/None keeps the legacy last-write-wins behaviour, so existing
+    clients remain compatible."""
+    expected = payload.get("expected_updated_at")
+    if expected in (None, "", 0):
+        return
+    try:
+        expected_value = float(expected)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="expected_updated_at must be a numeric timestamp.")
+    current = row["updated_at"] if "updated_at" in row.keys() else None
+    try:
+        current_value = float(current) if current is not None else None
+    except (TypeError, ValueError):
+        current_value = None
+    if current_value is None or abs(current_value - expected_value) > 1e-6:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STALE_RECORD",
+                "detail": f"This {label} was modified by someone else since you loaded it. Reload and re-apply your change.",
+                "current_updated_at": current_value,
+            },
+        )
+
 
 @map_router.put("/records/{doc_id}/boundary")
 def map_set_document_boundary(
@@ -1899,6 +2545,8 @@ def map_set_document_boundary(
                 latitude, longitude = float(raw[0]), float(raw[1])
         except (TypeError, ValueError, IndexError):
             raise HTTPException(status_code=400, detail="Each boundary corner must have numeric latitude and longitude.")
+        if not (math.isfinite(latitude) and math.isfinite(longitude)):
+            raise HTTPException(status_code=400, detail="Boundary coordinates must be finite numbers (no NaN or infinity).")
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             raise HTTPException(status_code=400, detail="Boundary coordinates are outside valid latitude/longitude ranges.")
         points.append([round(longitude, 7), round(latitude, 7)])
@@ -1914,13 +2562,19 @@ def map_set_document_boundary(
     actor = user.get("full_name", user.get("email", "user"))
     changed_at = _now()
     with get_db() as db:
-        row = db.execute("SELECT id FROM documents WHERE id=?", (doc_id,)).fetchone()
+        row = db.execute("SELECT id, map_geometry, map_geometry_source, updated_at FROM documents WHERE id=?", (doc_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Record not found.")
+        _assert_not_stale(row, payload)
+        previous_geometry = row["map_geometry"] if "map_geometry" in row.keys() else None
+        previous_source = row["map_geometry_source"] if "map_geometry_source" in row.keys() else None
         db.execute(
-            "UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='VERIFIED_BOUNDARY', map_geometry_updated_at=?, updated_at=? WHERE id=?",
-            (geometry_json, "Officer-digitized boundary", changed_at, changed_at, doc_id),
+            """UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='VERIFIED_BOUNDARY',
+               map_geometry_reason=?, map_geometry_updated_at=?, updated_at=? WHERE id=?""",
+            (geometry_json, "Officer-digitized boundary", reason or None, changed_at, changed_at, doc_id),
         )
+        _record_geometry_change(db, doc_id, "boundary_set", previous_geometry, geometry_json,
+                                previous_source, "Officer-digitized boundary", reason, actor, changed_at)
     detail = f"Officer-digitized mapping boundary saved with {len(points) - 1} corners."
     if reason:
         detail += f" Reason: {reason}"
@@ -1958,14 +2612,17 @@ def _area_m2_from_record(row: Any) -> Optional[float]:
 @map_router.post("/records/{doc_id}/boundary/estimate")
 def map_estimate_document_boundary(
     doc_id: str,
+    payload: Optional[Dict[str, Any]] = None,
     user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
 ):
     """Create a clearly labelled screening estimate from recorded area + location."""
     import math
+    payload = payload or {}
     with get_db() as db:
         row = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Record not found.")
+    _assert_not_stale(row, payload)
     area_m2 = _area_m2_from_record(row)
     if not area_m2 or area_m2 <= 0:
         raise HTTPException(status_code=400, detail="A numeric recorded area is required to estimate a boundary.")
@@ -1980,13 +2637,73 @@ def map_estimate_document_boundary(
             [float(lon)+dlon, float(lat)+dlat], [float(lon)-dlon, float(lat)+dlat],
             [float(lon)-dlon, float(lat)-dlat]]
     geometry = {"type":"Polygon","coordinates":[ring]}
+    reason = str(payload.get("reason") or "").strip()[:500]
     now = _now()
     actor = user.get("full_name", user.get("email", "user"))
     with get_db() as db:
-        db.execute("UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='ESTIMATED_BOUNDARY', map_geometry_updated_at=?, updated_at=? WHERE id=?",
-                   (_json(geometry), "Area-based estimate (screening only)", now, now, doc_id))
-    log_audit(actor, "boundary_estimated", f"Area-based screening boundary estimated from {area_m2:.2f} m².", doc_id)
+        current = db.execute("SELECT map_geometry, map_geometry_source FROM documents WHERE id=?", (doc_id,)).fetchone()
+        previous_geometry = current["map_geometry"] if current and "map_geometry" in current.keys() else None
+        previous_source = current["map_geometry_source"] if current and "map_geometry_source" in current.keys() else None
+        db.execute("UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='ESTIMATED_BOUNDARY', map_geometry_reason=?, map_geometry_updated_at=?, updated_at=? WHERE id=?",
+                   (_json(geometry), "Area-based estimate (screening only)", reason or None, now, now, doc_id))
+        _record_geometry_change(db, doc_id, "boundary_estimated", previous_geometry, _json(geometry),
+                                previous_source, "Area-based estimate (screening only)", reason, actor, now)
+    log_audit(actor, "boundary_estimated", f"Area-based screening boundary estimated from {area_m2:.2f} m²." + (f" Reason: {reason}" if reason else ""), doc_id)
     return {"ok":True,"geometry":geometry,"geometry_source":"Area-based estimate (screening only)","source":"estimated","area_m2":round(area_m2,2),"updated_at":now}
+
+def _polygon_ring_from_geojson(geom: Dict[str, Any]) -> List[List[float]]:
+    """Validate an incoming GeoJSON Polygon with the same rules as every other
+    write path (audit defect D4).
+
+    Field-specific errors, explicit finite/range checks, closure, vertex cap,
+    and self-intersection screening. Returns the closed ring as [lon, lat]
+    pairs; raises HTTPException(400) on any violation.
+    """
+    coords = geom.get("coordinates")
+    if not isinstance(coords, list) or not coords:
+        raise HTTPException(status_code=400, detail="geometry.coordinates: a Polygon needs an outer ring.")
+    if not isinstance(coords[0], list):
+        raise HTTPException(status_code=400, detail="geometry.coordinates[0]: outer ring must be a list of positions.")
+    if len(coords) > 1:
+        raise HTTPException(status_code=400, detail="geometry.coordinates: interior rings (holes) are not supported by this importer; supply a single outer ring.")
+    if len(coords[0]) > MAP_MAX_IMPORT_VERTICES + 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"geometry.coordinates[0]: too many vertices ({len(coords[0])}); the limit is {MAP_MAX_IMPORT_VERTICES} (simplify before import).",
+        )
+    ring: List[List[float]] = []
+    for index, point in enumerate(coords[0]):
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            raise HTTPException(status_code=400, detail=f"geometry.coordinates[0][{index}]: each position needs at least [longitude, latitude].")
+        try:
+            lon, lat = float(point[0]), float(point[1])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"geometry.coordinates[0][{index}]: coordinates must be numeric.")
+        if not (math.isfinite(lon) and math.isfinite(lat)):
+            raise HTTPException(status_code=400, detail=f"geometry.coordinates[0][{index}]: coordinates must be finite numbers (no NaN or infinity).")
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+            raise HTTPException(
+                status_code=400,
+                detail=f"geometry.coordinates[0][{index}]: ({lon}, {lat}) is outside the valid WGS84 range (longitude ±180, latitude ±90).",
+            )
+        ring.append([round(lon, 7), round(lat, 7)])
+    if len(ring) < 4:
+        raise HTTPException(status_code=400, detail="geometry.coordinates[0]: a Polygon needs at least three corners (four positions when closed).")
+    if ring[0] != ring[-1]:
+        ring.append(list(ring[0]))
+    # Drop consecutive duplicates (a common export artefact) before validation.
+    deduped = [ring[0]]
+    for point in ring[1:]:
+        if point != deduped[-1]:
+            deduped.append(point)
+    ring = deduped
+    if len(ring) < 4:
+        raise HTTPException(status_code=400, detail="geometry.coordinates[0]: ring has fewer than three distinct corners.")
+    valid, error = _ring_geometry_checks(ring)
+    if not valid:
+        raise HTTPException(status_code=400, detail=f"geometry.coordinates[0]: {error}")
+    return ring
+
 
 @map_router.post("/records/{doc_id}/boundary/import")
 def map_import_document_boundary(
@@ -2000,43 +2717,100 @@ def map_import_document_boundary(
     geom = geo.get("geometry") if geo.get("type") == "Feature" else geo
     if not isinstance(geom, dict) or geom.get("type") != "Polygon":
         raise HTTPException(status_code=400, detail="Only GeoJSON Polygon geometry is supported.")
-    coords = geom.get("coordinates")
-    if not isinstance(coords, list) or not coords or not isinstance(coords[0], list):
-        raise HTTPException(status_code=400, detail="Polygon coordinates are required.")
-    ring = []
-    for point in coords[0]:
-        if not isinstance(point, (list, tuple)) or len(point) < 2:
-            raise HTTPException(status_code=400, detail="Invalid GeoJSON coordinate.")
-        lon, lat = float(point[0]), float(point[1])
-        ring.append([round(lon,7), round(lat,7)])
-    if len(ring) < 4:
-        raise HTTPException(status_code=400, detail="Polygon needs at least three corners.")
-    if ring[0] != ring[-1]: ring.append(ring[0])
-    valid, error = _ring_geometry_checks(ring)
-    if not valid: raise HTTPException(status_code=400, detail=error)
-    geometry={"type":"Polygon","coordinates":[ring]}
-    now=_now(); actor=user.get("full_name",user.get("email","user"))
+    if not isinstance(geom.get("coordinates"), list):
+        raise HTTPException(status_code=400, detail="geometry.coordinates: Polygon coordinates are required.")
+    ring = _polygon_ring_from_geojson(geom)
+    reason = str(payload.get("reason") or "").strip()[:500]
+    geometry = {"type": "Polygon", "coordinates": [ring]}
+    now = _now()
+    actor = user.get("full_name", user.get("email", "user"))
     with get_db() as db:
-        if not db.execute("SELECT id FROM documents WHERE id=?", (doc_id,)).fetchone():
+        row = db.execute("SELECT id, map_geometry, map_geometry_source, updated_at FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Record not found.")
-        db.execute("UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='IMPORTED_BOUNDARY', map_geometry_updated_at=?, updated_at=? WHERE id=?",
-                   (_json(geometry), "Imported survey GeoJSON", now, now, doc_id))
-    log_audit(actor,"boundary_imported",f"Imported survey polygon with {len(ring)-1} corners.",doc_id)
-    return {"ok":True,"geometry":geometry,"geometry_source":"Imported survey GeoJSON","source":"imported","updated_at":now}
+        _assert_not_stale(row, payload)
+        previous_geometry = row["map_geometry"] if "map_geometry" in row.keys() else None
+        previous_source = row["map_geometry_source"] if "map_geometry_source" in row.keys() else None
+        db.execute("UPDATE documents SET map_geometry=?, map_geometry_source=?, map_geometry_status='IMPORTED_BOUNDARY', map_geometry_reason=?, map_geometry_updated_at=?, updated_at=? WHERE id=?",
+                   (_json(geometry), "Imported survey GeoJSON", reason or None, now, now, doc_id))
+        _record_geometry_change(db, doc_id, "boundary_imported", previous_geometry, _json(geometry),
+                                previous_source, "Imported survey GeoJSON", reason, actor, now)
+    log_audit(actor, "boundary_imported",
+              f"Imported survey polygon with {len(ring) - 1} corners." + (f" Reason: {reason}" if reason else ""),
+              doc_id)
+    return {"ok": True, "geometry": geometry, "geometry_source": "Imported survey GeoJSON", "source": "imported", "updated_at": now}
 
 @map_router.post("/records/{doc_id}/boundary/clear")
 def map_clear_document_boundary(
     doc_id: str,
+    payload: Optional[Dict[str, Any]] = None,
     user: Dict[str, Any] = Depends(require_roles(ROLE_VERIFICATION_OFFICER, ROLE_ADMIN)),
 ):
-    now=_now(); actor=user.get("full_name",user.get("email","user"))
+    payload = payload or {}
+    reason = str(payload.get("reason") or "").strip()[:500]
+    now = _now()
+    actor = user.get("full_name", user.get("email", "user"))
     with get_db() as db:
-        if not db.execute("SELECT id FROM documents WHERE id=?", (doc_id,)).fetchone():
+        row = db.execute("SELECT id, map_geometry, map_geometry_source, updated_at FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Record not found.")
-        db.execute("UPDATE documents SET map_geometry=NULL, map_geometry_source=NULL, map_geometry_status=NULL, map_geometry_updated_at=NULL, updated_at=? WHERE id=?",
-                   (now, doc_id))
-    log_audit(actor,"boundary_cleared","Mapping boundary cleared.",doc_id)
-    return {"ok":True}
+        _assert_not_stale(row, payload)
+        previous_geometry = row["map_geometry"] if "map_geometry" in row.keys() else None
+        previous_source = row["map_geometry_source"] if "map_geometry_source" in row.keys() else None
+        db.execute("UPDATE documents SET map_geometry=NULL, map_geometry_source=NULL, map_geometry_status=NULL, map_geometry_reason=?, map_geometry_updated_at=NULL, updated_at=? WHERE id=?",
+                   (reason or None, now, doc_id))
+        _record_geometry_change(db, doc_id, "boundary_cleared", previous_geometry, None,
+                                previous_source, None, reason, actor, now)
+    log_audit(actor, "boundary_cleared",
+              "Mapping boundary cleared." + (f" Reason: {reason}" if reason else ""),
+              doc_id)
+    return {"ok": True, "updated_at": now}
+
+
+@map_router.get("/records/{doc_id}/boundary/history")
+def map_boundary_history(
+    doc_id: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Recoverable before/after geometry history for one record (D8).
+
+    Read access follows the canonical document visibility rules; the currently
+    stored geometry is included so a reviewer can compare versions."""
+    ensure_schema()
+    with get_db() as db:
+        row = db.execute("SELECT id, status, uploaded_by, map_geometry, map_geometry_source, map_geometry_status, map_geometry_reason, map_geometry_updated_at FROM documents WHERE id=?", (doc_id,)).fetchone()
+        if not row or not _map_document_visible(row, user):
+            raise HTTPException(status_code=404, detail="Record not found or access denied.")
+        history_rows = db.execute(
+            """SELECT id, action, previous_geometry, new_geometry, previous_source, new_source, reason, actor, created_at
+               FROM document_geometry_history WHERE document_id=? ORDER BY created_at DESC, id DESC""",
+            (doc_id,),
+        ).fetchall()
+    return {
+        "document_id": doc_id,
+        "current": {
+            "geometry": _parse_json(row["map_geometry"], None) if "map_geometry" in row.keys() else None,
+            "source": row["map_geometry_source"] if "map_geometry_source" in row.keys() else None,
+            "status": row["map_geometry_status"] if "map_geometry_status" in row.keys() else None,
+            "reason": row["map_geometry_reason"] if "map_geometry_reason" in row.keys() else None,
+            "updated_at": row["map_geometry_updated_at"] if "map_geometry_updated_at" in row.keys() else None,
+        },
+        "items": [
+            {
+                "id": item["id"],
+                "action": item["action"],
+                "previous_geometry": _parse_json(item["previous_geometry"], None),
+                "new_geometry": _parse_json(item["new_geometry"], None),
+                "previous_source": item["previous_source"],
+                "new_source": item["new_source"],
+                "reason": item["reason"],
+                "actor": item["actor"],
+                "created_at": item["created_at"],
+            }
+            for item in history_rows
+        ],
+        "disclaimer": "Geometry history records editor actions; it does not certify any boundary as an official cadastral record.",
+    }
 
 def _public_geocode_result(value: Dict[str, Any]) -> Dict[str, Any]:
     return {key: item for key, item in value.items() if not key.startswith("_")}
@@ -2248,7 +3022,11 @@ def document_history(doc_id: str, user: Dict[str, Any] = Depends(get_current_use
         current_fields = _parse_json(current["fields"], {}) or {}
         survey = _field_value(current_fields, "survey_number")
         village = _field_value(current_fields, "village")
-        rows = db.execute("SELECT * FROM documents ORDER BY created_at ASC").fetchall()
+        # Slim column set: the history view never needs the heavy OCR payloads
+        # (audit defect D11); ordering includes id so equal timestamps stay stable.
+        rows = db.execute(
+            f"SELECT {', '.join(_MAP_RECORD_COLUMNS)} FROM documents ORDER BY created_at ASC, id ASC"
+        ).fetchall()
     if survey:
         survey_key = _land_number(survey).casefold()
         village_key = _normalise(village)
