@@ -1801,6 +1801,7 @@ def _reference_comparison(record: Dict[str, Any]) -> Dict[str, Any]:
         "boundary_vs_reference_difference_percent": None,
         "area_status": "UNAVAILABLE",
         "bbox_overlap_ratio": None,
+        "bbox_overlap_method": "axis_aligned_bbox_screening_only",
         "pin_inside_boundary": None,
         "pin_inside_reference": None,
         "outside_reference": None,
