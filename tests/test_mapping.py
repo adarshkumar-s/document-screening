@@ -330,3 +330,67 @@ def test_spatial_conflict_endpoint_flags_duplicate_exact_locations():
     response = client.get("/api/map/conflicts", headers=headers)
     assert response.status_code == 200
     assert any(set(item["record_ids"]) == {"MAP-CONFLICT-A", "MAP-CONFLICT-B"} for item in response.json()["conflicts"])
+
+
+
+def test_polygon_hole_is_not_treated_as_parcel_interior():
+    polygon = {
+        "type": "Polygon",
+        "coordinates": [
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+            [[3, 3], [7, 3], [7, 7], [3, 7], [3, 3]],
+        ],
+    }
+    assert mapping._point_in_geometry(1, 1, polygon) is True
+    assert mapping._point_in_geometry(5, 5, polygon) is False
+    assert mapping._point_in_geometry(12, 5, polygon) is False
+
+
+def test_multipolygon_hole_and_disjoint_component_handling():
+    geometry = {
+        "type": "MultiPolygon",
+        "coordinates": [
+            [
+                [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]],
+                [[1, 1], [3, 1], [3, 3], [1, 3], [1, 1]],
+            ],
+            [[[10, 10], [12, 10], [12, 12], [10, 12], [10, 10]]],
+        ],
+    }
+    assert mapping._point_in_geometry(0.5, 0.5, geometry) is True
+    assert mapping._point_in_geometry(2, 2, geometry) is False
+    assert mapping._point_in_geometry(11, 11, geometry) is True
+    assert mapping._point_in_geometry(6, 6, geometry) is False
+
+
+def test_geometry_area_subtracts_holes_and_sums_multipolygon_parts():
+    polygon = {
+        "type": "Polygon",
+        "coordinates": [
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+            [[3, 3], [7, 3], [7, 7], [3, 7], [3, 3]],
+        ],
+    }
+    outer = mapping._boundary_area_m2(polygon["coordinates"][0])
+    hole = mapping._boundary_area_m2(polygon["coordinates"][1])
+    area = mapping._geometry_area_m2(polygon)
+    assert area == round(outer - hole, 2)
+    multi = {"type": "MultiPolygon", "coordinates": [
+        [polygon["coordinates"][0], polygon["coordinates"][1]],
+        [[[20, 20], [22, 20], [22, 22], [20, 22], [20, 20]]],
+    ]}
+    expected = round(
+        outer - hole + mapping._boundary_area_m2(multi["coordinates"][1][0]), 2
+    )
+    assert mapping._geometry_area_m2(multi) == expected
+
+
+def test_reference_comparison_labels_bbox_overlap_as_screening_only():
+    result = mapping._reference_comparison({
+        "geometry": None, "reference_geometry": None, "area": None,
+        "north_boundary": None, "south_boundary": None,
+        "east_boundary": None, "west_boundary": None,
+        "boundary_completeness": 0,
+    })
+    assert result["bbox_overlap_method"] == "axis_aligned_bbox_screening_only"
+    assert result["screening_only"] is True
